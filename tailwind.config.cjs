@@ -1,0 +1,61 @@
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
+    './src/components/**/*.{js,ts,jsx,tsx,mdx}',
+    './src/app/**/*.{js,ts,jsx,tsx,mdx}',
+  ],
+  theme: {
+    extend: {
+      colors: {
+        background: 'oklch(0.9816 0.0017 247.8577)',
+        foreground: 'oklch(0.3351 0.0331 260.0310)',
+        card: 'oklch(1.0000 0 0)',
+        'card-foreground': 'oklch(0.3351 0.0331 260.0310)',
+        popover: 'oklch(1.0000 0 0)',
+        'popover-foreground': 'oklch(0.3351 0.0331 260.0310)',
+        primary: 'oklch(0.6081 0.1868 261.1930)',
+        'primary-foreground': 'oklch(1.0000 0 0)',
+        secondary: 'oklch(0.9651 0.0069 250.2957)',
+        'secondary-foreground': 'oklch(0.4497 0.0447 257.4163)',
+        muted: 'oklch(0.9651 0.0069 250.2957)',
+        'muted-foreground': 'oklch(0.5946 0.0368 257.8952)',
+        accent: 'oklch(0.9651 0.0069 250.2957)',
+        'accent-foreground': 'oklch(0.3351 0.0331 260.0310)',
+        destructive: 'oklch(0.6498 0.1805 9.8598)',
+        'destructive-foreground': 'oklch(1.0000 0 0)',
+        border: 'oklch(0.9288 0.0126 255.5078)',
+        input: 'oklch(0.9288 0.0126 255.5078)',
+        ring: 'oklch(0.6081 0.1868 261.1930)',
+        chart: {
+          1: 'oklch(0.6081 0.1868 261.1930)',
+          2: 'oklch(0.7155 0.1845 142.4961)',
+          3: 'oklch(0.8973 0.1097 84.4164)',
+          4: 'oklch(0.5621 0.2303 285.8017)',
+          5: 'oklch(0.7054 0.1344 328.1920)',
+        },
+        sidebar: {
+          DEFAULT: 'oklch(0.9700 0 0)',
+          foreground: 'oklch(0.3351 0.0331 260.0310)',
+          primary: 'oklch(0.6081 0.1868 261.1930)',
+          'primary-foreground': 'oklch(1.0000 0 0)',
+          accent: 'oklch(0.9288 0.0126 255.5078)',
+          'accent-foreground': 'oklch(0.3351 0.0331 260.0310)',
+          border: 'oklch(0.9288 0.0126 255.5078)',
+          ring: 'oklch(0.6081 0.1868 261.1930)',
+        },
+      },
+      borderRadius: {
+        lg: '0.75rem',
+        md: 'calc(0.75rem - 2px)',
+        sm: 'calc(0.75rem - 4px)',
+      },
+      fontFamily: {
+        sans: ['var(--font-sans)', 'ui-sans-serif', 'sans-serif', 'system-ui'],
+        serif: ['var(--font-serif)', 'ui-serif', 'serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
+      },
+    },
+  },
+  plugins: [],
+}
