@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { createClient } from '@/lib/supabase/client';
 
 const primaryNavItems = [
   { label: "仪表盘", href: "/dashboard" },
@@ -17,8 +18,18 @@ function isActivePath(pathname: string, href: string) {
   return pathname === href;
 }
 
-export default function AppSidebar() {
+interface AppSidebarProps {
+  user: any;
+}
+
+export default function AppSidebar({ user }: AppSidebarProps) {
   const pathname = usePathname();
+
+  const handleLogout = async () => {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    window.location.href = '/login';
+  };
 
   return (
     <aside className="flex min-h-screen w-72 shrink-0 flex-col border-r border-slate-800 bg-slate-900 text-slate-100">
@@ -89,6 +100,19 @@ export default function AppSidebar() {
       </div>
 
       <div className="border-t border-slate-800 p-4">
+        {user && (
+          <div className="mb-4 rounded-2xl bg-slate-800/80 p-4">
+            <p className="text-sm font-semibold text-white">
+              {user.isDevMode ? '开发模式' : user.email || '用户'}
+            </p>
+            <button
+              onClick={handleLogout}
+              className="mt-2 w-full rounded-lg bg-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-600"
+            >
+              登出
+            </button>
+          </div>
+        )}
         <div className="rounded-2xl bg-slate-800/80 p-4">
           <p className="text-sm font-semibold text-white">TETO 1.0</p>
           <p className="mt-1 text-sm leading-6 text-slate-400">
