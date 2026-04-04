@@ -1,3 +1,10 @@
+// ============================================================================
+// 📁 主系统模块
+// 功能：每日记录数据库操作
+// 描述：处理每日记录的CRUD操作，包括记录和子项的保存、查询等
+// 模块类型：后端服务
+// ============================================================================
+
 import type { DailyRecord, DailyRecordItem, DailyRecordWithItems, DailyRecordFormValues } from '@/types/daily-record';
 import { RECORD_ITEMS } from '@/constants/record-items';
 import { createClient } from '@/lib/supabase/client';

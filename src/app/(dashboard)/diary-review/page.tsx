@@ -1,151 +1,29 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { format } from "date-fns";
-import { zhCN } from "date-fns/locale";
+import React from "react";
 import { Calendar, Save, Loader2, CheckCircle } from "lucide-react";
-import type { DiaryReviewFormValues } from "@/types/diary-review";
-import { STATUS_OPTIONS, EMOTION_OPTIONS } from "@/constants/review-options";
-import {
-  getDiaryReviewByDate,
-  saveDiaryReview,
-  recordToFormValues,
-} from "@/lib/db/diary-reviews";
-import { getCurrentUser, type CurrentUser } from "@/lib/auth/get-current-user-id";
-
-function formatDateForInput(date: Date): string {
-  return format(date, "yyyy-MM-dd");
-}
-
-function formatDateForDisplay(dateStr: string): string {
-  const date = new Date(dateStr);
-  return format(date, "yyyy年M月d日 EEEE", { locale: zhCN });
-}
-
-function getEmptyFormValues(date: string): DiaryReviewFormValues {
-  return {
-    reviewDate: date,
-    did_what: "",
-    planned_what: "",
-    completion_rate: null,
-    status_label: "",
-    emotion_label: "",
-    biggest_progress: "",
-    biggest_problem: "",
-    tomorrow_plan: "",
-  };
-}
+import { useDiaryReview } from "./hooks/useDiaryReview";
+import { formatDateForDisplay } from "./utils/diaryReviewUtils";
+import { TodayRecordSection } from "./components/TodayRecordSection";
+import { StatusSection } from "./components/StatusSection";
+import { SummarySection } from "./components/SummarySection";
 
 export default function DiaryReviewPage() {
-  const [selectedDate, setSelectedDate] = useState(formatDateForInput(new Date()));
-  const [formData, setFormData] = useState<DiaryReviewFormValues>(getEmptyFormValues(selectedDate));
-  const [isLoading, setIsLoading] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
-  const [authChecking, setAuthChecking] = useState(true);
-
-  // 获取当前用户
-  useEffect(() => {
-    const getCurrentUserAsync = async () => {
-      console.log("[DiaryReviewPage] 开始获取当前用户");
-      
-      try {
-        const user = await getCurrentUser();
-        console.log("[DiaryReviewPage] 获取用户成功:", {
-          id: user.id,
-          email: user.email,
-          isDevMode: user.isDevMode,
-        });
-        setCurrentUser(user);
-      } catch (err) {
-        console.error("[DiaryReviewPage] 获取用户失败:", err);
-        setError(err instanceof Error ? err.message : "获取用户信息失败");
-      } finally {
-        setAuthChecking(false);
-      }
-    };
-    
-    getCurrentUserAsync();
-  }, []);
-
-  const loadRecord = useCallback(async (date: string, user: CurrentUser) => {
-    console.log("[loadRecord] 开始加载, date:", date, "userId:", user.id);
-    setIsLoading(true);
-    setError(null);
-    setFormData(getEmptyFormValues(date));
-    try {
-      const record = await getDiaryReviewByDate(user.id, date);
-      console.log("[loadRecord] 查询结果:", record);
-      if (record) {
-        const formValues = recordToFormValues(record, date);
-        console.log("[loadRecord] 回填表单:", formValues);
-        setFormData(formValues);
-      }
-    } catch (err) {
-      console.error("[loadRecord] 加载失败:", err);
-      setError("加载记录失败，请重试");
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!authChecking && currentUser) {
-      loadRecord(selectedDate, currentUser);
-    }
-  }, [selectedDate, authChecking, currentUser, loadRecord]);
-
-  const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setSelectedDate(e.target.value);
-    setSaveSuccess(false);
-  };
-
-  const handleChange = (
-    field: keyof DiaryReviewFormValues,
-    value: string | number | null
-  ) => {
-    setFormData((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
-    setSaveSuccess(false);
-  };
-
-  const handleSave = async () => {
-    if (!currentUser) {
-      console.error("[handleSave] 用户未初始化");
-      setError("用户信息未加载，请刷新页面");
-      return;
-    }
-
-    console.log("[handleSave] 开始保存");
-    console.log("[handleSave] selectedDate:", selectedDate);
-    console.log("[handleSave] formData:", JSON.stringify(formData, null, 2));
-    console.log("[handleSave] 当前用户:", {
-      id: currentUser.id,
-      isDevMode: currentUser.isDevMode,
-    });
-
-    setIsSaving(true);
-    setError(null);
-    try {
-      const result = await saveDiaryReview(currentUser.id, {
-        ...formData,
-        reviewDate: selectedDate,
-      });
-      console.log("[handleSave] 保存成功, 返回结果:", result);
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
-      await loadRecord(selectedDate, currentUser);
-    } catch (err) {
-      console.error("[handleSave] 保存失败:", err);
-      setError(`保存失败: ${err instanceof Error ? err.message : "未知错误"}`);
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  const {
+    selectedDate,
+    formData,
+    isLoading,
+    isSaving,
+    saveSuccess,
+    error,
+    currentUser,
+    authChecking,
+    collapsedSections,
+    handleDateChange,
+    handleChange,
+    toggleSection,
+    handleSave,
+  } = useDiaryReview();
 
   if (authChecking) {
     return (
@@ -219,141 +97,35 @@ export default function DiaryReviewPage() {
           </div>
         ) : (
           <div className="space-y-6">
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm">
-              <h2 className="mb-4 text-lg font-semibold text-slate-800">今日记录</h2>
-              <div className="space-y-4">
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-600">
-                    今天做了什么
-                  </label>
-                  <textarea
-                    rows={5}
-                    value={formData.did_what}
-                    onChange={(e) => handleChange("did_what", e.target.value)}
-                    placeholder="用自然语言写今天实际做了什么"
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-600">
-                    原本想做什么
-                  </label>
-                  <textarea
-                    rows={4}
-                    value={formData.planned_what}
-                    onChange={(e) => handleChange("planned_what", e.target.value)}
-                    placeholder="写原本计划完成的内容"
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-                  />
-                </div>
+            {!formData.did_what && !formData.planned_what && !formData.biggest_progress && !formData.biggest_problem && !formData.tomorrow_plan && (
+              <div className="rounded-2xl border border-purple-200 bg-purple-50 p-5 sm:p-6">
+                <h3 className="text-base font-semibold text-purple-900 mb-2">开始今日复盘</h3>
+                <p className="text-sm text-purple-700">
+                  记录今天做了什么、计划完成什么、最重要的推进和问题。结构化复盘帮助你持续改进。
+                </p>
               </div>
-            </section>
+            )}
 
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm">
-              <h2 className="mb-4 text-lg font-semibold text-slate-800">状态评估</h2>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-600">
-                    完成度（0-100）
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    value={formData.completion_rate ?? ""}
-                    onChange={(e) =>
-                      handleChange(
-                        "completion_rate",
-                        e.target.value === "" ? null : parseInt(e.target.value, 10)
-                      )
-                    }
-                    placeholder="0-100"
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-                  />
-                </div>
+            <TodayRecordSection
+              formData={formData}
+              collapsed={collapsedSections['today_record'] || false}
+              onToggle={() => toggleSection('today_record')}
+              onFieldChange={(field, value) => handleChange(field, value)}
+            />
 
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-600">
-                    今日状态
-                  </label>
-                  <select
-                    value={formData.status_label}
-                    onChange={(e) => handleChange("status_label", e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-                  >
-                    <option value="">请选择</option>
-                    {STATUS_OPTIONS.map((item) => (
-                      <option key={item} value={item}>
-                        {item}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+            <StatusSection
+              formData={formData}
+              collapsed={collapsedSections['status'] || false}
+              onToggle={() => toggleSection('status')}
+              onFieldChange={handleChange}
+            />
 
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-600">
-                    今日情绪
-                  </label>
-                  <select
-                    value={formData.emotion_label}
-                    onChange={(e) => handleChange("emotion_label", e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-                  >
-                    <option value="">请选择</option>
-                    {EMOTION_OPTIONS.map((item) => (
-                      <option key={item} value={item}>
-                        {item}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </section>
-
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm">
-              <h2 className="mb-4 text-lg font-semibold text-slate-800">总结与计划</h2>
-              <div className="space-y-4">
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-600">
-                    今天最重要的推进
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.biggest_progress}
-                    onChange={(e) => handleChange("biggest_progress", e.target.value)}
-                    placeholder="一句话写今天最重要推进"
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-600">
-                    今天最大的问题
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.biggest_problem}
-                    onChange={(e) => handleChange("biggest_problem", e.target.value)}
-                    placeholder="一句话写今天最大问题"
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-600">
-                    明日计划
-                  </label>
-                  <textarea
-                    rows={4}
-                    value={formData.tomorrow_plan}
-                    onChange={(e) => handleChange("tomorrow_plan", e.target.value)}
-                    placeholder="写明天想做什么"
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-                  />
-                </div>
-              </div>
-            </section>
+            <SummarySection
+              formData={formData}
+              collapsed={collapsedSections['summary'] || false}
+              onToggle={() => toggleSection('summary')}
+              onFieldChange={(field, value) => handleChange(field, value)}
+            />
           </div>
         )}
       </div>

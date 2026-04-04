@@ -1,4 +1,4 @@
-# TETO AI 开发协作规则
+# TETO AI 开发协作规则 ai-dev-rules
 
 ## 1. 文档定位
 本文件用于约束 TETO 1.0 项目的 AI 协作开发行为，作为我与 Trae / AI 助手协作时的固定执行规则。

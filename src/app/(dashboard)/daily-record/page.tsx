@@ -1,14 +1,20 @@
+// ============================================================================
+// 📁 主系统模块
+// 功能：每日记录页面
+// 描述：用户填写每日核心行为数据的主界面
+// 模块类型：前端页面
+// ============================================================================
+
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
 import { format } from "date-fns";
 import { zhCN } from "date-fns/locale";
-import { Calendar, Save, Loader2, CheckCircle } from "lucide-react";
+import { Calendar, Save, Loader2, CheckCircle, ChevronDown, ChevronUp } from "lucide-react";
 import type { DailyRecordFormValues } from "@/types/daily-record";
 import { RECORD_ITEM_GROUPS } from "@/constants/record-items";
 import {
   getDailyRecordByDate,
-  saveDailyRecord,
   formValuesToFormData,
 } from "@/lib/db/daily-record";
 import { getCurrentUser, type CurrentUser } from "@/lib/auth/get-current-user-id";
@@ -34,11 +40,10 @@ export default function DailyRecordPage() {
   const [selectedDate, setSelectedDate] = useState(formatDateForInput(new Date()));
   const [formData, setFormData] = useState<DailyRecordFormValues>(getEmptyFormValues(selectedDate));
   const [isLoading, setIsLoading] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
 
   // 获取当前用户
   useEffect(() => {
@@ -91,62 +96,11 @@ export default function DailyRecordPage() {
     }
   }, [selectedDate, authChecking, currentUser, loadRecord]);
 
-  const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setSelectedDate(e.target.value);
-    setSaveSuccess(false);
-  };
-
-  const handleItemChange = (key: string, value: string | number) => {
-    setFormData((prev) => ({
+  const toggleSection = (sectionKey: string) => {
+    setCollapsedSections((prev) => ({
       ...prev,
-      items: {
-        ...prev.items,
-        [key]: value === "" ? undefined : value,
-      },
+      [sectionKey]: !prev[sectionKey],
     }));
-    setSaveSuccess(false);
-  };
-
-  const handleNoteChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setFormData((prev) => ({
-      ...prev,
-      note: e.target.value,
-    }));
-    setSaveSuccess(false);
-  };
-
-  const handleSave = async () => {
-    if (!currentUser) {
-      console.error("[handleSave] 用户未初始化");
-      setError("用户信息未加载，请刷新页面");
-      return;
-    }
-
-    console.log("[handleSave] 开始保存");
-    console.log("[handleSave] selectedDate:", selectedDate);
-    console.log("[handleSave] formData:", JSON.stringify(formData, null, 2));
-    console.log("[handleSave] 当前用户:", {
-      id: currentUser.id,
-      isDevMode: currentUser.isDevMode,
-    });
-
-    setIsSaving(true);
-    setError(null);
-    try {
-      const result = await saveDailyRecord(currentUser.id, {
-        ...formData,
-        recordDate: selectedDate,
-      });
-      console.log("[handleSave] 保存成功, 返回结果:", result);
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
-      await loadRecord(selectedDate, currentUser);
-    } catch (err) {
-      console.error("[handleSave] 保存失败:", err);
-      setError(`保存失败: ${err instanceof Error ? err.message : "未知错误"}`);
-    } finally {
-      setIsSaving(false);
-    }
   };
 
   if (authChecking) {
@@ -171,11 +125,15 @@ export default function DailyRecordPage() {
           </div>
         )}
 
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <strong>历史功能对照页面（只读）</strong> - 这是 TETO 1.0 的每日记录功能，仅用于查看历史数据对比。当前页面已禁用编辑功能，建议使用新的任务管理模块进行日常操作。
+        </div>
+
         <div className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">每日记录</h1>
+            <h1 className="text-2xl font-bold text-slate-900">每日记录（历史查看）</h1>
             <p className="mt-1 text-sm text-slate-500">
-              填写每日核心行为数据
+              查看每日核心行为数据（只读模式）
             </p>
           </div>
           <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -183,25 +141,11 @@ export default function DailyRecordPage() {
               <Calendar className="h-5 w-5 text-slate-400" />
               <input
                 type="date"
+                disabled
                 value={selectedDate}
-                onChange={handleDateChange}
-                className="border-none bg-transparent text-sm text-slate-700 outline-none w-full"
+                className="border-none bg-transparent text-sm text-slate-700 outline-none w-full disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
-            <button
-              onClick={handleSave}
-              disabled={isSaving || isLoading}
-              className="flex items-center gap-2 rounded-xl bg-blue-500 px-5 py-2 text-sm font-medium text-white shadow-lg shadow-blue-500/20 transition-all hover:bg-blue-600 disabled:opacity-50 whitespace-nowrap"
-            >
-              {isSaving ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : saveSuccess ? (
-                <CheckCircle className="h-4 w-4" />
-              ) : (
-                <Save className="h-4 w-4" />
-              )}
-              {isSaving ? "保存中..." : saveSuccess ? "已保存" : "保存"}
-            </button>
           </div>
         </div>
 
@@ -221,75 +165,105 @@ export default function DailyRecordPage() {
           </div>
         ) : (
           <div className="space-y-6">
+            {!Object.values(formData.items).some(v => v !== undefined && v !== null && v !== '') && !formData.note && (
+              <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5 sm:p-6">
+                <h3 className="text-base font-semibold text-blue-900 mb-2">开始记录今日数据</h3>
+                <p className="text-sm text-blue-700">
+                  填写下方各项数据，记录你今天的学习、生活与成长。数据将用于统计分析，帮助你追踪长期趋势。
+                </p>
+              </div>
+            )}
+
             {Object.entries(RECORD_ITEM_GROUPS).map(([groupKey, group]) => (
               <section
                 key={groupKey}
-                className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm"
+                className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden"
               >
-                <h2 className="mb-4 text-lg font-semibold text-slate-800">
-                  {group.label}
-                </h2>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                  {group.items.map((item) => (
-                    <div key={item.key} className="flex flex-col gap-1.5">
-                      <label className="text-sm font-medium text-slate-600">
-                        {item.name}
-                        {item.unit && (
-                          <span className="ml-1 text-slate-400">
-                            ({item.unit})
-                          </span>
-                        )}
-                      </label>
-                      {item.type === "time" ? (
-                        <input
-                          type="time"
-                          value={
-                            formData.items[item.key as keyof typeof formData.items] ||
-                            ""
-                          }
-                          onChange={(e) =>
-                            handleItemChange(item.key, e.target.value)
-                          }
-                          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-                        />
-                      ) : (
-                        <input
-                          type="number"
-                          min="0"
-                          step={item.type === "number" ? "1" : "1"}
-                          value={
-                            formData.items[item.key as keyof typeof formData.items] ||
-                            ""
-                          }
-                          onChange={(e) =>
-                            handleItemChange(
-                              item.key,
-                              e.target.value === ""
-                                ? ""
-                                : parseFloat(e.target.value)
-                            )
-                          }
-                          placeholder="0"
-                          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-                        />
-                      )}
+                <button
+                  type="button"
+                  onClick={() => toggleSection(groupKey)}
+                  className="w-full flex items-center justify-between p-5 sm:p-6 hover:bg-slate-50 transition-colors"
+                >
+                  <h2 className="text-lg font-semibold text-slate-800">
+                    {group.label}
+                  </h2>
+                  {collapsedSections[groupKey] ? (
+                    <ChevronDown className="h-5 w-5 text-slate-400" />
+                  ) : (
+                    <ChevronUp className="h-5 w-5 text-slate-400" />
+                  )}
+                </button>
+                {!collapsedSections[groupKey] && (
+                  <div className="px-5 sm:px-6 pb-5 sm:pb-6">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                      {group.items.map((item) => (
+                        <div key={item.key} className="flex flex-col gap-1.5">
+                          <label className="text-sm font-medium text-slate-600">
+                            {item.name}
+                            {item.unit && (
+                              <span className="ml-1 text-slate-400">
+                                ({item.unit})
+                              </span>
+                            )}
+                          </label>
+                          {item.type === "time" ? (
+                            <input
+                              type="time"
+                              disabled
+                              value={
+                                formData.items[item.key as keyof typeof formData.items] ||
+                                ""
+                              }
+                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                          ) : (
+                            <input
+                              type="number"
+                              disabled
+                              min="0"
+                              step={item.type === "number" ? "1" : "1"}
+                              value={
+                                formData.items[item.key as keyof typeof formData.items] ||
+                                ""
+                              }
+                              placeholder=""
+                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                          )}
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                )}
               </section>
             ))}
 
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm">
-              <h2 className="mb-4 text-lg font-semibold text-slate-800">
-                备注
-              </h2>
-              <textarea
-                value={formData.note}
-                onChange={handleNoteChange}
-                placeholder="记录今天的想法、状态或其他备注..."
-                rows={4}
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white"
-              />
+            <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+              <button
+                type="button"
+                onClick={() => toggleSection('note')}
+                className="w-full flex items-center justify-between p-5 sm:p-6 hover:bg-slate-50 transition-colors"
+              >
+                <h2 className="text-lg font-semibold text-slate-800">
+                  备注
+                </h2>
+                {collapsedSections['note'] ? (
+                  <ChevronDown className="h-5 w-5 text-slate-400" />
+                ) : (
+                  <ChevronUp className="h-5 w-5 text-slate-400" />
+                )}
+              </button>
+              {!collapsedSections['note'] && (
+                <div className="px-5 sm:px-6 pb-5 sm:pb-6">
+                  <textarea
+                    disabled
+                    value={formData.note}
+                    placeholder="记录今天的想法、状态或其他备注..."
+                    rows={4}
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:bg-white disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                </div>
+              )}
             </section>
           </div>
         )}

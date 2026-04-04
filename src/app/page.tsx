@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 const quickActions = [
   {
     title: "记录今天",
@@ -126,21 +128,21 @@ export default function Home() {
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {quickActions.map((item) => (
-              <a
-                key={item.title}
-                href={item.href}
-                className="group rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md"
-              >
-                <div className="flex h-full flex-col justify-between">
-                  <div>
-                    <h3 className="text-lg font-semibold">{item.title}</h3>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">{item.description}</p>
-                  </div>
-                  <div className="mt-6 text-sm font-medium text-slate-900 group-hover:text-blue-600">
-                    进入 →
-                  </div>
+              <Link
+              key={item.title}
+              href={item.href}
+              className="group rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md"
+            >
+              <div className="flex h-full flex-col justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold">{item.title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{item.description}</p>
                 </div>
-              </a>
+                <div className="mt-6 text-sm font-medium text-slate-900 group-hover:text-blue-600">
+                  进入 →
+                </div>
+              </div>
+            </Link>
             ))}
           </div>
         </section>
@@ -225,9 +227,9 @@ export default function Home() {
             <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
               <div className="mb-5 flex items-center justify-between">
                 <h2 className="text-xl font-semibold">项目概览</h2>
-                <a href="/projects" className="text-sm font-medium text-blue-600 hover:text-blue-700">
+                <Link href="/projects" className="text-sm font-medium text-blue-600 hover:text-blue-700">
                   查看全部
-                </a>
+                </Link>
               </div>
 
               <div className="space-y-4">

@@ -1,18 +1,21 @@
-"use client";
+'use client';
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createClient } from '@/lib/supabase/client';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 const primaryNavItems = [
-  { label: "仪表盘", href: "/dashboard" },
-  { label: "每日记录", href: "/daily-record" },
-  { label: "日记复盘", href: "/diary-review" },
-  { label: "项目管理", href: "/projects" },
-  { label: "统计分析", href: "/stats" },
+  { label: "仪表盘", href: "/dashboard", icon: "📊" },
+  { label: "任务管理", href: "/task-management", icon: "✓" },
+  { label: "每日记录", href: "/daily-record", icon: "📝" },
+  { label: "日记复盘", href: "/diary-review", icon: "📔" },
+  { label: "项目管理", href: "/projects", icon: "📁" },
+  { label: "统计分析", href: "/stats", icon: "📈" },
 ];
 
-const secondaryNavItems = [{ label: "返回首页", href: "/" }];
+const secondaryNavItems = [{ label: "返回首页", href: "/", icon: "🏠" }];
 
 function isActivePath(pathname: string, href: string) {
   return pathname === href;
@@ -20,10 +23,13 @@ function isActivePath(pathname: string, href: string) {
 
 interface AppSidebarProps {
   user: any;
+  collapsed?: boolean;
+  onToggle?: () => void;
 }
 
-export default function AppSidebar({ user }: AppSidebarProps) {
+export default function AppSidebar({ user, collapsed = false, onToggle }: AppSidebarProps) {
   const pathname = usePathname();
+  console.log('AppSidebar rendered', { primaryNavItems, pathname });
 
   const handleLogout = async () => {
     const supabase = createClient();
@@ -32,24 +38,48 @@ export default function AppSidebar({ user }: AppSidebarProps) {
   };
 
   return (
-    <aside className="flex min-h-screen w-72 shrink-0 flex-col border-r border-slate-800 bg-slate-900 text-slate-100">
-      <div className="border-b border-slate-800 px-6 py-6">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-500 text-lg font-bold text-white shadow-lg shadow-blue-500/20">
-            T
+    <aside 
+      className={[
+        "fixed inset-y-0 left-0 z-20 shrink-0 border-r border-slate-800 bg-slate-900 text-slate-100 transition-all duration-300",
+        collapsed ? "w-20" : "w-72"
+      ].join(" ")}
+    >
+      {/* 顶部 Logo 区域 */}
+      <div className="border-b border-slate-800 px-4 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-blue-500 text-lg font-bold text-white shadow-lg shadow-blue-500/20">
+              T
+            </div>
+            {!collapsed && (
+              <div>
+                <p className="text-2xl font-bold tracking-tight">TETO</p>
+                <p className="text-sm text-slate-400">个人效率系统</p>
+              </div>
+            )}
           </div>
-          <div>
-            <p className="text-2xl font-bold tracking-tight">TETO</p>
-            <p className="text-sm text-slate-400">个人效率系统</p>
-          </div>
+          {/* 收起/展开按钮 */}
+          {onToggle && (
+            <button
+              onClick={onToggle}
+              className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white transition-colors"
+              aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+            >
+              {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 py-5">
+      {/* 导航区域 */}
+      <div className="flex-1 overflow-y-auto px-3 py-4">
+        {/* 核心模块 */}
         <div className="mb-6">
-          <p className="mb-3 px-3 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
-            核心模块
-          </p>
+          {!collapsed && (
+            <p className="mb-3 px-3 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+              核心模块
+            </p>
+          )}
           <nav className="space-y-2">
             {primaryNavItems.map((item) => {
               const active = isActivePath(pathname, item.href);
@@ -59,23 +89,29 @@ export default function AppSidebar({ user }: AppSidebarProps) {
                   key={item.href}
                   href={item.href}
                   className={[
-                    "group flex items-center rounded-2xl px-4 py-3 text-sm font-medium transition-all",
+                    "group flex items-center rounded-2xl px-3 py-3 text-sm font-medium transition-all",
+                    collapsed ? "justify-center" : "",
                     active
                       ? "bg-gradient-to-r from-blue-500 to-indigo-500 text-white shadow-lg shadow-blue-500/20"
                       : "text-slate-300 hover:bg-slate-800 hover:text-white",
                   ].join(" ")}
+                  title={collapsed ? item.label : undefined}
                 >
-                  <span className="truncate">{item.label}</span>
+                  <span className="text-lg shrink-0">{item.icon}</span>
+                  {!collapsed && <span className="truncate ml-3">{item.label}</span>}
                 </Link>
               );
             })}
           </nav>
         </div>
 
+        {/* 系统入口 */}
         <div>
-          <p className="mb-3 px-3 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
-            系统入口
-          </p>
+          {!collapsed && (
+            <p className="mb-3 px-3 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+              系统入口
+            </p>
+          )}
           <nav className="space-y-2">
             {secondaryNavItems.map((item) => {
               const active = isActivePath(pathname, item.href);
@@ -85,13 +121,16 @@ export default function AppSidebar({ user }: AppSidebarProps) {
                   key={item.href}
                   href={item.href}
                   className={[
-                    "group flex items-center rounded-2xl px-4 py-3 text-sm font-medium transition-all",
+                    "group flex items-center rounded-2xl px-3 py-3 text-sm font-medium transition-all",
+                    collapsed ? "justify-center" : "",
                     active
                       ? "bg-slate-800 text-white"
                       : "text-slate-400 hover:bg-slate-800 hover:text-white",
                   ].join(" ")}
+                  title={collapsed ? item.label : undefined}
                 >
-                  <span className="truncate">{item.label}</span>
+                  <span className="text-lg shrink-0">{item.icon}</span>
+                  {!collapsed && <span className="truncate ml-3">{item.label}</span>}
                 </Link>
               );
             })}
@@ -99,26 +138,36 @@ export default function AppSidebar({ user }: AppSidebarProps) {
         </div>
       </div>
 
-      <div className="border-t border-slate-800 p-4">
-        {user && (
-          <div className="mb-4 rounded-2xl bg-slate-800/80 p-4">
-            <p className="text-sm font-semibold text-white">
+      {/* 底部信息区域 */}
+      <div className="border-t border-slate-800 p-2">
+        {user && !collapsed && (
+          <div className="mb-2 rounded-xl bg-slate-800/80 p-2">
+            <p className="text-xs font-medium text-slate-300">
               {user.isDevMode ? '开发模式' : user.email || '用户'}
             </p>
             <button
               onClick={handleLogout}
-              className="mt-2 w-full rounded-lg bg-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-600"
+              className="mt-1 w-full rounded-lg bg-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-600"
             >
               登出
             </button>
           </div>
         )}
-        <div className="rounded-2xl bg-slate-800/80 p-4">
-          <p className="text-sm font-semibold text-white">TETO 1.0</p>
-          <p className="mt-1 text-sm leading-6 text-slate-400">
-            当前阶段：静态骨架 + 工作台视觉整理
-          </p>
-        </div>
+        {!collapsed && (
+          <div className="rounded-xl bg-slate-800/80 p-2">
+            <p className="text-xs font-medium text-slate-300">TETO 1.1</p>
+            <p className="mt-1 text-xs leading-4 text-slate-400">
+              当前阶段：静态骨架 + 工作台视觉整理
+            </p>
+          </div>
+        )}
+        {collapsed && (
+          <div className="flex justify-center">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-800 text-xs font-bold text-white">
+              T
+            </div>
+          </div>
+        )}
       </div>
     </aside>
   );

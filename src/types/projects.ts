@@ -18,6 +18,7 @@ export type ProjectLog = {
   id: string;
   project_id: string;
   log_date: string;
+  log_time: string | null;
   progress_added: number;
   progress_before: number;
   progress_after: number;
@@ -43,7 +44,7 @@ export type ProjectFormValues = {
 
 export type ProjectLogFormValues = {
   log_date: string;
-  progress_added: number;
+  progress_added: number | string | null | undefined;
   note: string;
 };
 
