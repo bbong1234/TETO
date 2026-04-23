@@ -50,7 +50,7 @@ function getRecordDisplayDate(r: Record): string {
   if (r.type === '计划' && r.time_anchor_date && r.time_anchor_date !== r.date) {
     return r.time_anchor_date;
   }
-  return r.date;
+  return r.date ?? '';
 }
 
 export default function RecordsClient() {
