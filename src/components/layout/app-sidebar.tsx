@@ -4,21 +4,23 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createClient } from '@/lib/supabase/client';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { 
+  ChevronLeft, 
+  ChevronRight, 
+  BookOpen, 
+  ListChecks, 
+  BarChart3
+} from 'lucide-react';
 
-const primaryNavItems = [
-  { label: "仪表盘", href: "/dashboard", icon: "📊" },
-  { label: "任务管理", href: "/task-management", icon: "✓" },
-  { label: "每日记录", href: "/daily-record", icon: "📝" },
-  { label: "日记复盘", href: "/diary-review", icon: "📔" },
-  { label: "项目管理", href: "/projects", icon: "📁" },
-  { label: "统计分析", href: "/stats", icon: "📈" },
+// 主导航
+const navItems = [
+  { label: "记录", href: "/records", icon: BookOpen },
+  { label: "事项", href: "/items", icon: ListChecks },
+  { label: "洞察", href: "/insights", icon: BarChart3 },
 ];
 
-const secondaryNavItems = [{ label: "返回首页", href: "/", icon: "🏠" }];
-
 function isActivePath(pathname: string, href: string) {
-  return pathname === href;
+  return pathname === href || pathname.startsWith(href + '/');
 }
 
 interface AppSidebarProps {
@@ -29,7 +31,6 @@ interface AppSidebarProps {
 
 export default function AppSidebar({ user, collapsed = false, onToggle }: AppSidebarProps) {
   const pathname = usePathname();
-  console.log('AppSidebar rendered', { primaryNavItems, pathname });
 
   const handleLogout = async () => {
     const supabase = createClient();
@@ -73,16 +74,17 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
 
       {/* 导航区域 */}
       <div className="flex-1 overflow-y-auto px-3 py-4">
-        {/* 核心模块 */}
+        {/* 主导航区 */}
         <div className="mb-6">
           {!collapsed && (
             <p className="mb-3 px-3 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
-              核心模块
+              主导航
             </p>
           )}
           <nav className="space-y-2">
-            {primaryNavItems.map((item) => {
+            {navItems.map((item) => {
               const active = isActivePath(pathname, item.href);
+              const IconComponent = item.icon;
 
               return (
                 <Link
@@ -97,7 +99,7 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
                   ].join(" ")}
                   title={collapsed ? item.label : undefined}
                 >
-                  <span className="text-lg shrink-0">{item.icon}</span>
+                  <IconComponent className="h-5 w-5 shrink-0" />
                   {!collapsed && <span className="truncate ml-3">{item.label}</span>}
                 </Link>
               );
@@ -105,37 +107,7 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
           </nav>
         </div>
 
-        {/* 系统入口 */}
-        <div>
-          {!collapsed && (
-            <p className="mb-3 px-3 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
-              系统入口
-            </p>
-          )}
-          <nav className="space-y-2">
-            {secondaryNavItems.map((item) => {
-              const active = isActivePath(pathname, item.href);
 
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={[
-                    "group flex items-center rounded-2xl px-3 py-3 text-sm font-medium transition-all",
-                    collapsed ? "justify-center" : "",
-                    active
-                      ? "bg-slate-800 text-white"
-                      : "text-slate-400 hover:bg-slate-800 hover:text-white",
-                  ].join(" ")}
-                  title={collapsed ? item.label : undefined}
-                >
-                  <span className="text-lg shrink-0">{item.icon}</span>
-                  {!collapsed && <span className="truncate ml-3">{item.label}</span>}
-                </Link>
-              );
-            })}
-          </nav>
-        </div>
       </div>
 
       {/* 底部信息区域 */}
@@ -155,9 +127,9 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
         )}
         {!collapsed && (
           <div className="rounded-xl bg-slate-800/80 p-2">
-            <p className="text-xs font-medium text-slate-300">TETO 1.1</p>
+            <p className="text-xs font-medium text-slate-300">TETO 1.4</p>
             <p className="mt-1 text-xs leading-4 text-slate-400">
-              当前阶段：静态骨架 + 工作台视觉整理
+              记录 / 事项 / 洞察
             </p>
           </div>
         )}

@@ -9,15 +9,22 @@ import { getCurrentUser, isDevMode } from '@/lib/auth/get-current-user-id';
 // 将 devMode 定义在组件外部，避免每次渲染都重新计算
 const devMode = isDevMode();
 
-export default function DashboardLayout({
+export default function AppLayout({
   children,
 }: {
-  children: React.ReactNode;
+  children: React.ReactNode
 }) {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    // 从 localStorage 加载侧边栏状态（仅在浏览器环境中）
+    if (typeof window !== 'undefined') {
+      const savedState = localStorage.getItem('sidebarCollapsed');
+      return savedState ? JSON.parse(savedState) : false;
+    }
+    return false;
+  });
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -42,6 +49,13 @@ export default function DashboardLayout({
     checkAuth();
   }, []); // 移除 router 依赖，避免不必要的重新渲染
 
+  // 保存侧边栏状态到 localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('sidebarCollapsed', JSON.stringify(sidebarCollapsed));
+    }
+  }, [sidebarCollapsed]);
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -51,7 +65,7 @@ export default function DashboardLayout({
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-950">
+    <div className="flex h-screen bg-slate-950 overflow-hidden">
       {/* 桌面端侧边栏 - 移动端隐藏 */}
       <div className="hidden lg:block">
         <AppSidebar 
@@ -62,15 +76,13 @@ export default function DashboardLayout({
       </div>
       {/* 主内容区域 - 移动端无左边距，桌面端根据侧边栏状态调整左边距 */}
       <div className={[
-        "flex-1 overflow-y-auto transition-all duration-300",
+        "flex-1 flex flex-col overflow-hidden transition-all duration-300",
         sidebarCollapsed ? "lg:ml-20" : "lg:ml-72"
       ].join(" ")}>
-        <div className="flex min-h-screen flex-col">
-          <MobileTopbar user={user} />
-          <main className="flex-1 bg-slate-100">
+        <MobileTopbar user={user} />
+        <main className="flex-1 flex flex-col overflow-hidden bg-slate-100">
             {children}
-          </main>
-        </div>
+        </main>
       </div>
     </div>
   );

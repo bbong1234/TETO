@@ -7,5 +7,82 @@ body {
 }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ===== Personal OS 基础视觉层 ===== */
+
+/* 毛玻璃卡片 */
+.glass {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+.glass-heavy {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(40px) saturate(200%);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+}
+.glass-dark {
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+}
+
+/* 桌面背景网格 */
+.desktop-bg {
+  background:
+    linear-gradient(135deg, #f0f4f8 0%, #e8edf5 30%, #f5f0ff 60%, #eef2ff 100%);
+}
+
+/* 微光晕效果 */
+.glow-sm {
+  box-shadow: 0 0 15px -3px rgba(99, 102, 241, 0.15);
+}
+.glow-md {
+  box-shadow: 0 0 30px -5px rgba(99, 102, 241, 0.2);
+}
+
+/* 柔和阴影层级 */
+.shadow-soft {
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.06);
+}
+.shadow-soft-lg {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.08);
+}
+.shadow-soft-xl {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05), 0 16px 48px rgba(0,0,0,0.1);
+}
+
+/* Bento Grid 拖拽占位符 */
+.dnd-placeholder {
+  background: rgba(99, 102, 241, 0.08);
+  border: 2px dashed rgba(99, 102, 241, 0.25);
+  border-radius: 24px;
+}
+
+/* 环形进度条 */
+.ring-progress {
+  --progress: 0;
+  --size: 48px;
+  --stroke: 4px;
+  width: var(--size);
+  height: var(--size);
+  border-radius: 50%;
+  background: conic-gradient(
+    #6366f1 calc(var(--progress) * 1%),
+    #e2e8f0 calc(var(--progress) * 1%)
+  );
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ring-progress::after {
+  content: '';
+  width: calc(var(--size) - var(--stroke) * 2);
+  height: calc(var(--size) - var(--stroke) * 2);
+  border-radius: 50%;
+  background: white;
 }

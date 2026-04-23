@@ -3,15 +3,19 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Menu, X } from 'lucide-react';
+import { 
+  Menu, 
+  X, 
+  BookOpen, 
+  ListChecks, 
+  BarChart3
+} from 'lucide-react';
 
+// 主导航
 const navItems = [
-  { label: "仪表盘", href: "/dashboard" },
-  { label: "每日记录", href: "/daily-record" },
-  { label: "日记复盘", href: "/diary-review" },
-  { label: "项目管理", href: "/projects" },
-  { label: "统计分析", href: "/stats" },
-  { label: "返回首页", href: "/" },
+  { label: "记录", href: "/records", icon: BookOpen },
+  { label: "事项", href: "/items", icon: ListChecks },
+  { label: "洞察", href: "/insights", icon: BarChart3 },
 ];
 
 interface MobileTopbarProps {
@@ -75,26 +79,36 @@ export default function MobileTopbar({ user }: MobileTopbarProps) {
 
               {/* 导航链接 */}
               <nav className="flex-1 overflow-y-auto px-4 py-4">
-                <div className="space-y-1">
-                  {navItems.map((item) => {
-                    const active = pathname === item.href;
-                    return (
-                      <Link
-                        key={item.href}
-                        href={item.href}
-                        onClick={handleNavClick}
-                        className={[
-                          "flex items-center rounded-xl px-4 py-3 text-sm font-medium transition-all",
-                          active
-                            ? "bg-gradient-to-r from-blue-500 to-indigo-500 text-white shadow-lg shadow-blue-500/20"
-                            : "text-slate-300 hover:bg-slate-800 hover:text-white",
-                        ].join(" ")}
-                      >
-                        {item.label}
-                      </Link>
-                    );
-                  })}
+                {/* 主导航区 */}
+                <div className="mb-4">
+                  <p className="mb-2 px-2 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+                    主导航
+                  </p>
+                  <div className="space-y-1">
+                    {navItems.map((item) => {
+                      const active = pathname === item.href || pathname.startsWith(item.href + '/');
+                      const IconComponent = item.icon;
+                      return (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          onClick={handleNavClick}
+                          className={[
+                            "flex items-center rounded-xl px-3 py-2.5 text-sm font-medium transition-all",
+                            active
+                              ? "bg-gradient-to-r from-blue-500 to-indigo-500 text-white shadow-lg shadow-blue-500/20"
+                              : "text-slate-300 hover:bg-slate-800 hover:text-white",
+                          ].join(" ")}
+                        >
+                          <IconComponent className="h-4 w-4 shrink-0" />
+                          <span className="ml-3">{item.label}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
                 </div>
+
+
               </nav>
 
               {/* 底部信息 */}
@@ -107,9 +121,9 @@ export default function MobileTopbar({ user }: MobileTopbarProps) {
                   </div>
                 )}
                 <div className="rounded-xl bg-slate-800/80 p-3">
-                  <p className="text-sm font-semibold text-white">TETO 1.0</p>
+                  <p className="text-sm font-semibold text-white">TETO 1.3</p>
                   <p className="mt-1 text-xs text-slate-400">
-                    个人效率系统
+                    记录 / 事项 / 洞察
                   </p>
                 </div>
               </div>

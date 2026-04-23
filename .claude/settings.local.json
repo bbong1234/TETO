@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir \"D:\\\\wu\\\\编程\\\\TETO软件项目\" /s /b)",
+      "Bash(npm run *)",
+      "Bash(npx next *)",
+      "Bash(npx tsc *)",
+      "Bash(node -e \"const { execSync } = require\\('child_process'\\); try { const out = execSync\\('npx tsc --noEmit 2>&1', {encoding:'utf8', cwd: process.cwd\\(\\)}\\); console.log\\(out\\); } catch\\(e\\) { console.log\\(e.stdout\\); }\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(cmd /c \"npx tsc --noEmit\")",
+      "Bash(node ./node_modules/.bin/tsc --noEmit)",
+      "Bash(node ./node_modules/typescript/bin/tsc --noEmit)",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"console.log\\('hello'\\)\")",
+      "Bash(where node *)",
+      "Bash(node_modules/.bin/tsc --noEmit)"
+    ]
+  }
+}

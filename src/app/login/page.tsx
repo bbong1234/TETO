@@ -78,8 +78,8 @@ export default function LoginPage() {
       const { data: sessionData } = await supabase.auth.getSession();
       console.log('[login] 验证 session:', sessionData.session ? '已设置' : '未设置');
       
-      // 跳转到 dashboard
-      window.location.href = '/dashboard';
+      // 跳转到今日记录
+      window.location.href = '/records';
     }
 
     setLoading(false);
@@ -102,10 +102,10 @@ export default function LoginPage() {
             </ul>
           </div>
           <a
-            href="/dashboard"
+            href="/records"
             className="block w-full rounded bg-black px-4 py-2 text-center text-white hover:bg-gray-800"
           >
-            进入 Dashboard
+            进入记录
           </a>
         </div>
       </main>
