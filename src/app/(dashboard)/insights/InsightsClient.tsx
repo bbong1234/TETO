@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { BarChart3, Loader2, RefreshCw } from 'lucide-react';
 import DateRangeSelector from './components/DateRangeSelector';
 import RecordStats from './components/RecordStats';
-import ItemStats from './components/ItemStats';
+import ItemPortrait from './components/ItemPortrait';
 import PhaseInsights from './components/PhaseInsights';
 import GoalInsights from './components/GoalInsights';
 import type { InsightsData } from '@/types/teto';
@@ -136,7 +136,7 @@ export default function InsightsClient() {
         {!loading && !error && insightsData && (
           <>
             <RecordStats data={insightsData.record_overview} />
-            <ItemStats data={insightsData.item_overview} />
+            <ItemPortrait data={insightsData.item_overview} />
             <PhaseInsights data={insightsData.phaseInsights} />
             <GoalInsights data={insightsData.goalInsights} />
           </>

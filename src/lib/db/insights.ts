@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
-import type { InsightsData, InsightsQuery, Phase, Goal } from '@/types/teto';
+import type { InsightsData, InsightsQuery, Phase } from '@/types/teto';
 
 /**
  * 获取洞察数据
@@ -174,9 +174,8 @@ export async function getInsights(
   }
 
   // ==========================================
-  // 6. 超过 7 天无更新的停滞事项
+  // 6. 超过 14 天无更新的停滞事项
   // ==========================================
-  const sevenDaysAgoISO = sevenDaysAgo.toISOString();
   const { data: allItems } = await supabase
     .from('items')
     .select('id, title, updated_at')
@@ -184,9 +183,10 @@ export async function getInsights(
     .in('status', ['活跃', '推进中']);
 
   let staleItems: { id: string; title: string; last_record_at: string | null }[] = [];
+  const lastRecordMap: { [itemId: string]: string } = {};
+
   if ((allItems ?? []).length > 0) {
     const allItemIds = (allItems ?? []).map((i: { id: string }) => i.id);
-    // 一次查询拿到所有活跃事项的最近记录时间
     const { data: recentRecords } = await supabase
       .from('records')
       .select('item_id, created_at')
@@ -194,20 +194,110 @@ export async function getInsights(
       .in('item_id', allItemIds)
       .order('created_at', { ascending: false });
 
-    // 每个 item 取最新一条
-    const lastRecordMap: { [itemId: string]: string } = {};
     for (const r of (recentRecords ?? [])) {
       if (r.item_id && !lastRecordMap[r.item_id]) {
         lastRecordMap[r.item_id] = r.created_at;
       }
     }
 
+    const fourteenDaysAgoISO = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString();
     for (const item of (allItems ?? [])) {
       const lastRecordAt = lastRecordMap[item.id] ?? null;
-      if (!lastRecordAt || lastRecordAt < sevenDaysAgoISO) {
+      if (!lastRecordAt || lastRecordAt < fourteenDaysAgoISO) {
         staleItems.push({ id: item.id, title: item.title, last_record_at: lastRecordAt });
       }
     }
+  }
+
+  // ==========================================
+  // 画像数据：活跃事项 + 范围内记录数 + 目标完成率
+  // ==========================================
+  type Portrait = {
+    id: string;
+    title: string;
+    record_count: number;
+    completion_rate: number | null;
+    deficit: number | null;
+    last_record_at: string | null;
+  };
+
+  const portraits: Portrait[] = [];
+
+  if ((allItems ?? []).length > 0) {
+    // 范围内各事项记录数
+    const itemRecordCountMap: { [id: string]: number } = {};
+    if (dayIdsInRange.length > 0) {
+      const { data: rangeRecords } = await supabase
+        .from('records')
+        .select('item_id')
+        .eq('user_id', userId)
+        .in('record_day_id', dayIdsInRange)
+        .not('item_id', 'is', null);
+
+      for (const r of (rangeRecords ?? [])) {
+        if (r.item_id) itemRecordCountMap[r.item_id] = (itemRecordCountMap[r.item_id] ?? 0) + 1;
+      }
+    }
+
+    // 各事项的量化目标（进行中）
+    const allItemIds = (allItems ?? []).map((i: { id: string }) => i.id);
+    const { data: goalsForItems } = await supabase
+      .from('goals')
+      .select('item_id, daily_target, metric_name, start_date')
+      .eq('user_id', userId)
+      .eq('status', '进行中')
+      .in('item_id', allItemIds)
+      .not('daily_target', 'is', null);
+
+    // 各事项的历史累计 metric_value（按 metric_name 分组）
+    const { data: metricRecords } = await supabase
+      .from('records')
+      .select('item_id, metric_value, metric_name, occurred_at, created_at')
+      .eq('user_id', userId)
+      .in('item_id', allItemIds)
+      .not('metric_value', 'is', null);
+
+    // 构建 item → goal 映射（取第一个进行中目标）
+    const itemGoalMap: { [itemId: string]: { daily_target: number; metric_name: string | null; start_date: string | null } } = {};
+    for (const g of (goalsForItems ?? [])) {
+      if (g.item_id && !itemGoalMap[g.item_id]) {
+        itemGoalMap[g.item_id] = { daily_target: g.daily_target, metric_name: g.metric_name, start_date: g.start_date };
+      }
+    }
+
+    // 构建 item → total metric_value 映射
+    const itemMetricMap: { [itemId: string]: number } = {};
+    for (const r of (metricRecords ?? [])) {
+      if (r.item_id && r.metric_value != null) {
+        itemMetricMap[r.item_id] = (itemMetricMap[r.item_id] ?? 0) + r.metric_value;
+      }
+    }
+
+    const todayStr = now.toISOString().slice(0, 10);
+
+    for (const item of (allItems ?? [])) {
+      const recordCount = itemRecordCountMap[item.id] ?? 0;
+      const lastRecordAt = lastRecordMap[item.id] ?? null;
+      const goal = itemGoalMap[item.id];
+
+      let completionRate: number | null = null;
+      let deficit: number | null = null;
+
+      if (goal && goal.daily_target > 0 && goal.start_date) {
+        const startMs = new Date(goal.start_date).getTime();
+        const todayMs = new Date(todayStr).getTime();
+        const passedDays = Math.max(1, Math.floor((todayMs - startMs) / (1000 * 60 * 60 * 24)) + 1);
+        const totalExpected = passedDays * goal.daily_target;
+        const totalActual = itemMetricMap[item.id] ?? 0;
+        completionRate = totalExpected > 0 ? totalActual / totalExpected : null;
+        deficit = totalActual - totalExpected;
+      }
+
+      portraits.push({ id: item.id, title: item.title, record_count: recordCount, completion_rate: completionRate, deficit, last_record_at: lastRecordAt });
+    }
+
+    // 按范围内记录数降序
+    portraits.sort((a, b) => b.record_count - a.record_count);
   }
 
   // ==========================================
@@ -330,6 +420,7 @@ export async function getInsights(
       active_count: activeCount ?? 0,
       top_items: topItems,
       stale_items: staleItems,
+      portraits,
     },
     phaseInsights: {
       recentPhases,

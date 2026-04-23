@@ -285,6 +285,15 @@ export interface InsightsData {
     active_count: number;
     top_items: { id: string; title: string; record_count: number }[];
     stale_items: { id: string; title: string; last_record_at: string | null }[];
+    /** 画像卡片数据：活跃事项 + 完成率 */
+    portraits?: {
+      id: string;
+      title: string;
+      record_count: number;
+      completion_rate: number | null;  // null = 无量化目标
+      deficit: number | null;          // 欠债量，null = 无目标
+      last_record_at: string | null;
+    }[];
   };
   phaseInsights?: {
     recentPhases: Phase[];

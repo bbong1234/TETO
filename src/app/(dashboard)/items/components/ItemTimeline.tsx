@@ -77,35 +77,36 @@ function PhaseChapter({
   onRecordClick: (r: TetoRecord) => void;
   onEditPhase: (p: Phase) => void;
 }) {
-  const [expanded, setExpanded] = useState(isCurrentPhase);
+  // 只有有记录时才默认展开当前阶段；纯描述阶段默认折叠
+  const [expanded, setExpanded] = useState(isCurrentPhase && records.length > 0);
   const range = formatPhaseRange(phase);
   const metricRecords = records.filter(r => r.metric_value != null && r.metric_value !== 0);
   const totalMetric = metricRecords.reduce((s, r) => s + (r.metric_value ?? 0), 0);
   const unit = metricRecords[0]?.metric_unit ?? '';
+  // 纯描述阶段：没有具体记录，只有描述文字
+  const isDescriptionOnly = records.length === 0 && !!phase.description;
 
   return (
     <div className={`mb-3 rounded-2xl overflow-hidden border ${isCurrentPhase ? 'border-indigo-200 shadow-sm' : 'border-slate-200/60'}`}>
       {/* 章节头 */}
       <div
-        className={`flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none ${
+        className={`flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none group ${
           isCurrentPhase ? 'bg-indigo-50/80' : 'bg-slate-50/60 hover:bg-slate-100/60'
         } transition-colors`}
-        onClick={() => setExpanded(e => !e)}
+        onClick={() => !isDescriptionOnly && setExpanded(e => !e)}
       >
-        <span className={`shrink-0 ${isCurrentPhase ? 'text-indigo-400' : 'text-slate-300'}`}>
-          {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        </span>
+        {/* 色条：替代 status 徽章，用颜色区分当前/历史 */}
+        <div className={`w-1 h-5 rounded-full shrink-0 ${isCurrentPhase ? 'bg-indigo-400' : 'bg-slate-300'}`} />
 
-        {/* 竖线装饰 */}
-        <div className={`w-1 h-4 rounded-full shrink-0 ${isCurrentPhase ? 'bg-indigo-400' : 'bg-slate-300'}`} />
+        {!isDescriptionOnly && (
+          <span className={`shrink-0 ${isCurrentPhase ? 'text-indigo-400' : 'text-slate-300'}`}>
+            {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          </span>
+        )}
 
         <span className={`text-sm font-semibold truncate flex-1 ${isCurrentPhase ? 'text-indigo-800' : 'text-slate-700'}`}>
           {phase.title || '未命名阶段'}
         </span>
-
-        {isCurrentPhase && (
-          <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-600">进行中</span>
-        )}
 
         {range && (
           <span className="shrink-0 text-[11px] text-slate-400">{range}</span>
@@ -117,7 +118,9 @@ function PhaseChapter({
           </span>
         )}
 
-        <span className="shrink-0 text-[11px] text-slate-400">{records.length} 条</span>
+        {!isDescriptionOnly && (
+          <span className="shrink-0 text-[11px] text-slate-400">{records.length} 条</span>
+        )}
 
         <button
           className="shrink-0 p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-white/60 text-slate-400 hover:text-indigo-500 transition-all"
@@ -128,16 +131,19 @@ function PhaseChapter({
         </button>
       </div>
 
-      {/* 记录列表 */}
-      {expanded && (
+      {/* 纯描述阶段：直接显示描述文字，不显示"0条记录" */}
+      {isDescriptionOnly && (
+        <div className="px-4 py-2.5 border-t border-slate-100/60">
+          <p className="text-xs text-slate-500 leading-relaxed">{phase.description}</p>
+        </div>
+      )}
+
+      {/* 有记录的阶段：可展开的记录列表 */}
+      {!isDescriptionOnly && expanded && (
         <div className="px-2 py-1.5 space-y-0.5">
-          {records.length === 0 ? (
-            <p className="text-[11px] text-slate-300 px-3 py-2">暂无记录</p>
-          ) : (
-            records.map(r => (
-              <RecordRow key={r.id} record={r} onClick={() => onRecordClick(r)} />
-            ))
-          )}
+          {records.map(r => (
+            <RecordRow key={r.id} record={r} onClick={() => onRecordClick(r)} />
+          ))}
         </div>
       )}
     </div>
@@ -151,11 +157,14 @@ export default function ItemTimeline({
   onRecordClick,
   onEditPhase,
 }: ItemTimelineProps) {
-  // 按 start_date 降序排列阶段（当前阶段优先）
+  // 当前阶段：end_date 为空的阶段视为进行中（不依赖 status 字段）
+  const isCurrentPhase = (p: Phase) => !p.end_date;
+
+  // 按时间降序排列阶段（无 end_date 的排最前）
   const sortedPhases = [...phases].sort((a, b) => {
-    const aIsCurrent = a.status === '进行中' ? 1 : 0;
-    const bIsCurrent = b.status === '进行中' ? 1 : 0;
-    if (aIsCurrent !== bIsCurrent) return bIsCurrent - aIsCurrent;
+    const aCurrent = isCurrentPhase(a) ? 1 : 0;
+    const bCurrent = isCurrentPhase(b) ? 1 : 0;
+    if (aCurrent !== bCurrent) return bCurrent - aCurrent;
     return new Date(b.start_date || b.created_at).getTime() - new Date(a.start_date || a.created_at).getTime();
   });
 
@@ -197,7 +206,7 @@ export default function ItemTimeline({
           key={phase.id}
           phase={phase}
           records={phaseRecordsMap.get(phase.id) ?? []}
-          isCurrentPhase={phase.status === '进行中'}
+          isCurrentPhase={isCurrentPhase(phase)}
           onRecordClick={onRecordClick}
           onEditPhase={onEditPhase}
         />

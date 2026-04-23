@@ -364,27 +364,35 @@ export default function ItemDetailPage() {
           )}
         </section>
 
-        {/* ── 区域二：目标列表 ── */}
+        {/* ── 区域二：量化进度（目标列表 + 仪表盘合并） ── */}
         <section className="glass rounded-3xl shadow-soft-lg p-5 mb-5">
-          <div className="flex items-center gap-2 mb-3">
-            <Target className="h-4 w-4 text-slate-400" />
-            <h2 className="text-sm font-bold text-slate-700">目标</h2>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Target className="h-4 w-4 text-slate-400" />
+              <h2 className="text-sm font-bold text-slate-700">量化进度</h2>
+            </div>
+            <button
+              onClick={() => { setEditingGoal(null); setShowGoalForm(true); }}
+              className="text-[11px] text-slate-400 hover:text-purple-500 transition-colors flex items-center gap-1"
+            >
+              <Plus className="h-3 w-3" />设置目标
+            </button>
           </div>
-          <ItemGoalSection
-            itemId={itemId}
-            goals={item.goals || []}
-            phases={phases.map(p => ({ id: p.id, title: p.title }))}
-            onGoalChanged={fetchItem}
-            onError={showError}
-          />
-        </section>
-
-        {/* ── 区域三：量化仪表盘 ── */}
-        <section className="glass rounded-3xl shadow-soft-lg p-5 mb-5">
           <GoalEngineDashboard itemId={itemId} onAddGoal={() => { setEditingGoal(null); setShowGoalForm(true); }} />
+          {(item.goals || []).length > 0 && (
+            <div className="mt-3 pt-3 border-t border-slate-100/60">
+              <ItemGoalSection
+                itemId={itemId}
+                goals={item.goals || []}
+                phases={phases.map(p => ({ id: p.id, title: p.title }))}
+                onGoalChanged={fetchItem}
+                onError={showError}
+              />
+            </div>
+          )}
         </section>
 
-        {/* ── 区域四：章节时间线 ── */}
+        {/* ── 区域三：章节时间线 ── */}
         <section className="glass rounded-3xl shadow-soft-lg p-5">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">

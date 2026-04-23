@@ -3,6 +3,7 @@ import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { createRecord, listRecords } from '@/lib/db/records';
 import { createClient } from '@/lib/supabase/server';
 import type { RecordsQuery, CreateRecordPayload } from '@/types/teto';
+import { enhanceRecord } from '@/lib/ai/enhance-record';
 
 export async function GET(request: NextRequest) {
   try {
@@ -74,6 +75,12 @@ export async function POST(request: NextRequest) {
     }
 
     const record = await createRecord(userId, body);
+
+    // 异步 AI 增强：仅在没有手动指定 item_id 时触发
+    if (!body.item_id) {
+      enhanceRecord(userId, record.id, body.content, body.date).catch(() => {});
+    }
+
     return NextResponse.json({ data: record }, { status: 201 });
   } catch (error: any) {
     const message = error.message || '服务器错误';
