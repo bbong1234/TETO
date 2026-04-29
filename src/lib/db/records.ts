@@ -6,6 +6,8 @@ import { attachTagsToRecord, replaceRecordTags } from './tags';
 /**
  * 创建记录
  * - 自动 upsert 记录日
+ * - 如果有 time_anchor_date 且与 date 不同，用 time_anchor_date 决定 record_day_id
+ *   （确保"昨天背了50个单词"这类记录挂在昨天的 record_day 下）
  * - 如果有 tag_ids，创建后关联标签
  */
 export async function createRecord(
@@ -14,8 +16,9 @@ export async function createRecord(
 ): Promise<Record> {
   const supabase = await createClient();
 
-  // 确保记录日存在
-  const recordDay = await getOrCreateRecordDay(userId, payload.date);
+  // 确定记录归属日期：优先使用 time_anchor_date（语义解析出的真实日期），否则用 date
+  const recordDate = payload.time_anchor_date || payload.date;
+  const recordDay = await getOrCreateRecordDay(userId, recordDate);
 
   const { tag_ids, date, ...recordData } = payload;
 
@@ -38,16 +41,27 @@ export async function createRecord(
 
   // 关联标签
   if (tag_ids && tag_ids.length > 0) {
-    await attachTagsToRecord(userId, data.id, tag_ids);
+    try {
+      await attachTagsToRecord(userId, data.id, tag_ids);
+    } catch {
+      // 标签附加失败时不回滚记录，避免客户端重试产生重复记录
+      // 客户端可通过 PUT 重新设置标签
+    }
   }
 
   // 重新获取带关联的数据
-  return (await getRecordById(userId, data.id))!;
+  try {
+    return (await getRecordById(userId, data.id))!;
+  } catch {
+    // 即使获取完整数据失败，也返回已创建的记录
+    return data as Record;
+  }
 }
 
 /**
  * 更新记录
  * - 如果有 tag_ids，替换标签关联
+ * - 如果 time_anchor_date 被更新，重新归属 record_day_id
  */
 export async function updateRecord(
   userId: string,
@@ -57,6 +71,14 @@ export async function updateRecord(
   const supabase = await createClient();
 
   const { tag_ids, ...recordData } = payload;
+
+  // 如果 time_anchor_date 被更新，重新归属 record_day_id
+  // 确保编辑后记录仍挂在正确的日期下
+  let newRecordDayId: string | undefined;
+  if (recordData.time_anchor_date !== undefined && recordData.time_anchor_date) {
+    const recordDay = await getOrCreateRecordDay(userId, recordData.time_anchor_date);
+    newRecordDayId = recordDay.id;
+  }
 
   // 构建更新对象，只更新有值的字段
   const updateData: { [key: string]: unknown } = {};
@@ -71,6 +93,7 @@ export async function updateRecord(
   if (recordData.item_id !== undefined) updateData.item_id = recordData.item_id;
   if (recordData.phase_id !== undefined) updateData.phase_id = recordData.phase_id;
   if (recordData.goal_id !== undefined) updateData.goal_id = recordData.goal_id;
+  if (recordData.sub_item_id !== undefined) updateData.sub_item_id = recordData.sub_item_id;
   if (recordData.sort_order !== undefined) updateData.sort_order = recordData.sort_order;
   if (recordData.is_starred !== undefined) updateData.is_starred = recordData.is_starred;
   if (recordData.cost !== undefined) updateData.cost = recordData.cost;
@@ -86,6 +109,16 @@ export async function updateRecord(
   if (recordData.people !== undefined) updateData.people = recordData.people;
   if (recordData.batch_id !== undefined) updateData.batch_id = recordData.batch_id;
   if (recordData.lifecycle_status !== undefined) updateData.lifecycle_status = recordData.lifecycle_status;
+  // 规律/历史字段
+  if (recordData.data_nature !== undefined) updateData.data_nature = recordData.data_nature;
+  if (recordData.is_period_rule !== undefined) updateData.is_period_rule = recordData.is_period_rule;
+  if (recordData.period_start_date !== undefined) updateData.period_start_date = recordData.period_start_date;
+  if (recordData.period_end_date !== undefined) updateData.period_end_date = recordData.period_end_date;
+  if (recordData.period_frequency !== undefined) updateData.period_frequency = recordData.period_frequency;
+  if (recordData.period_expanded !== undefined) updateData.period_expanded = recordData.period_expanded;
+  if (recordData.period_source_id !== undefined) updateData.period_source_id = recordData.period_source_id;
+  // 如果 time_anchor_date 更新导致 record_day 需要重新归属，一并更新
+  if (newRecordDayId) updateData.record_day_id = newRecordDayId;
 
   const { error } = await supabase
     .from('records')
@@ -199,8 +232,9 @@ export async function listRecords(
 
     if (dayData && dayData.length > 0) {
       const dayIds = dayData.map((d: { id: string }) => d.id);
-      // 同时包含: 该日的正常记录 OR 投影到该日的计划记录（time_anchor_date 匹配）
-      q = q.or(`record_day_id.in.(${dayIds.join(',')}),and(type.eq.计划,time_anchor_date.eq.${query.date})`);
+      // 使用 PostgREST 过滤语法，确保值安全转义
+      const escapedDate = escapeOrValue(query.date);
+      q = q.or(`record_day_id.in.(${dayIds.join(',')}),and(type.eq.计划,time_anchor_date.eq.${escapedDate})`);
     } else {
       // 没有当日记录日，但可能有投影的计划
       q = q.eq('type', '计划').eq('time_anchor_date', query.date);
@@ -229,11 +263,13 @@ export async function listRecords(
     }
     // 计划投影：type=计划 且 time_anchor_date 在范围内
     if (query.date_from && query.date_to) {
-      orParts.push(`and(type.eq.计划,time_anchor_date.gte.${query.date_from},time_anchor_date.lte.${query.date_to})`);
+      const from = escapeOrValue(query.date_from);
+      const to = escapeOrValue(query.date_to);
+      orParts.push(`and(type.eq.计划,time_anchor_date.gte.${from},time_anchor_date.lte.${to})`);
     } else if (query.date_from) {
-      orParts.push(`and(type.eq.计划,time_anchor_date.gte.${query.date_from})`);
+      orParts.push(`and(type.eq.计划,time_anchor_date.gte.${escapeOrValue(query.date_from)})`);
     } else if (query.date_to) {
-      orParts.push(`and(type.eq.计划,time_anchor_date.lte.${query.date_to})`);
+      orParts.push(`and(type.eq.计划,time_anchor_date.lte.${escapeOrValue(query.date_to)})`);
     }
 
     if (orParts.length > 0) {
@@ -245,6 +281,9 @@ export async function listRecords(
 
   if (query.item_id) {
     q = q.eq('item_id', query.item_id);
+  }
+  if (query.sub_item_id) {
+    q = q.eq('sub_item_id', query.sub_item_id);
   }
   if (query.type) {
     q = q.eq('type', query.type);
@@ -324,4 +363,9 @@ function enrichRecordWithRelations(
   record.item = (row.item_id ? itemMap.get(row.item_id) ?? null : null);
 
   return record;
+}
+
+/** 转义 PostgREST .or() 过滤值中的特殊字符 */
+function escapeOrValue(value: string): string {
+  return value.replace(/[,()]/g, '\\$&');
 }

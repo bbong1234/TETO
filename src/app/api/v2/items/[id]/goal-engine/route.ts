@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
-import { computeGoalEngineForItem } from '@/lib/db/goal-engine';
+import { computeGoalEngineForItem, computeRepeatGoalEngineForItem } from '@/lib/db/goal-engine';
 import { createClient } from '@/lib/supabase/server';
 
 /**
  * GET /api/v2/items/{id}/goal-engine
- * 返回该事项下所有量化目标的引擎计算结果数组
+ * 返回该事项下所有量化目标和重复型目标的引擎计算结果
  */
 export async function GET(
   request: NextRequest,
@@ -31,8 +31,15 @@ export async function GET(
       return NextResponse.json({ error: '事项不存在或不属于当前用户' }, { status: 404 });
     }
 
-    const results = await computeGoalEngineForItem(userId, itemId);
-    return NextResponse.json({ data: results });
+    const [numericResults, repeatResults] = await Promise.all([
+      computeGoalEngineForItem(userId, itemId),
+      computeRepeatGoalEngineForItem(userId, itemId),
+    ]);
+
+    return NextResponse.json({
+      data: numericResults,
+      repeatGoals: repeatResults,
+    });
   } catch (error: any) {
     const message = error.message || '服务器错误';
     if (message === '请先登录' || message === '获取用户信息失败') {

@@ -80,7 +80,7 @@ export function parseNaturalInput(input: string, items: MatchableItem[] = []): P
   const costPatterns = [
     /[¥￥]\s*(\d+(?:\.\d+)?)/,
     /(\d+(?:\.\d+)?)\s*(?:元|块|块钱|钱|rmb|RMB)/i,
-    /(?:花了|花费|消费|付了|付款|支付)\s*(\d+(?:\.\d+)?)/,
+    /(?:花了|花费|消费|付了|付款|支付)\s*(\d+(?:\.\d+)?)(?![\d分钟小时半])/,
   ];
   for (const pattern of costPatterns) {
     const match = input.match(pattern);
@@ -583,6 +583,8 @@ function buildSemanticFallback(input: string, parsed: ParsedInput): ParsedSemant
     } : null,
     record_link_hint: null,
     item_hint: parsed.suggested_item_name || null,
+    sub_item_hint: null,
+    shared_context: null,
   };
 }
 

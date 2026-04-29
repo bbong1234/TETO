@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { getRecordById, updateRecord, deleteRecord } from '@/lib/db/records';
 import { createClient } from '@/lib/supabase/server';
+import { createUserRule, findMatchingRules } from '@/lib/db/user-rules';
 import type { UpdateRecordPayload } from '@/types/teto';
 
 export async function GET(
@@ -53,6 +54,49 @@ export async function PUT(
       if (!item || item.user_id !== userId) {
         return NextResponse.json({ error: '事项不存在或不属于当前用户' }, { status: 404 });
       }
+    }
+
+    // 被动规则学习：检测用户修正并自动写入规则
+    try {
+      const oldRecord = await getRecordById(userId, id);
+      if (oldRecord) {
+        // 1. item_id 修正学习
+        if (body.item_id && body.item_id !== oldRecord.item_id && oldRecord.raw_input) {
+          const keyword = oldRecord.raw_input.slice(0, 30); // 取原始输入前30字符作为触发模式
+          const existing = await findMatchingRules(userId, keyword);
+          const alreadyHas = existing.some(r => r.rule_type === 'item_mapping' && r.target_id === body.item_id);
+          if (!alreadyHas) {
+            await createUserRule(userId, {
+              rule_type: 'item_mapping',
+              trigger_pattern: keyword,
+              target_id: body.item_id!,
+              target_type: 'item',
+              confidence: 'high',
+              source: 'ai_learned',
+            });
+          }
+        }
+
+        // 2. type 修正学习（记录类型路由）
+        if (body.type && body.type !== oldRecord.type && oldRecord.raw_input) {
+          const keyword = oldRecord.raw_input.slice(0, 30);
+          const existing = await findMatchingRules(userId, keyword);
+          const alreadyHas = existing.some(r => r.rule_type === 'type_routing' && r.trigger_pattern === keyword);
+          if (!alreadyHas) {
+            await createUserRule(userId, {
+              rule_type: 'type_routing',
+              trigger_pattern: keyword,
+              target_id: body.type!,
+              target_type: null,
+              confidence: 'medium',
+              source: 'ai_learned',
+            });
+          }
+        }
+      }
+    } catch (learnErr) {
+      // 规则学习失败不影响主流程
+      console.error('被动规则学习失败:', learnErr);
     }
 
     const record = await updateRecord(userId, id, body);

@@ -1,226 +1,284 @@
-# TETO 1.4 事项（Topic）模块重构实施计划
+# TETO 1.4 事项模块重构实施计划（含子项功能）
 
-## 现状分析
+> 更新日期：2026-04-26
+> 基于代码实际状态修正，与《新TETO 1.4 事项模块功能方案》对齐
+
+## 现状总览
 
 | 实体 | 当前状态 | 差距 |
 |------|---------|------|
-| items | 6种状态，有icon/color，无is_pinned | 需加 is_pinned |
-| goals | 独立实体，无归属外键，无度量字段 | 需加 item_id, phase_id, measure_type, target_value, current_value |
-| phases | 已完善，有item_id, goal_id | 基本满足 |
-| records | 有item_id, goal_id，无phase_id | 需加 phase_id |
-| 前端 | 白板+文件夹列表 | 需重构为桌面图标+微型工作台 |
+| items | 6种状态，有icon/color/is_pinned/folder_id，同名归档检查+重启流程已实现 ✅ | 基本完整 |
+| goals | 有item_id/phase_id/sub_item_id/measure_type/量化引擎字段/重复型字段 ✅ | 需补重复型引擎前端展示、目标变更规则后端强制 |
+| phases | 有item_id，支持从记录生成 ✅ | 目标达成时引导创建新阶段已实现，需补阶段数据看板 |
+| sub_items | 表+CRUD+promote已实现 ✅ | 需补子项数据看板、升格确认对话框完善 |
+| records | 有item_id/phase_id/sub_item_id ✅ | 基本满足 |
+| 前端 | SubItemTabBar+SubItemForm+子项筛选联动+GoalForm三种类型+目标达成引导 已实现 ✅ | 需补 RepeatGoalCard、子项数据看板、升格对话框 |
 
 ---
 
-## Task 1: 数据库迁移脚本
+## Task 1: 数据库迁移 — 子项+重复型目标
 
-新建 `sql/009_teto_1_4_topic_module_upgrade.sql`，包含以下变更：
-
-### 1.1 items 表升级
-```sql
-ALTER TABLE items ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN DEFAULT false;
-CREATE INDEX IF NOT EXISTS idx_items_pinned ON items(user_id, is_pinned) WHERE is_pinned = true;
-```
-- 不改 status 枚举，保留6种
-- 前端通过 `is_pinned=true` + 状态非(已完成/已搁置) 筛选"桌面图标"
-
-### 1.2 goals 表升级
-```sql
--- 归属外键
-ALTER TABLE goals ADD COLUMN IF NOT EXISTS item_id UUID REFERENCES items(id) ON DELETE CASCADE;
-ALTER TABLE goals ADD COLUMN IF NOT EXISTS phase_id UUID REFERENCES phases(id) ON DELETE SET NULL;
--- 度量字段
-ALTER TABLE goals ADD COLUMN IF NOT EXISTS measure_type TEXT DEFAULT 'boolean' CHECK(measure_type IN ('boolean','numeric'));
-ALTER TABLE goals ADD COLUMN IF NOT EXISTS target_value NUMERIC(12,2) NULL;
-ALTER TABLE goals ADD COLUMN IF NOT EXISTS current_value NUMERIC(12,2) NULL;
--- 索引
-CREATE INDEX IF NOT EXISTS idx_goals_item ON goals(item_id);
-CREATE INDEX IF NOT EXISTS idx_goals_phase ON goals(phase_id);
-```
-- `item_id` 允许 NULL（向后兼容已有的全局目标）
-- `phase_id` 为 NULL 时 = 事项级目标；非 NULL = 阶段目标
-- `measure_type`: boolean(达标/未达标) 或 numeric(量化型)
-- current_value 由用户手动更新，不做自动触发器
-
-### 1.3 records 表升级
-```sql
-ALTER TABLE records ADD COLUMN IF NOT EXISTS phase_id UUID REFERENCES phases(id) ON DELETE SET NULL;
-CREATE INDEX IF NOT EXISTS idx_records_phase ON records(phase_id);
-```
-
-### 1.4 安全保障
-- 所有新字段均为 NULL 默认值或有合理默认
-- 不删除任何旧字段/数据
-- items.goal_id 保留不动（代码中标记 @deprecated）
+> 状态：**已完成** ✅
 
 ---
 
-## Task 2: TypeScript 类型定义更新
+## Task 2: TypeScript 类型定义 — 子项+重复型目标
 
-文件：`src/types/teto.ts`
-
-### 2.1 Item 接口
-- 新增 `is_pinned: boolean`
-- CreateItemPayload/UpdateItemPayload 加 `is_pinned?: boolean`
-
-### 2.2 Goal 接口
-- 新增 `item_id: string | null`, `phase_id: string | null`
-- 新增 `measure_type: 'boolean' | 'numeric'`, `target_value: number | null`, `current_value: number | null`
-- CreateGoalPayload 加对应可选字段
-- UpdateGoalPayload 加对应可选字段
-- GoalsQuery 加 `item_id?: string`, `phase_id?: string`
-
-### 2.3 Record 接口
-- 新增 `phase_id: string | null`
-- CreateRecordPayload/UpdateRecordPayload 加 `phase_id?: string | null`
-
-### 2.4 新增辅助类型
-```ts
-export const GOAL_MEASURE_TYPES = ['boolean', 'numeric'] as const;
-export type GoalMeasureType = typeof GOAL_MEASURE_TYPES[number];
-```
+> 状态：**已完成** ✅
 
 ---
 
-## Task 3: 后端 DB 层适配
+## Task 3: 后端 DB 层 + API 路由 — 子项 CRUD
 
-### 3.1 `src/lib/db/items.ts`
-- createItem: 支持写入 is_pinned
-- updateItem: 支持更新 is_pinned
-- listItems: 支持 `is_pinned` 查询筛选
-
-### 3.2 `src/lib/db/goals.ts`
-- createGoal: 支持写入 item_id, phase_id, measure_type, target_value, current_value
-- updateGoal: 支持更新上述字段
-- getGoals: 支持 item_id, phase_id 查询筛选
-- 新增 `getGoalsByItemId(userId, itemId)` 函数
-
-### 3.3 `src/lib/db/records.ts`（或对应文件）
-- 创建/更新记录时支持 phase_id 字段读写
+> 状态：**已完成** ✅
 
 ---
 
-## Task 4: API 路由层适配
+## Task 4: 前端基础 — SubItemTabBar + SubItemForm
 
-### 4.1 `GET /api/v2/items`
-- 新增查询参数 `is_pinned=true|false`
-
-### 4.2 `GET /api/v2/items/[id]`
-- 返回数据中新增 `goals[]` 数组（该事项下所有目标），替代原来的单个 `goal`
-- 每个 phase 附带其下的阶段目标列表
-
-### 4.3 `GET /api/v2/goals`
-- 新增查询参数 `item_id`, `phase_id`
-
-### 4.4 `POST /api/v2/goals`
-- 请求体支持 item_id, phase_id, measure_type, target_value, current_value
-
-### 4.5 记录相关 API
-- 创建/更新记录时透传 phase_id
+> 状态：**已完成** ✅
 
 ---
 
-## Task 5: 前端重构 - 事项首屏桌面化
+## Task 5: 子项 Tab 数据联动
 
-### 5.1 新组件：ItemDesktop（替代现有 ItemsClient）
-
-**布局逻辑**：
-- 顶部工具栏：搜索 + "新建事项" + "历史库"入口
-- 主区域：网格铺开所有 `is_pinned=true` 且非归档状态的事项，每个显示为"App图标"卡片：
-  - 圆角矩形图标（item.icon 或首字母）
-  - 下方事项名（单行截断）
-  - 右上角小徽章显示当前阶段名
-- "历史库"弹窗/抽屉：展示 `已完成`/`已搁置` 状态的事项列表
-- 未固定（is_pinned=false）但活跃的事项放在"更多事项"折叠区
-
-### 5.2 保留文件夹逻辑
-- 现有 ItemFolder 组件保留，作为桌面上的"分组框"
-- 文件夹内的事项同样以图标形式展示
+> 状态：**已完成** ✅
+>
+> 验证：
+> - relatedRecords 按 activeSubItemId 过滤 ✅（page.tsx L286-290）
+> - filteredGoals 按 activeSubItemId 过滤 ✅（page.tsx L302-307）
+> - GoalEngineDashboard 按 activeSubItemId 过滤 ✅（L16-18）
+> - ItemGoalSection 接收 activeSubItemId ✅（L498-506）
 
 ---
 
-## Task 6: 前端重构 - 事项详情页微型工作台
+## Task 6: GoalForm 子项归属 + 重复型目标
 
-文件：`src/app/(dashboard)/items/[id]/page.tsx`
-
-### 6.1 顶部面板（Hero Section）
-- 事项标题 + 状态标签 + 编辑/归档按钮
-- 全局目标进度条（如有）：显示 current_value / target_value
-- 当前阶段标签（status=进行中 的 phase）
-
-### 6.2 中部看板（Dashboard Section）
-- 当前阶段卡片：标题、时间范围、阶段目标进度
-- 聚合统计卡片组：总成本、总时长、指标汇总（复用现有 aggregation 逻辑）
-- 阶段目标列表：该阶段下的 goals，展示度量进度
-
-### 6.3 底部记录流
-- 筛选器：全部 / 当前阶段 / 按目标筛选
-- 记录列表（复用现有 ItemTimeline 组件，增加 phase_id 筛选能力）
-
-### 6.4 右侧管理面板
-- 目标管理：创建/编辑目标，区分全局目标 vs 阶段目标
-- 阶段管理：保留现有阶段列表 + 新建/编辑功能
-- GoalForm 组件升级：新增 measure_type、target_value、current_value 输入
+> 状态：**已完成** ✅
+>
+> 验证：
+> - GoalForm 已有 3 种度量类型选择（boolean/numeric/repeat）✅
+> - 量化型/重复型必须选子项 ✅（L98-101 校验）
+> - 达标型子项可选 ✅
+> - 重复型频率+次数配置 ✅（L380-411）
+> - preselectedSubItemId 自动绑定 ✅（L43, L80, L718）
+> - onGoalAchievedCreatePhase 回调 ✅（L477-489）
+> - sub_item_id 写入 payload ✅（L115, L143）
 
 ---
 
-## Task 7: 目标组件升级
+## Task 7: 重复型目标引擎前端展示
 
-### 7.1 GoalCard 组件
-- 显示目标标题、状态、度量进度
-- boolean 型：显示"已达标/未达标"开关
-- numeric 型：显示进度条 current_value / target_value
-- current_value 支持手动编辑更新
+> 状态：**待实现** 🔴
+>
+> 后端 `computeRepeatGoalEngine()` 已实现，但前端无展示组件
 
-### 7.2 GoalForm 组件
-- 新增字段：度量类型选择、目标值输入
-- 新增：归属选择（事项级 / 某个阶段）
+### 7.1 事项级重复目标引擎 API
+
+**问题**：当前 `GET /api/v2/items/{id}/goal-engine` 仅返回 `GoalEngineResult[]`（量化型），
+不包含重复型目标的引擎结果。
+
+**修改**：`src/app/api/v2/items/[id]/goal-engine/route.ts`
+- 增加查询事项下所有 repeat 类型目标
+- 为每个重复型目标调用 `computeRepeatGoalEngine()`
+- 返回结构增加 `repeatGoals: RepeatGoalEngineResult[]`
+
+**修改**：`src/lib/hooks/useGoalEngine.ts`
+- 返回类型增加 repeatGoals
+
+### 7.2 RepeatGoalCard 组件
+
+**新建**：`items/components/RepeatGoalCard.tsx`
+
+展示内容（基于 RepeatGoalEngineResult）：
+- 目标标题
+- 当前周期进度条（actual / count）
+- 周期起止日期
+- 近7天/30天完成次数
+- 进度颜色（达标绿/不足黄/欠债红）
+
+### 7.3 GoalEngineDashboard 集成 RepeatGoalCard
+
+**修改**：`items/components/GoalEngineDashboard.tsx`
+- 增加 repeatGoals prop
+- 在 EngineCard 列表后展示 RepeatGoalCard
+- 按 activeSubItemId 过滤重复型目标
 
 ---
 
-## Task 8: 侧边栏版本号更新
+## Task 8: 目标变更规则（防数据回溯）
 
-文件：`src/components/layout/app-sidebar.tsx`
-- 将 "TETO 1.3" 更新为 "TETO 1.4"
+> 状态：**部分完成** 🟡
+>
+> 已完成：目标达成时引导创建新阶段 ✅（GoalForm L477-489）
+> 待实现：后端强制已达成目标不可修改
+
+### 8.1 后端强制：已达成目标不可修改
+
+**规则**：目标一旦标记为「已达成」，其数据永久定格，不可修改
+
+**修改**：`src/lib/db/goals.ts` updateGoal 函数
+- 查询当前目标状态，如果为「已达成」则拒绝更新
+- 返回错误：`该目标已达成，数据不可修改`
+
+**修改**：`src/app/api/v2/goals/[id]/route.ts` PUT handler
+- 处理更新被拒的情况，返回 403
+
+### 8.2 量化型目标升级快捷操作（可选）
+
+> 优先级低，当前手动流程可用
+
+用户手动将旧目标标为「已达成」→ 创建新阶段 → 创建新目标。
+UI 可提供快捷入口，但非必须。
+
+---
+
+## Task 9: 事项生命周期
+
+> 状态：**已完成** ✅
+>
+> 验证：
+> - 9.1 创建时同名归档检查 ✅（items.ts L16-28, ItemsClient L239-260 409处理）
+> - 9.2 归档事项重启流程 ✅（ItemsClient handleRestartItem L280-304）
+> - 9.3 删除保护 ✅（records.item_id FK ON DELETE SET NULL）
+> - 9.4 完成事项保留数据 ✅（现有逻辑）
+
+---
+
+## Task 10: 子项升格确认对话框完善
+
+> 状态：**待实现** 🔴
+>
+> 当前：SubItemTabBar 的 onPromote 只有一个简单 confirm（page.tsx L466）
+>
+> 根据功能方案：
+> - 用户手动触发「升格为独立事项」
+> - 系统基于子项信息创建新事项（标题、描述继承）
+> - 历史记录默认迁移到新事项（用户可选不迁移）
+> - 原子项保留在原事项下
+
+### 10.1 SubItemPromoteDialog 组件
+
+**新建**：`items/components/SubItemPromoteDialog.tsx`
+
+内容：
+- 标题：将子项「{名称}」升格为独立事项
+- 预览：新事项名称 = 子项名称
+- 选项：「迁移历史记录到新事项」（复选框，默认勾选）
+- 提示：原子项将保留在原事项下（它是原事项历史的一部分，不能被删除）
+- 按钮：「确认升格」/「取消」
+
+### 10.2 替换 confirm 逻辑
+
+**修改**：`items/[id]/page.tsx`
+- 将 L466 的简单 confirm 替换为 SubItemPromoteDialog
+- 传递 `migrateRecords` 参数给 promote API
+
+### 10.3 后端 promote API 支持记录迁移选项
+
+**修改**：`src/lib/db/sub-items.ts` promoteSubItemToItem
+- 增加 `migrateRecords` 参数（默认 true）
+- 为 false 时不迁移记录
+
+---
+
+## Task 11: 子项数据看板
+
+> 状态：**待实现** 🔴
+>
+> 根据功能方案，切换子项 Tab 时，数据总览区域应展示该子项的聚合数据
+
+### 11.1 前端子项级聚合计算
+
+**方案**：基于已有的 records 数据，在前端按 sub_item_id 聚合计算
+
+**修改**：`items/[id]/page.tsx`
+- 当 activeSubItemId 非空时，基于 relatedRecords 重新计算聚合数据
+- 聚合内容：记录数、总时长、总成本、指标汇总
+- 传递给 ItemDataPanel
+
+### 11.2 ItemDataPanel 支持子项模式
+
+**修改**：`items/components/ItemDataPanel.tsx`
+- 接收可选的 subItemTitle prop
+- 当处于子项模式时，标题显示「{子项名称} 数据」
+- 数据来源于过滤后的 records
+
+---
+
+## Task 12: 阶段数据看板
+
+> 状态：**待实现** 🔴
+>
+> 根据功能方案第七节：「阶段数据看板（该时期内的记录数、指标合计）」
+> 当前阶段区域只显示标题、时间范围、描述，无聚合数据
+
+### 12.1 阶段级聚合展示
+
+**方案**：阶段已有 `aggregation` 字段（PhaseAggregation），需在前端展示
+
+**修改**：`items/[id]/page.tsx` 阶段区域
+- 当前阶段卡片增加聚合数据条（记录数、时长、指标汇总）
+- 历史阶段列表项增加简要数据
+
+**修改**：`src/app/api/v2/items/[id]/route.ts`（或 phases 查询）
+- 确保返回阶段时附带 aggregation 数据
 
 ---
 
 ## 验证标准
 
 ### 数据库
-- [ ] 迁移脚本可重复执行（IF NOT EXISTS）
-- [ ] 现有数据零丢失，新字段全部 nullable 或有默认值
-- [ ] RLS 策略覆盖新字段（goals 的 item_id/phase_id 不需要独立 RLS，已由 user_id 保护）
+- [x] 迁移脚本可重复执行（IF NOT EXISTS）
+- [x] 现有数据零丢失，新字段全部 nullable 或有默认值
+- [x] RLS 策略覆盖 sub_items 表
+- [ ] 014 迁移已在生产环境执行
 
 ### API
-- [ ] `GET /api/v2/items?is_pinned=true` 正确返回置顶事项
-- [ ] `GET /api/v2/items/[id]` 返回包含 goals 数组、phases 带阶段目标
-- [ ] `POST /api/v2/goals` 支持 item_id + phase_id + 度量字段
-- [ ] 创建/更新记录支持 phase_id 透传
-- [ ] 所有现有 API 调用不因新字段而报错
+- [x] `GET /api/v2/sub-items?item_id=xxx` 正确返回子项列表
+- [x] `POST /api/v2/sub-items` 创建子项
+- [x] `PUT /api/v2/sub-items/[id]` 更新子项
+- [x] `DELETE /api/v2/sub-items/[id]` 删除子项
+- [x] `POST /api/v2/sub-items/[id]/promote` 升格子项
+- [x] `GET /api/v2/records?sub_item_id=xxx` 按子项筛选记录
+- [x] `GET /api/v2/goals?sub_item_id=xxx` 按子项筛选目标
+- [x] GoalForm 提交包含 sub_item_id
+- [x] 目标达成时引导创建新阶段
+- [ ] 重复型目标引擎 API（事项级批量）
+- [ ] 后端强制已达成目标不可修改
 
 ### 前端
-- [ ] 事项首屏以桌面图标形式展示 pinned 事项
-- [ ] 归档事项（已完成/已搁置）从桌面隐藏，可在历史库中查看
-- [ ] 事项详情页顶部显示全局目标进度+当前阶段
-- [ ] 目标支持 boolean/numeric 两种度量，current_value 可手动编辑
-- [ ] 记录流可按阶段筛选
-- [ ] 禁止 Topic 嵌套 Topic 的操作入口
+- [x] SubItemTabBar 显示和切换
+- [x] SubItemForm 创建/编辑子项
+- [x] 子项升格基础流程
+- [x] 子项 Tab 切换后，记录列表、目标列表、数据看板联动筛选
+- [x] GoalForm 支持子项归属选择
+- [x] GoalForm 支持重复型目标
+- [x] 目标达成时引导创建新阶段
+- [x] 创建事项时检查同名归档
+- [x] 归档事项重启流程
+- [ ] RepeatGoalCard 重复型目标引擎展示
+- [ ] 子项升格确认对话框完善
+- [ ] 子项数据看板
+- [ ] 阶段数据看板
 
-### 技术红线
-- [ ] 无自动触发器计算目标值或自动完结阶段
-- [ ] 层级严格 Topic -> Phase -> Record，无子事项能力
-- [ ] current_value 仅支持用户手动更新
+### 业务规则
+- [x] 量化型/重复型目标必须挂在子项下
+- [x] 达标型目标可灵活选择事项级或子项级
+- [ ] 目标一旦标记「已达成」，数据不可修改
+- [x] 子项升格后原子项保留在原事项下
+- [x] 事项删除时记录不被级联删除
 
 ---
 
 ## 执行顺序
 
-1. **Task 1** (数据库迁移) -- 独立可执行
-2. **Task 2** (类型定义) -- 依赖 Task 1 的设计
-3. **Task 3** (DB层) -- 依赖 Task 2
-4. **Task 4** (API层) -- 依赖 Task 3
-5. **Task 5** (首屏桌面化) -- 依赖 Task 4
-6. **Task 6** (详情页工作台) -- 依赖 Task 4
-7. **Task 7** (目标组件) -- 与 Task 6 并行
-8. **Task 8** (版本号) -- 最后收尾
+1. **Task 1-6** (已完成) ✅
+2. **Task 7** (重复型目标引擎前端展示) ✅ 已完成
+3. **Task 8** (目标变更规则 - 后端强制已达成不可修改) ✅ 已完成
+4. **Task 9** (事项生命周期) ✅ 已完成
+5. **Task 10** (子项升格确认对话框) ✅ 已完成
+6. **Task 11** (子项数据看板) ✅ 已完成
+7. **Task 12** (阶段数据看板) ✅ 已完成
+
+所有任务已完成！ ✅

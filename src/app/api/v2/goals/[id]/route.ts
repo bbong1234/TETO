@@ -42,6 +42,9 @@ export async function PUT(
     if (message === '请先登录' || message === '获取用户信息失败') {
       return NextResponse.json({ error: message }, { status: 401 });
     }
+    if (message.startsWith('GOAL_ACHIEVED_LOCKED:')) {
+      return NextResponse.json({ error: message.replace('GOAL_ACHIEVED_LOCKED:', '') }, { status: 403 });
+    }
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -6,7 +6,7 @@ import {
   Plus, Loader2, Clock, Layers, FileText,
   FolderPlus, Pin, PinOff, Archive, X, Search, Target, Zap,
   FolderOpen, Briefcase, BookOpen, Dumbbell, Code, Music, Heart, Star,
-  Maximize2, Minimize2,
+  Maximize2, Minimize2, RotateCcw,
 } from 'lucide-react';
 import {
   DndContext, closestCenter, PointerSensor, useSensor, useSensors,
@@ -68,7 +68,7 @@ interface ItemWithStats extends Item {
 }
 
 function getWidgetSize(item: ItemWithStats): WidgetSize {
-  const hasGoal = !!item.goal_id;
+    const hasGoal = (item as any).goals?.length > 0;
   const hasPhase = (item.phase_count ?? 0) > 0;
   const isHeavy = (item.record_count ?? 0) >= 5;
   if (hasGoal && hasPhase) return '2x2';
@@ -236,10 +236,73 @@ export default function ItemsClient() {
       const payload: CreateItemPayload = { title: newTitle.trim() };
       const res = await fetch('/api/v2/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (res.ok) { setNewTitle(''); setShowCreate(false); fetchItems(); }
+      else if (res.status === 409) {
+        const { conflict } = await res.json();
+        if (conflict?.type === 'duplicate_name') {
+          const restart = confirm(`${conflict.message}\n\n点击「确定」在原事项下新建阶段重启\n点击「取消」仍然新建独立事项`);
+          if (restart) {
+            // 在原事项下建新阶段
+            const phaseRes = await fetch('/api/v2/phases', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                item_id: conflict.existing_item_id,
+                title: '重启阶段',
+                description: `从「${conflict.existing_item_title}」重启`,
+                start_date: new Date().toISOString().split('T')[0],
+                status: '进行中',
+              }),
+            });
+            if (phaseRes.ok) {
+              setNewTitle(''); setShowCreate(false); fetchItems();
+              showError('');
+            } else {
+              showError('创建阶段失败');
+            }
+          } else {
+            // 强制新建（加后缀避免冲突）
+            const forcePayload: CreateItemPayload = { title: `${newTitle.trim()}（新）` };
+            const forceRes = await fetch('/api/v2/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(forcePayload) });
+            if (forceRes.ok) { setNewTitle(''); setShowCreate(false); fetchItems(); }
+            else { const e = await forceRes.json(); showError(e.error || '创建事项失败'); }
+          }
+        }
+      }
       else { const e = await res.json(); showError(e.error || '创建事项失败'); }
     } catch { showError('创建事项失败，请重试'); }
     finally { setCreating(false); }
   };
+  const handleRestartItem = async (item: ItemWithStats) => {
+    if (!confirm(`重启事项「${item.title}」？\n将把状态改为“活跃”并创建新阶段。`)) return;
+    try {
+      // 1. 更新事项状态为活跃
+      const res = await fetch(`/api/v2/items/${item.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: '活跃' }),
+      });
+      if (!res.ok) throw new Error('更新状态失败');
+
+      // 2. 创建新阶段
+      const phaseRes = await fetch('/api/v2/phases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          item_id: item.id,
+          title: '重启阶段',
+          description: `从「${item.title}」重启`,
+          start_date: new Date().toISOString().split('T')[0],
+          status: '进行中',
+        }),
+      });
+      if (!phaseRes.ok) throw new Error('创建阶段失败');
+
+      fetchItems();
+    } catch {
+      showError('重启事项失败，请重试');
+    }
+  };
+
   const handleCreateFolder = async () => {
     if (!newFolderName.trim()) return;
     setCreating(true);
@@ -434,21 +497,29 @@ export default function ItemsClient() {
               {archivedItems.length > 0 ? (
                 <div className="space-y-2">
                   {archivedItems.map((item) => (
-                    <Link key={item.id} href={`/items/${item.id}`}
-                      className="flex items-center gap-3 glass rounded-2xl p-3 hover:shadow-soft transition-all">
-                      <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${ICON_GRADIENT[item.status]} flex items-center justify-center shrink-0`}>
-                        {item.icon ? <span className="text-base">{item.icon}</span> : <span className="text-sm font-bold text-white/80">{item.title.charAt(0)}</span>}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <h4 className="text-sm font-medium text-slate-700 truncate">{item.title}</h4>
-                        <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
-                          <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${STATUS_COLORS[item.status]}`}>{item.status}</span>
-                          <span><Layers className="inline h-2.5 w-2.5" /> {item.phase_count || 0}</span>
-                          <span><FileText className="inline h-2.5 w-2.5" /> {item.record_count || 0}</span>
+                    <div key={item.id} className="flex items-center gap-3 glass rounded-2xl p-3 hover:shadow-soft transition-all">
+                      <Link href={`/items/${item.id}`} className="flex items-center gap-3 flex-1 min-w-0">
+                        <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${ICON_GRADIENT[item.status]} flex items-center justify-center shrink-0`}>
+                          {item.icon ? <span className="text-base">{item.icon}</span> : <span className="text-sm font-bold text-white/80">{item.title.charAt(0)}</span>}
                         </div>
-                      </div>
-                      {item.last_active_at && <span className="text-[10px] text-slate-300 shrink-0">{formatRelativeTime(item.last_active_at)}</span>}
-                    </Link>
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-sm font-medium text-slate-700 truncate">{item.title}</h4>
+                          <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
+                            <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${STATUS_COLORS[item.status]}`}>{item.status}</span>
+                            <span><Layers className="inline h-2.5 w-2.5" /> {item.phase_count || 0}</span>
+                            <span><FileText className="inline h-2.5 w-2.5" /> {item.record_count || 0}</span>
+                          </div>
+                        </div>
+                        {item.last_active_at && <span className="text-[10px] text-slate-300 shrink-0">{formatRelativeTime(item.last_active_at)}</span>}
+                      </Link>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleRestartItem(item); }}
+                        className="shrink-0 p-1.5 rounded-lg text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 transition-colors"
+                        title="重启事项"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   ))}
                 </div>
               ) : (
@@ -581,7 +652,7 @@ function WidgetCard({
           </div>
         </div>
       )}
-      {item.goal_id && (
+            {(item as any).goals?.length > 0 && (
         <div className="mb-2 flex items-center gap-2">
           <Target className="h-3.5 w-3.5 text-purple-400 shrink-0" />
           <span className="text-[11px] text-purple-600 font-medium">目标追踪中</span>

@@ -1,0 +1,58 @@
+﻿鈻?Next.js 16.2.0 (Turbopack)
+- Environments: .env.local
+
+  Creating an optimized production build ...
+鉁?Compiled successfully in 2.7s
+  Running TypeScript ...
+  Finished TypeScript in 3.9s ...
+  Collecting page data using 15 workers ...
+  Generating static pages using 15 workers (0/23) ...
+  Generating static pages using 15 workers (5/23) 
+  Generating static pages using 15 workers (11/23) 
+  Generating static pages using 15 workers (17/23) 
+鉁?Generating static pages using 15 workers (23/23) in 250ms
+  Finalizing page optimization ...
+
+Route (app)
+鈹?鈼?/
+鈹?鈼?/_not-found
+鈹?茠 /api/v2/goals
+鈹?茠 /api/v2/goals/[id]
+鈹?茠 /api/v2/goals/[id]/engine
+鈹?茠 /api/v2/insights
+鈹?茠 /api/v2/item-folders
+鈹?茠 /api/v2/item-folders/[id]
+鈹?茠 /api/v2/items
+鈹?茠 /api/v2/items/[id]
+鈹?茠 /api/v2/items/[id]/goal-engine
+鈹?茠 /api/v2/parse
+鈹?茠 /api/v2/phases
+鈹?茠 /api/v2/phases/[id]
+鈹?茠 /api/v2/phases/suggest
+鈹?茠 /api/v2/record-days
+鈹?茠 /api/v2/record-days/[id]
+鈹?茠 /api/v2/record-links
+鈹?茠 /api/v2/records
+鈹?茠 /api/v2/records/[id]
+鈹?茠 /api/v2/records/[id]/cancel
+鈹?茠 /api/v2/records/[id]/complete
+鈹?茠 /api/v2/records/[id]/postpone
+鈹?茠 /api/v2/records/batch-delete
+鈹?茠 /api/v2/records/link
+鈹?茠 /api/v2/sub-items
+鈹?茠 /api/v2/sub-items/[id]
+鈹?茠 /api/v2/sub-items/[id]/promote
+鈹?茠 /api/v2/tags
+鈹?茠 /api/v2/tags/[id]
+鈹?茠 /api/v2/user-rules
+鈹?茠 /auth/callback
+鈹?鈼?/insights
+鈹?鈼?/items
+鈹?茠 /items/[id]
+鈹?鈼?/login
+鈹?鈼?/records
+
+
+鈼? (Static)   prerendered as static content
+茠  (Dynamic)  server-rendered on demand
+

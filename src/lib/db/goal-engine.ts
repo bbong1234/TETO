@@ -1,16 +1,42 @@
 import { createClient } from '@/lib/supabase/server';
-import type { Goal, GoalEngineResult } from '@/types/teto';
+import type { Goal, GoalEngineResult, RepeatGoalEngineResult } from '@/types/teto';
 
 /**
  * 量化目标引擎 — 核心计算函数
  *
  * 数据流：Goal 配置（标尺） + Records 流水（事实） → 碰撞运算 → GoalEngineResult
  *
- * 防串库逻辑：
- *   同一事项下可能有多种维度的记录（如 单词=40个, 听读=30分）。
- *   引擎通过 goal.metric_name 和 goal.unit 精准匹配 records，
- *   确保不同目标的数据池完全隔离。
+ * 防串库逻辑（1.4 升级）：
+ *   优先通过 goal.sub_item_id 过滤记录（精准指向子项行动线），
+ *   metric_name + unit 作为辅助校验（双重匹配防串库）。
+ *   当 sub_item_id 为空时，回退到纯 metric_name 匹配。
  */
+
+// ============================================
+// 辅助：获取事项下所有目标（1.5 新模型：goals.item_id → items.id）
+// ============================================
+
+/**
+ * 获取事项关联的所有目标
+ * 1.5 移除旧模型兼容（items.goal_id 已废弃），仅通过 goals.item_id 查询
+ */
+async function fetchGoalsForItem(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  itemId: string
+): Promise<Goal[]> {
+  const { data, error } = await supabase
+    .from('goals')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('item_id', itemId);
+
+  if (error) {
+    throw new Error(`获取事项目标列表失败: ${error.message}`);
+  }
+
+  return (data || []) as Goal[];
+}
 
 // ============================================
 // 辅助：日期差值计算
@@ -81,23 +107,43 @@ export async function computeGoalEngineForItem(
 ): Promise<GoalEngineResult[]> {
   const supabase = await createClient();
 
-  // 获取事项下所有目标
-  const { data: goals, error } = await supabase
-    .from('goals')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('item_id', itemId)
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    throw new Error(`获取事项目标列表失败: ${error.message}`);
-  }
+  // 获取事项下所有目标（1.5 新模型：goals.item_id）
+  const goals = await fetchGoalsForItem(supabase, userId, itemId);
 
   if (!goals || goals.length === 0) return [];
 
   const results: GoalEngineResult[] = [];
   for (const goal of goals) {
     const result = await computeEngineForGoal(supabase, userId, goal as Goal);
+    if (result) {
+      results.push(result);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * 为事项下所有重复型目标批量计算引擎结果
+ * @param userId 用户ID
+ * @param itemId 事项ID
+ * @returns RepeatGoalEngineResult 数组（仅包含可计算的重复型目标）
+ */
+export async function computeRepeatGoalEngineForItem(
+  userId: string,
+  itemId: string
+): Promise<RepeatGoalEngineResult[]> {
+  const supabase = await createClient();
+
+  // 获取事项下所有重复型目标
+  const allGoals = await fetchGoalsForItem(supabase, userId, itemId);
+  const goals = (allGoals || []).filter((g: any) => g.measure_type === 'repeat');
+
+  if (!goals || goals.length === 0) return [];
+
+  const results: RepeatGoalEngineResult[] = [];
+  for (const goal of goals) {
+    const result = await computeRepeatGoalEngine(userId, goal.id);
     if (result) {
       results.push(result);
     }
@@ -121,33 +167,24 @@ async function computeEngineForGoal(
   if (!goal.item_id) return null;
 
   const today = todayStr();
-  const totalPassedDays = Math.max(1, daysBetween(goal.start_date, today) + 1); // +1 包含起算日当天
-
-  // 构建防串库过滤条件
+  const totalPassedDays = Math.max(1, daysBetween(goal.start_date, today) + 1);
   const matchFilters = buildMetricFilter(goal);
+  const subItemId = goal.sub_item_id || undefined;
 
-  // ── 查询 1: start_date 起全部记录的 metric_value 总和 ──
-  const totalActual = await sumMetricValues(
-    supabase, userId, goal.item_id, matchFilters, goal.start_date
+  // 批量获取所有所需日期的 metric_value：一次 day 查询 + 一次 records 查询
+  const sevenDaysAgo = daysAgoStr(6);
+  const thirtyDaysAgo = daysAgoStr(29);
+
+  const windowedSums = await sumMetricValuesBatched(
+    supabase, userId, goal.item_id, matchFilters, subItemId,
+    goal.start_date, today, sevenDaysAgo, thirtyDaysAgo
   );
 
-  // ── 查询 2: 今日记录的 metric_value 总和 ──
-  const todayActual = await sumMetricValues(
-    supabase, userId, goal.item_id, matchFilters, today, today
-  );
-
-  // ── 查询 3: 近7天日均 ──
-  const sevenDaysAgo = daysAgoStr(6); // 含今天共7天
-  const sum7d = await sumMetricValues(
-    supabase, userId, goal.item_id, matchFilters, sevenDaysAgo, today
-  );
+  const totalActual = windowedSums.total;
+  const todayActual = windowedSums.today;
+  const sum7d = windowedSums.s7d;
+  const sum30d = windowedSums.s30d;
   const avg7d = sum7d / 7;
-
-  // ── 查询 4: 近30天日均 ──
-  const thirtyDaysAgo = daysAgoStr(29); // 含今天共30天
-  const sum30d = await sumMetricValues(
-    supabase, userId, goal.item_id, matchFilters, thirtyDaysAgo, today
-  );
   const avg30d = sum30d / 30;
 
   // ── 计算各项指标 ──
@@ -208,28 +245,114 @@ async function computeEngineForGoal(
 interface MetricFilter {
   metric_name?: string;
   unit?: string;
+  sub_item_id?: string;
 }
 
 /**
- * 从 Goal 的 metric_name 和 unit 构建过滤条件。
- * 优先用 metric_name 精准匹配，unit 作为备选。
+ * 从 Goal 的 sub_item_id、metric_name 和 unit 构建过滤条件。
+ * 优先用 sub_item_id 精准匹配，metric_name + unit 作为辅助校验。
  */
 function buildMetricFilter(goal: Goal): MetricFilter {
   return {
+    sub_item_id: goal.sub_item_id || undefined,
     metric_name: goal.metric_name || undefined,
     unit: goal.unit || undefined,
   };
 }
 
+interface SumResult {
+  total: number;
+  today: number;
+  s7d: number;
+  s30d: number;
+}
+
+const SUM_LIMIT = 50000;
+
 /**
- * 按条件求和 records.metric_value
+ * 批量获取多个时间窗口的 metric_value 总和（合并为 2 次 DB 查询）
  *
- * 防串库核心查询：
- *   records WHERE item_id = ? AND metric_value IS NOT NULL
- *     AND (metric_name = goal.metric_name OR metric_unit = goal.unit)
- *
- * @param dateFrom 起始日期（可选，含当日）
- * @param dateTo   结束日期（可选，含当日）
+ * @param dateTotal 全部累计的起始日期
+ * @param dateToday 今日日期
+ * @param date7d    近7天起始日期
+ * @param date30d   近30天起始日期
+ */
+async function sumMetricValuesBatched(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  itemId: string,
+  filters: MetricFilter,
+  subItemId: string | undefined,
+  dateTotal: string,
+  dateToday: string,
+  date7d: string,
+  date30d: string,
+): Promise<SumResult> {
+  // 一次查询获取所有需要的 record_day IDs（从最早日期到今天）
+  const { data: dayData } = await supabase
+    .from('record_days')
+    .select('id, date')
+    .eq('user_id', userId)
+    .gte('date', dateTotal)
+    .lte('date', dateToday);
+
+  if (!dayData || dayData.length === 0) {
+    return { total: 0, today: 0, s7d: 0, s30d: 0 };
+  }
+
+  const dayMap = new Map(dayData.map((d: { id: string; date: string }) => [d.id, d.date]));
+  const allDayIds = Array.from(dayMap.keys());
+
+  // 一次查询获取所有匹配记录
+  let q = supabase
+    .from('records')
+    .select('metric_value, record_day_id')
+    .eq('user_id', userId)
+    .eq('item_id', itemId)
+    .not('metric_value', 'is', null)
+    .in('record_day_id', allDayIds);
+
+  // 优先按 sub_item_id 过滤
+  if (subItemId) {
+    q = q.eq('sub_item_id', subItemId);
+  }
+  // 辅助校验：metric_name + unit
+  if (filters.metric_name && filters.unit) {
+    q = q.eq('metric_name', filters.metric_name).eq('metric_unit', filters.unit);
+  } else if (filters.metric_name) {
+    q = q.eq('metric_name', filters.metric_name);
+  } else if (filters.unit) {
+    q = q.eq('metric_unit', filters.unit);
+  }
+
+  const { data, error } = await q.limit(SUM_LIMIT);
+
+  if (error) {
+    throw new Error(`查询记录指标失败: ${error.message}`);
+  }
+
+  if (!data || data.length === 0) {
+    return { total: 0, today: 0, s7d: 0, s30d: 0 };
+  }
+
+  // 在 JS 中按窗口分组合并求和
+  let total = 0, today = 0, s7d = 0, s30d = 0;
+  for (const row of (data as Array<{ metric_value: number | null; record_day_id: string }>)) {
+    const val = Number(row.metric_value) || 0;
+    const date = dayMap.get(row.record_day_id);
+    if (!date) { total += val; continue; }
+
+    total += val;
+    if (date === dateToday) today += val;
+    if (date >= date7d) s7d += val;
+    if (date >= date30d) s30d += val;
+  }
+
+  return { total, today, s7d, s30d };
+}
+
+/**
+ * 按条件求和 records.metric_value（保留原函数用于非批量场景）
  */
 async function sumMetricValues(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -239,7 +362,6 @@ async function sumMetricValues(
   dateFrom?: string,
   dateTo?: string,
 ): Promise<number> {
-  // 如果需要按日期过滤，先获取对应的 record_day IDs
   let dayIds: string[] | null = null;
   if (dateFrom || dateTo) {
     let dayQuery = supabase
@@ -255,7 +377,6 @@ async function sumMetricValues(
     dayIds = dayData.map((d: { id: string }) => d.id);
   }
 
-  // 构建主查询
   let q = supabase
     .from('records')
     .select('metric_value')
@@ -263,12 +384,10 @@ async function sumMetricValues(
     .eq('item_id', itemId)
     .not('metric_value', 'is', null);
 
-  // 日期过滤
   if (dayIds) {
     q = q.in('record_day_id', dayIds);
   }
 
-  // 防串库过滤：metric_name 和 metric_unit 同时匹配（AND）
   if (filters.metric_name && filters.unit) {
     q = q.eq('metric_name', filters.metric_name).eq('metric_unit', filters.unit);
   } else if (filters.metric_name) {
@@ -276,9 +395,8 @@ async function sumMetricValues(
   } else if (filters.unit) {
     q = q.eq('metric_unit', filters.unit);
   }
-  // 如果 metric_name 和 unit 都没设置，则不过滤（兜底：统计该事项下所有带数值的记录）
 
-  const { data, error } = await q.limit(10000);
+  const { data, error } = await q.limit(SUM_LIMIT);
 
   if (error) {
     throw new Error(`查询记录指标失败: ${error.message}`);
@@ -286,8 +404,171 @@ async function sumMetricValues(
 
   if (!data || data.length === 0) return 0;
 
-  // 手动求和（Supabase JS SDK 不支持 SUM 聚合）
   return data.reduce((sum: number, row: { metric_value: number | null }) => {
     return sum + (Number(row.metric_value) || 0);
   }, 0);
+}
+
+// ============================================
+// 重复型目标引擎
+// ============================================
+
+/**
+ * 为重复型目标计算引擎结果
+ * 统计当前周期内（日/周/月）的完成次数
+ */
+export async function computeRepeatGoalEngine(
+  userId: string,
+  goalId: string
+): Promise<RepeatGoalEngineResult | null> {
+  const supabase = await createClient();
+
+  // 获取 Goal 配置
+  const { data: goal, error } = await supabase
+    .from('goals')
+    .select('*')
+    .eq('id', goalId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error || !goal) return null;
+
+  const g = goal as Goal;
+  if (g.measure_type !== 'repeat') return null;
+  if (!g.repeat_frequency || !g.repeat_count) return null;
+  if (!g.item_id) return null;
+
+  const today = todayStr();
+
+  // 计算当前周期的起止日期
+  const { periodStart, periodEnd } = computeCurrentPeriod(g.repeat_frequency, today);
+
+  // 查询当前周期内该子项/事项下的记录数
+  const { data: dayData } = await supabase
+    .from('record_days')
+    .select('id')
+    .eq('user_id', userId)
+    .gte('date', periodStart)
+    .lte('date', periodEnd);
+
+  let currentPeriodActual = 0;
+  if (dayData && dayData.length > 0) {
+    const dayIds = dayData.map((d: { id: string }) => d.id);
+    let q = supabase
+      .from('records')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('item_id', g.item_id)
+      .in('record_day_id', dayIds);
+
+    // 按子项过滤
+    if (g.sub_item_id) {
+      q = q.eq('sub_item_id', g.sub_item_id);
+    }
+
+    const { count } = await q;
+    currentPeriodActual = count || 0;
+  }
+
+  // 查询近7天/30天的记录数
+  const sevenDaysAgo = daysAgoStr(6);
+  const thirtyDaysAgo = daysAgoStr(29);
+
+  let count7d = 0;
+  let count30d = 0;
+
+  const { data: dayData7d } = await supabase
+    .from('record_days')
+    .select('id')
+    .eq('user_id', userId)
+    .gte('date', sevenDaysAgo)
+    .lte('date', today);
+
+  if (dayData7d && dayData7d.length > 0) {
+    const dayIds = dayData7d.map((d: { id: string }) => d.id);
+    let q = supabase
+      .from('records')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('item_id', g.item_id)
+      .in('record_day_id', dayIds);
+    if (g.sub_item_id) q = q.eq('sub_item_id', g.sub_item_id);
+    const { count } = await q;
+    count7d = count || 0;
+  }
+
+  const { data: dayData30d } = await supabase
+    .from('record_days')
+    .select('id')
+    .eq('user_id', userId)
+    .gte('date', thirtyDaysAgo)
+    .lte('date', today);
+
+  if (dayData30d && dayData30d.length > 0) {
+    const dayIds = dayData30d.map((d: { id: string }) => d.id);
+    let q = supabase
+      .from('records')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('item_id', g.item_id)
+      .in('record_day_id', dayIds);
+    if (g.sub_item_id) q = q.eq('sub_item_id', g.sub_item_id);
+    const { count } = await q;
+    count30d = count || 0;
+  }
+
+  const progress = g.repeat_count > 0 ? currentPeriodActual / g.repeat_count : 0;
+
+  return {
+    goal_id: g.id,
+    goal_title: g.title,
+    repeat_frequency: g.repeat_frequency as 'daily' | 'weekly' | 'monthly',
+    repeat_count: g.repeat_count,
+    current_period_start: periodStart,
+    current_period_end: periodEnd,
+    current_period_actual: currentPeriodActual,
+    current_period_progress: Math.min(progress, 1),
+    count_7d: count7d,
+    count_30d: count30d,
+  };
+}
+
+/** 计算当前周期的起止日期 */
+function computeCurrentPeriod(
+  frequency: string,
+  today: string
+): { periodStart: string; periodEnd: string } {
+  const now = new Date(today + 'T00:00:00Z');
+
+  if (frequency === 'daily') {
+    return { periodStart: today, periodEnd: today };
+  }
+
+  if (frequency === 'weekly') {
+    // 本周起止（周一到周日）
+    const day = now.getUTCDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const monday = new Date(now);
+    monday.setUTCDate(now.getUTCDate() + mondayOffset);
+    const sunday = new Date(monday);
+    sunday.setUTCDate(monday.getUTCDate() + 6);
+    return {
+      periodStart: monday.toISOString().slice(0, 10),
+      periodEnd: sunday.toISOString().slice(0, 10),
+    };
+  }
+
+  if (frequency === 'monthly') {
+    const year = now.getUTCFullYear();
+    const month = now.getUTCMonth();
+    const firstDay = new Date(Date.UTC(year, month, 1));
+    const lastDay = new Date(Date.UTC(year, month + 1, 0));
+    return {
+      periodStart: firstDay.toISOString().slice(0, 10),
+      periodEnd: lastDay.toISOString().slice(0, 10),
+    };
+  }
+
+  // 默认按日
+  return { periodStart: today, periodEnd: today };
 }

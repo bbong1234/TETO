@@ -37,17 +37,24 @@ export async function POST(
     }
 
     // 新建一条"发生"记录
-    const now = new Date().toISOString();
+    const now = new Date();
+    const nowISO = now.toISOString();
+    const todayStr = nowISO.split('T')[0];
     const newRecord = await createRecord(userId, {
       content: original.content,
-      date: new Date().toISOString().split('T')[0],
+      date: todayStr,
       type: '发生',
-      occurred_at: now,
+      occurred_at: nowISO,
       item_id: original.item_id || undefined,
+      phase_id: original.phase_id || undefined,
       goal_id: original.goal_id || undefined,
       mood: original.mood || undefined,
       energy: original.energy || undefined,
       duration_minutes: original.duration_minutes ?? undefined,
+      cost: original.cost ?? undefined,
+      metric_value: original.metric_value ?? undefined,
+      metric_unit: original.metric_unit || undefined,
+      metric_name: original.metric_name || undefined,
       location: original.location || undefined,
       people: original.people || undefined,
     });

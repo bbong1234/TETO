@@ -7,12 +7,13 @@ import type { Phase, CreatePhasePayload, UpdatePhasePayload } from '@/types/teto
 interface PhaseFormProps {
   itemId: string;
   phase?: Phase | null;
+  defaultHistorical?: boolean;
   onClose: () => void;
   onSaved: () => void;
   onError: (message: string) => void;
 }
 
-export default function PhaseForm({ itemId, phase, onClose, onSaved, onError }: PhaseFormProps) {
+export default function PhaseForm({ itemId, phase, defaultHistorical, onClose, onSaved, onError }: PhaseFormProps) {
   const isEditMode = !!phase;
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -62,7 +63,7 @@ export default function PhaseForm({ itemId, phase, onClose, onSaved, onError }: 
           start_date: startDate || undefined,
           end_date: endDate || undefined,
           status: '进行中',
-          is_historical: false,
+          is_historical: defaultHistorical ?? false,
         };
         const res = await fetch('/api/v2/phases', {
           method: 'POST',

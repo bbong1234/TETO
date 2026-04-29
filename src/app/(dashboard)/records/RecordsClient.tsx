@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
-import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, CheckSquare, X, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, CheckSquare, X, Trash2, CalendarClock, CheckCircle2 } from 'lucide-react';
 import type { Record, Tag, Item, RecordType } from '@/types/teto';
 import QuickInput from './components/QuickInput';
 import FilterBar from './components/FilterBar';
@@ -299,6 +299,15 @@ export default function RecordsClient() {
     ? records.length
     : singleDayRecords.length;
 
+  // 今日到期计划（类型=计划 + time_anchor_date=今天 + lifecycle_status=active 或 null）
+  const dueTodayPlans = useMemo(() => {
+    return records.filter(r =>
+      r.type === '计划' &&
+      r.time_anchor_date === todayStr &&
+      (!r.lifecycle_status || r.lifecycle_status === 'active')
+    );
+  }, [records, todayStr]);
+
   const handleStarToggle = async (record: Record) => {
     try {
       await fetch(`/api/v2/records/${record.id}`, {
@@ -367,6 +376,75 @@ export default function RecordsClient() {
       }
     } catch {
       showError('推迟操作失败，请重试');
+    }
+  };
+
+  // 取消计划：将计划记录标记为 cancelled，不生成新记录
+  const handleCancel = async (record: Record) => {
+    if (!window.confirm(`确认取消计划：「${record.content}」？\n取消后不会生成任何新记录。`)) return;
+    try {
+      const res = await fetch(`/api/v2/records/${record.id}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        setRefreshKey(k => k + 1);
+      } else {
+        const err = await res.json();
+        showError(err.error || '取消操作失败');
+      }
+    } catch {
+      showError('取消操作失败，请重试');
+    }
+  };
+
+  // 想法→计划：将想法类型记录转为计划类型
+  const handleConvertToPlan = async (record: Record) => {
+    if (!window.confirm(`将「${record.content}」转为计划？`)) return;
+    try {
+      const res = await fetch(`/api/v2/records/${record.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: '计划' }),
+      });
+      if (res.ok) {
+        setRefreshKey(k => k + 1);
+      } else {
+        const err = await res.json();
+        showError(err.error || '转换失败');
+      }
+    } catch {
+      showError('转换失败，请重试');
+    }
+  };
+
+  // 想法→事项：用想法内容创建新事项
+  const handleConvertToItem = async (record: Record) => {
+    const title = window.prompt('新事项名称：', record.content?.slice(0, 30) || '');
+    if (!title?.trim()) return;
+    try {
+      const res = await fetch('/api/v2/items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title.trim() }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        // 将记录关联到新事项
+        if (data.data?.id) {
+          await fetch(`/api/v2/records/${record.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_id: data.data.id }),
+          });
+        }
+        setRefreshKey(k => k + 1);
+      } else {
+        const err = await res.json();
+        showError(err.error || '创建事项失败');
+      }
+    } catch {
+      showError('创建事项失败，请重试');
     }
   };
 
@@ -518,6 +596,38 @@ export default function RecordsClient() {
         {/* 单日模式：快速输入 + 筛选 */}
         {!isMultiDay && (
           <div className="mx-auto max-w-2xl mt-3">
+            {/* 今日到期计划提醒 */}
+            {dueTodayPlans.length > 0 && isOnToday && (
+              <div className="mb-3 rounded-xl bg-blue-50 border border-blue-200 px-3 py-2.5">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <CalendarClock className="h-4 w-4 text-blue-500 shrink-0" />
+                  <span className="text-xs font-semibold text-blue-700">
+                    今日到期计划（{dueTodayPlans.length}）
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {dueTodayPlans.map(plan => (
+                    <div
+                      key={plan.id}
+                      className="flex items-center justify-between rounded-lg bg-white border border-blue-100 px-2.5 py-1.5 cursor-pointer hover:bg-blue-50 transition-colors"
+                      onClick={() => setEditingRecord(plan)}
+                    >
+                      <span className="text-xs text-slate-700 truncate">{plan.content}</span>
+                      <div className="flex items-center gap-1 shrink-0 ml-2">
+                        {plan.item && (
+                          <span className="text-[10px] text-slate-400">{plan.item.title}</span>
+                        )}
+                        <CheckCircle2
+                          className="h-3.5 w-3.5 text-green-500 hover:text-green-700 transition-colors"
+                          onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleComplete(plan); }}
+                          aria-label="完成计划"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <QuickInput
               selectedDate={quickInputDate}
               tags={tags}
@@ -605,6 +715,9 @@ export default function RecordsClient() {
                   onToggleSelect={handleToggleSelect}
                   onComplete={handleComplete}
                   onPostpone={handlePostpone}
+                  onCancel={handleCancel}
+                  onConvertToPlan={handleConvertToPlan}
+                  onConvertToItem={handleConvertToItem}
                 />
               )}
             </div>
@@ -641,6 +754,9 @@ export default function RecordsClient() {
                       onStarToggle={handleStarToggle}
                       onComplete={handleComplete}
                       onPostpone={handlePostpone}
+                      onCancel={handleCancel}
+                      onConvertToPlan={handleConvertToPlan}
+                      onConvertToItem={handleConvertToItem}
                       onError={showError}
                     />
                   </div>

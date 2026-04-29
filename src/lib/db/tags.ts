@@ -106,6 +106,19 @@ export async function attachTagsToRecord(
 
   const supabase = await createClient();
 
+  // 验证所有标签都属于当前用户
+  const { data: ownedTags } = await supabase
+    .from('tags')
+    .select('id')
+    .eq('user_id', userId)
+    .in('id', tagIds);
+
+  const ownedIds = new Set((ownedTags ?? []).map((t: { id: string }) => t.id));
+  const invalidIds = tagIds.filter(id => !ownedIds.has(id));
+  if (invalidIds.length > 0) {
+    throw new Error(`标签不存在或不属于当前用户: ${invalidIds.join(', ')}`);
+  }
+
   const inserts = tagIds.map((tagId) => ({
     user_id: userId,
     record_id: recordId,
@@ -132,7 +145,15 @@ export async function replaceRecordTags(
 ): Promise<void> {
   const supabase = await createClient();
 
-  // 先删除旧的关联
+  // 先获取旧标签（用于失败时恢复）
+  const { data: oldTags } = await supabase
+    .from('record_tags')
+    .select('tag_id')
+    .eq('record_id', recordId)
+    .eq('user_id', userId);
+  const oldTagIds = (oldTags ?? []).map((r: { tag_id: string }) => r.tag_id);
+
+  // 删除旧的关联
   const { error: deleteError } = await supabase
     .from('record_tags')
     .delete()
@@ -143,8 +164,20 @@ export async function replaceRecordTags(
     throw new Error(`替换标签（删除旧标签）失败: ${deleteError.message}`);
   }
 
-  // 再创建新的关联
+  // 创建新的关联
   if (tagIds.length > 0) {
-    await attachTagsToRecord(userId, recordId, tagIds);
+    try {
+      await attachTagsToRecord(userId, recordId, tagIds);
+    } catch (insertError) {
+      // 恢复旧标签关联
+      if (oldTagIds.length > 0) {
+        try {
+          await attachTagsToRecord(userId, recordId, oldTagIds);
+        } catch {
+          // 恢复也失败，但至少旧标签已备份在 oldTagIds 中
+        }
+      }
+      throw insertError;
+    }
   }
 }

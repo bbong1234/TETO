@@ -12,9 +12,11 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get('status');
     const item_id = searchParams.get('item_id');
     const phase_id = searchParams.get('phase_id');
+    const sub_item_id = searchParams.get('sub_item_id');
     if (status) query.status = status as GoalsQuery['status'];
     if (item_id) query.item_id = item_id;
     if (phase_id) query.phase_id = phase_id;
+    if (sub_item_id) query.sub_item_id = sub_item_id;
 
     const result = await getGoals(userId, query);
     return NextResponse.json({ data: result });

@@ -1,5 +1,8 @@
 import { createClient } from '@/lib/supabase/server';
-import type { RecordLink, CreateRecordLinkPayload } from '@/types/teto';
+import type { RecordLink, RecordLinkWithPeer, CreateRecordLinkPayload } from '@/types/teto';
+
+// 重新导出以保持向后兼容
+export type { RecordLinkWithPeer };
 
 /**
  * 创建记录关联
@@ -26,14 +29,6 @@ export async function createRecordLink(
   }
 
   return data;
-}
-
-/** 关联记录（附带对方记录摘要） */
-export interface RecordLinkWithPeer extends RecordLink {
-  peer_id: string;
-  peer_content: string;
-  peer_type: string;
-  peer_occurred_at: string | null;
 }
 
 /**

@@ -26,9 +26,15 @@ interface RecordListProps {
   onComplete?: (record: Record) => void;
   /** 推迟计划 */
   onPostpone?: (record: Record) => void;
+  /** 取消计划 */
+  onCancel?: (record: Record) => void;
+  /** 想法转计划 */
+  onConvertToPlan?: (record: Record) => void;
+  /** 想法转事项 */
+  onConvertToItem?: (record: Record) => void;
 }
 
-export default function RecordList({ records, onRecordClick, onStarToggle, compact, aiPendingIds, selectionMode, selectedIds, onToggleSelect, onComplete, onPostpone }: RecordListProps) {
+export default function RecordList({ records, onRecordClick, onStarToggle, compact, aiPendingIds, selectionMode, selectedIds, onToggleSelect, onComplete, onPostpone, onCancel, onConvertToPlan, onConvertToItem }: RecordListProps) {
   if (records.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-slate-400">
@@ -75,6 +81,9 @@ export default function RecordList({ records, onRecordClick, onStarToggle, compa
                   onToggleSelect={() => onToggleSelect?.(record.id)}
                   onComplete={() => onComplete?.(record)}
                   onPostpone={() => onPostpone?.(record)}
+                  onCancel={() => onCancel?.(record)}
+                  onConvertToPlan={() => onConvertToPlan?.(record)}
+                  onConvertToItem={() => onConvertToItem?.(record)}
                 />
               </div>
             </div>

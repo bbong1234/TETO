@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { getItemById, updateItem, deleteItem } from '@/lib/db/items';
 import { getPhasesByItemId } from '@/lib/db/phases';
-import { getGoalById, getGoalsByItemId } from '@/lib/db/goals';
+import { getGoalsByItemId } from '@/lib/db/goals';
+import { getSubItemsByItemId } from '@/lib/db/sub-items';
+import { listRecords } from '@/lib/db/records';
 import { createClient } from '@/lib/supabase/server';
-import type { UpdateItemPayload, ItemAggregation, PhaseAggregation, Goal } from '@/types/teto';
+import type { UpdateItemPayload, ItemAggregation, PhaseAggregation, Goal, RecordsQuery } from '@/types/teto';
 
 export async function GET(
   _request: NextRequest,
@@ -22,14 +24,11 @@ export async function GET(
     // 获取关联的阶段列表
     const phases = await getPhasesByItemId(userId, id);
 
-    // 获取该事项下的所有目标（1.4 新模型：goals.item_id -> items.id）
+    // 获取该事项下的所有目标（1.5 新模型：goals.item_id -> items.id）
     const goals = await getGoalsByItemId(userId, id);
 
-    // 为了向后兼容，也获取旧模型的单个 goal（items.goal_id，@deprecated）
-    let goal = null;
-    if (item.goal_id) {
-      goal = await getGoalById(userId, item.goal_id);
-    }
+    // 获取该事项下的所有子项
+    const sub_items = await getSubItemsByItemId(userId, id);
 
     // 计算事项级聚合数据
     const aggregation = await computeItemAggregation(userId, id);
@@ -47,7 +46,14 @@ export async function GET(
       })
     );
 
-    return NextResponse.json({ data: { ...item, phases: phasesWithAgg, goal, goals, aggregation } });
+    // 获取关联的记录列表（最近 50 条，按时间倒序）
+    const recordsQuery: RecordsQuery = { item_id: id, limit: 50 };
+    const records = await listRecords(userId, recordsQuery);
+
+    // 获取近30天每日统计数据（供基础数据看板使用）
+    const recentDailyStats = await computeRecentDailyStats(userId, id);
+
+    return NextResponse.json({ data: { ...item, phases: phasesWithAgg, goals, sub_items, aggregation, records, recent_daily_stats: recentDailyStats } });
   } catch (error: any) {
     const message = error.message || '服务器错误';
     if (message === '请先登录' || message === '获取用户信息失败') {
@@ -85,6 +91,7 @@ export async function DELETE(
     const userId = await getCurrentUserId();
     const { id } = await params;
 
+    // deleteItem 已改为软删除（内部处理记录置空），无需在此重复操作
     await deleteItem(userId, id);
     return NextResponse.json({ data: { id } });
   } catch (error: any) {
@@ -140,6 +147,101 @@ async function computeItemAggregation(userId: string, itemId: string): Promise<I
     })),
     record_count: data.length,
   };
+}
+
+/**
+ * 计算近30天每日统计数据（供基础数据看板）
+ * 返回每天的记录数、时长、metric 聚合
+ */
+async function computeRecentDailyStats(
+  userId: string,
+  itemId: string
+): Promise<Array<{
+  date: string;
+  record_count: number;
+  total_duration_minutes: number;
+  total_cost: number;
+  metrics: Array<{ metric_name: string; total_value: number; metric_unit: string }>;
+}>> {
+  const supabase = await createClient();
+
+  // 计算近30天的日期范围
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now);
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const fmtDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+  // 获取日期范围内的 record_days
+  const { data: dayData } = await supabase
+    .from('record_days')
+    .select('id, date')
+    .eq('user_id', userId)
+    .gte('date', fmtDate(thirtyDaysAgo))
+    .lte('date', fmtDate(now));
+
+  if (!dayData || dayData.length === 0) return [];
+
+  const dayMap = new Map(dayData.map((d: { id: string; date: string }) => [d.id, d.date]));
+  const dayIds = [...dayMap.keys()];
+
+  // 获取该事项下这些天的记录
+  const { data, error } = await supabase
+    .from('records')
+    .select('record_day_id, cost, duration_minutes, metric_value, metric_unit, metric_name')
+    .eq('user_id', userId)
+    .eq('item_id', itemId)
+    .in('record_day_id', dayIds);
+
+  if (error || !data || data.length === 0) return [];
+
+  // 按日期聚合
+  const dailyMap = new Map<string, {
+    record_count: number;
+    total_duration_minutes: number;
+    total_cost: number;
+    metrics: Map<string, { total_value: number; metric_unit: string }>;
+  }>();
+
+  for (const row of data) {
+    const date = dayMap.get(row.record_day_id);
+    if (!date) continue;
+
+    if (!dailyMap.has(date)) {
+      dailyMap.set(date, {
+        record_count: 0,
+        total_duration_minutes: 0,
+        total_cost: 0,
+        metrics: new Map(),
+      });
+    }
+
+    const day = dailyMap.get(date)!;
+    day.record_count++;
+    if (row.duration_minutes != null) day.total_duration_minutes += Number(row.duration_minutes);
+    if (row.cost != null) day.total_cost += Number(row.cost);
+    if (row.metric_value != null && row.metric_name) {
+      const existing = day.metrics.get(row.metric_name);
+      if (existing) {
+        existing.total_value += Number(row.metric_value);
+      } else {
+        day.metrics.set(row.metric_name, { total_value: Number(row.metric_value), metric_unit: row.metric_unit || '' });
+      }
+    }
+  }
+
+  return Array.from(dailyMap.entries())
+    .map(([date, day]) => ({
+      date,
+      record_count: day.record_count,
+      total_duration_minutes: day.total_duration_minutes,
+      total_cost: day.total_cost,
+      metrics: Array.from(day.metrics.entries()).map(([name, { total_value, metric_unit }]) => ({
+        metric_name: name,
+        total_value,
+        metric_unit,
+      })),
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 /**

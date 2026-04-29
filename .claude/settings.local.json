@@ -20,7 +20,21 @@
       "Bash(tee /dev/stderr)",
       "Bash(rm tsc_output.txt)",
       "Bash(node_modules/.bin/next lint *)",
-      "Bash(node -e \"const ts = require\\('./node_modules/typescript'\\); const prog = ts.createProgram\\(['src/lib/ai/enhance-record.ts', 'src/app/api/v2/records/route.ts', 'src/lib/db/insights.ts', 'src/app/\\(dashboard\\)/insights/components/ItemPortrait.tsx', 'src/app/\\(dashboard\\)/items/[id]/page.tsx', 'src/app/\\(dashboard\\)/items/components/ItemTimeline.tsx'], {noEmit: true, strict: false, jsx: 1, module: 99, moduleResolution: 100, target: 99, esModuleInterop: true, paths: {'@/*': ['./src/*']}}\\); const diags = ts.getPreEmitDiagnostics\\(prog\\); diags.forEach\\(d => { const f = d.file ? d.file.fileName : ''; const pos = d.file && d.start !== undefined ? d.file.getLineAndCharacterOfPosition\\(d.start\\) : null; console.log\\(f + \\(pos ? ':' + \\(pos.line+1\\) : ''\\) + ' - ' + ts.flattenDiagnosticMessageText\\(d.messageText, '\\\\n'\\)\\); }\\); console.log\\('Total:', diags.length\\);\")"
+      "Bash(node -e \"const ts = require\\('./node_modules/typescript'\\); const prog = ts.createProgram\\(['src/lib/ai/enhance-record.ts', 'src/app/api/v2/records/route.ts', 'src/lib/db/insights.ts', 'src/app/\\(dashboard\\)/insights/components/ItemPortrait.tsx', 'src/app/\\(dashboard\\)/items/[id]/page.tsx', 'src/app/\\(dashboard\\)/items/components/ItemTimeline.tsx'], {noEmit: true, strict: false, jsx: 1, module: 99, moduleResolution: 100, target: 99, esModuleInterop: true, paths: {'@/*': ['./src/*']}}\\); const diags = ts.getPreEmitDiagnostics\\(prog\\); diags.forEach\\(d => { const f = d.file ? d.file.fileName : ''; const pos = d.file && d.start !== undefined ? d.file.getLineAndCharacterOfPosition\\(d.start\\) : null; console.log\\(f + \\(pos ? ':' + \\(pos.line+1\\) : ''\\) + ' - ' + ts.flattenDiagnosticMessageText\\(d.messageText, '\\\\n'\\)\\); }\\); console.log\\('Total:', diags.length\\);\")",
+      "Bash(npm install *)",
+      "Bash(npm prefix *)",
+      "Bash(npm config *)",
+      "Bash(ls *)",
+      "Bash(cd \"D:\\\\\\\\wu\\\\\\\\编程\\\\\\\\TETO软件项目\")",
+      "Bash(dir /b)",
+      "Bash(echo \"TSC failed with exit code $?\")",
+      "Bash(echo \"Exit: $?\")",
+      "Bash(tee /tmp/ts_errors.txt)",
+      "Read(//tmp/**)",
+      "Bash(ls -la ts_errors.txt)",
+      "Bash(wc -c ts_errors.txt)",
+      "Bash(cat ts_errors.txt)",
+      "Bash(echo \"EXIT: $?\")"
     ]
   }
 }

@@ -1,14 +1,15 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import type { GoalEngineResult } from '@/types/teto';
+import type { GoalEngineResult, RepeatGoalEngineResult } from '@/types/teto';
 
 /**
  * 量化目标引擎 Hook
- * 调用 /api/v2/items/{itemId}/goal-engine 获取该事项下所有量化目标的计算结果
+ * 调用 /api/v2/items/{itemId}/goal-engine 获取该事项下所有量化目标和重复型目标的计算结果
  */
 export function useGoalEngine(itemId: string) {
   const [data, setData] = useState<GoalEngineResult[]>([]);
+  const [repeatData, setRepeatData] = useState<RepeatGoalEngineResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,10 +25,12 @@ export function useGoalEngine(itemId: string) {
       }
       const json = await res.json();
       setData(json.data || []);
+      setRepeatData(json.repeatGoals || []);
     } catch (err: any) {
       console.error('量化引擎数据获取失败:', err);
       setError(err.message || '未知错误');
       setData([]);
+      setRepeatData([]);
     } finally {
       setLoading(false);
     }
@@ -37,5 +40,5 @@ export function useGoalEngine(itemId: string) {
     fetchEngine();
   }, [fetchEngine]);
 
-  return { data, loading, error, refetch: fetchEngine };
+  return { data, repeatData, loading, error, refetch: fetchEngine };
 }

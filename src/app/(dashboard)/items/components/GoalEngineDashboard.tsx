@@ -1,15 +1,29 @@
 'use client';
 
-import { Loader2, TrendingDown, TrendingUp, Target, Calendar, BarChart3 } from 'lucide-react';
+import { Loader2, TrendingDown, TrendingUp, Target, Calendar, BarChart3, Repeat } from 'lucide-react';
 import { useGoalEngine } from '@/lib/hooks/useGoalEngine';
-import type { GoalEngineResult } from '@/types/teto';
+import type { GoalEngineResult, RepeatGoalEngineResult } from '@/types/teto';
+import RepeatGoalCard from './RepeatGoalCard';
 
 /**
- * 量化目标引擎仪表盘（亮色主题，匹配事项详情页）
- * 展示事项下所有量化目标的核心指标：差额、完成率、配速等
+ * 目标引擎仪表盘（亮色主题，匹配事项详情页）
+ * 展示事项下所有量化目标 + 重复型目标的核心指标
  */
-export default function GoalEngineDashboard({ itemId, onAddGoal }: { itemId: string; onAddGoal?: () => void }) {
-  const { data, loading, error } = useGoalEngine(itemId);
+export default function GoalEngineDashboard({ itemId, onAddGoal, activeSubItemId, goals }: { itemId: string; onAddGoal?: () => void; activeSubItemId?: string | null; goals?: { id: string; sub_item_id?: string | null; measure_type?: string }[] }) {
+  const { data, repeatData, loading, error } = useGoalEngine(itemId);
+
+  // 按子项筛选引擎数据：只显示量化型目标且属于当前子项的
+  const goalSubItemMap = new Map(goals?.map(g => [g.id, g.sub_item_id]) || []);
+  const filteredData = activeSubItemId
+    ? data.filter(r => goalSubItemMap.get(r.goal_id) === activeSubItemId)
+    : data;
+
+  // 按子项筛选重复型目标
+  const filteredRepeatData = activeSubItemId
+    ? repeatData.filter(r => goalSubItemMap.get(r.goal_id) === activeSubItemId)
+    : repeatData;
+
+  const hasAnyGoals = filteredData.length > 0 || filteredRepeatData.length > 0;
 
   if (loading) {
     return (
@@ -28,16 +42,16 @@ export default function GoalEngineDashboard({ itemId, onAddGoal }: { itemId: str
     );
   }
 
-  if (data.length === 0) {
+  if (!hasAnyGoals) {
     return (
       <div className="space-y-3">
         <h3 className="text-[11px] font-medium text-slate-400 uppercase tracking-wide flex items-center gap-1.5">
           <BarChart3 className="w-3.5 h-3.5" />
-          量化仪表盘
+          目标仪表盘
         </h3>
         <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 p-5 text-center">
           <Target className="w-5 h-5 text-slate-300 mx-auto mb-2" />
-          <p className="text-xs text-slate-400 mb-3">还没有量化目标</p>
+          <p className="text-xs text-slate-400 mb-3">还没有量化或重复型目标</p>
           {onAddGoal && (
             <button
               onClick={onAddGoal}
@@ -54,13 +68,31 @@ export default function GoalEngineDashboard({ itemId, onAddGoal }: { itemId: str
 
   return (
     <div className="space-y-3">
-      <h3 className="text-[11px] font-medium text-slate-400 uppercase tracking-wide flex items-center gap-1.5">
-        <BarChart3 className="w-3.5 h-3.5" />
-        量化仪表盘
-      </h3>
-      {data.map((result) => (
-        <EngineCard key={result.goal_id} result={result} />
-      ))}
+      {/* 量化型仪表盘 */}
+      {filteredData.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-[11px] font-medium text-slate-400 uppercase tracking-wide flex items-center gap-1.5">
+            <BarChart3 className="w-3.5 h-3.5" />
+            量化仪表盘
+          </h3>
+          {filteredData.map((result) => (
+            <EngineCard key={result.goal_id} result={result} />
+          ))}
+        </div>
+      )}
+
+      {/* 重复型仪表盘 */}
+      {filteredRepeatData.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-[11px] font-medium text-slate-400 uppercase tracking-wide flex items-center gap-1.5">
+            <Repeat className="w-3.5 h-3.5" />
+            重复型目标
+          </h3>
+          {filteredRepeatData.map((result) => (
+            <RepeatGoalCard key={result.goal_id} result={result} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -119,7 +151,7 @@ function EngineCard({ result }: { result: GoalEngineResult }) {
         <MetricCell label="今日进度" value={`${formatNumber(today_actual)} / ${formatNumber(daily_target)}`} unit={unit} />
         <MetricCell label="每日平均" value={formatNumber(daily_average, 2)} unit={unit} />
         <MetricCell
-          label="总完成率"
+          label="进度"
           value={`${(completion_rate * 100).toFixed(1)}%`}
           className={rateColor}
         />
@@ -134,11 +166,19 @@ function EngineCard({ result }: { result: GoalEngineResult }) {
 
         <MetricCell label="周预计" value={formatNumber(weekly_projection, 1)} unit={unit} />
         <MetricCell label="月预计" value={formatNumber(monthly_projection, 1)} unit={unit} />
-
-        {remaining_days !== null && (
-          <MetricCell label="剩余天数" value={String(remaining_days)} unit="天" />
-        )}
       </div>
+
+      {/* 预计天数（客观推算） */}
+      {remaining_days !== null && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-100 text-xs">
+          <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <span className="text-slate-500">
+            按当前速度（{formatNumber(avg_30d > 0 ? avg_30d : daily_average, 1)}{unit}/天），预计还需
+            <span className="font-medium text-slate-700 ml-1">{remaining_days} 天</span>
+            达成目标
+          </span>
+        </div>
+      )}
 
       {/* 配速器（可选） */}
       {dynamic_daily_pacer !== null && total_target !== null && (

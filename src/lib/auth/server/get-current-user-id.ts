@@ -1,6 +1,8 @@
 import { createClient } from '@/lib/supabase/server';
 
-const DEV_MODE = process.env.NEXT_PUBLIC_DEV_MODE === 'true';
+// 服务端使用 DEV_MODE（非 NEXT_PUBLIC_），与 server.ts 保持一致
+// 客户端模块 src/lib/auth/get-current-user-id.ts 使用 NEXT_PUBLIC_ 前缀
+const DEV_MODE = process.env.DEV_MODE === 'true';
 const DEV_USER_ID = process.env.NEXT_PUBLIC_DEV_USER_ID || '00000000-0000-0000-0000-000000000001';
 
 export interface CurrentUser {

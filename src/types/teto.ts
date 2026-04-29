@@ -49,6 +49,7 @@ export interface Record {
   item_id: string | null;
   phase_id: string | null;
   goal_id: string | null;
+  sub_item_id: string | null;
   sort_order: number;
   is_starred: boolean;
   cost: number | null;
@@ -64,13 +65,21 @@ export interface Record {
   people?: string[] | null;
   batch_id?: string | null;              // 同源拆分批次 ID
   lifecycle_status?: LifecycleStatus;    // 生命周期状态
+  // 规律/历史字段
+  data_nature?: 'fact' | 'inferred';      // 数据性质：fact=原始事实, inferred=推断条目
+  is_period_rule?: boolean;              // 是否为概括性规律记录
+  period_start_date?: string | null;     // 规律起始日
+  period_end_date?: string | null;       // 规律结束日
+  period_frequency?: 'daily' | 'weekly' | 'monthly' | 'irregular' | null; // 规律频率
+  period_expanded?: boolean;             // 规律是否已展开
+  period_source_id?: string | null;      // 推断条目的来源规律记录ID
   created_at: string;
   updated_at: string;
   // 关联数据（查询时可能附带）
   date?: string;
   tags?: Tag[];
   item?: { id: string; title: string } | null;
-  linked_records?: RecordLink[];         // 微关联记录
+  linked_records?: RecordLinkWithPeer[];
 }
 
 export interface Item {
@@ -84,8 +93,6 @@ export interface Item {
   is_pinned: boolean;
   started_at: string | null;
   ended_at: string | null;
-  /** @deprecated 1.4 中目标通过 goals.item_id 反向关联，此字段将在后续版本移除 */
-  goal_id: string | null;
   folder_id: string | null;
   created_at: string;
   updated_at: string;
@@ -120,6 +127,14 @@ export interface RecordLink {
   created_at: string;
 }
 
+/** 带对方记录摘要的关联（查询时返回） */
+export interface RecordLinkWithPeer extends RecordLink {
+  peer_id: string;
+  peer_content: string;
+  peer_type: string;
+  peer_occurred_at: string | null;
+}
+
 export interface CreateRecordLinkPayload {
   source_id: string;
   target_id: string;
@@ -143,6 +158,7 @@ export interface CreateRecordPayload {
   item_id?: string;
   phase_id?: string | null;
   goal_id?: string;
+  sub_item_id?: string | null;
   sort_order?: number;
   is_starred?: boolean;
   cost?: number | null;
@@ -159,6 +175,14 @@ export interface CreateRecordPayload {
   batch_id?: string | null;
   lifecycle_status?: LifecycleStatus;
   tag_ids?: string[];
+  // 规律/历史字段
+  data_nature?: 'fact' | 'inferred';
+  is_period_rule?: boolean;
+  period_start_date?: string | null;
+  period_end_date?: string | null;
+  period_frequency?: 'daily' | 'weekly' | 'monthly' | 'irregular' | null;
+  period_expanded?: boolean;
+  period_source_id?: string | null;
 }
 
 export interface UpdateRecordPayload {
@@ -173,6 +197,7 @@ export interface UpdateRecordPayload {
   item_id?: string | null;
   phase_id?: string | null;
   goal_id?: string | null;
+  sub_item_id?: string | null;
   sort_order?: number;
   is_starred?: boolean;
   cost?: number | null;
@@ -189,6 +214,14 @@ export interface UpdateRecordPayload {
   batch_id?: string | null;
   lifecycle_status?: LifecycleStatus;
   tag_ids?: string[];
+  // 规律/历史字段
+  data_nature?: 'fact' | 'inferred';
+  is_period_rule?: boolean;
+  period_start_date?: string | null;
+  period_end_date?: string | null;
+  period_frequency?: 'daily' | 'weekly' | 'monthly' | 'irregular' | null;
+  period_expanded?: boolean;
+  period_source_id?: string | null;
 }
 
 export interface CreateItemPayload {
@@ -199,7 +232,6 @@ export interface CreateItemPayload {
   icon?: string;
   is_pinned?: boolean;
   started_at?: string;
-  goal_id?: string;
   folder_id?: string | null;
 }
 
@@ -212,7 +244,6 @@ export interface UpdateItemPayload {
   is_pinned?: boolean;
   started_at?: string;
   ended_at?: string;
-  goal_id?: string | null;
   folder_id?: string | null;
 }
 
@@ -237,6 +268,7 @@ export interface RecordsQuery {
   date_from?: string;
   date_to?: string;
   item_id?: string;
+  sub_item_id?: string;
   type?: RecordType;
   tag_id?: string;
   is_starred?: boolean;
@@ -305,6 +337,89 @@ export interface InsightsData {
     statusDistribution: { status: string; count: number }[];
     goalsWithAssociations: { goal_id: string; goal_title: string; item_count: number; record_count: number }[];
   };
+  // 时间段分布（展示各时段的记录占比，不下结论）
+  time_distribution?: {
+    morning: number;    // 6-12点记录数
+    afternoon: number;  // 12-18点记录数
+    evening: number;    // 18-22点记录数
+    night: number;      // 22-6点记录数
+  };
+  // 各事项时长占比排名（展示分布，不下结论）
+  item_time_ranking?: Array<{
+    item_id: string;
+    item_title: string;
+    total_duration_minutes: number;
+    record_count: number;
+    percentage: number;  // 占总时长的百分比
+  }>;
+  // 非事项区统计（未关联事项的记录）
+  unassigned_stats?: {
+    unassigned_count: number;
+    unassigned_duration_minutes: number;
+    unassigned_cost: number;
+    total_count: number;
+  };
+  // 统计4主轴
+  four_axes?: {
+    // 主轴1：行动vs目标（各事项的记录数+目标进度）
+    action_vs_goal: Array<{
+      item_id: string;
+      item_title: string;
+      record_count: number;
+      total_duration_minutes: number;
+      has_goal: boolean;
+      goal_title: string | null;
+      goal_progress: number | null;  // 0~100 百分比，null=无量化目标
+      deficit: number | null;        // 距目标还差多少
+      deficit_unit: string | null;
+    }>;
+    // 主轴2：时间vs计划（计划类记录的完成率）
+    time_vs_plan: {
+      total_plans: number;
+      completed_plans: number;
+      completion_rate: number;      // 0~100
+      overdue_plans: number;        // 已过期未完成
+    };
+    // 主轴3：投入vs效果（有结果记录的占比）
+    effort_vs_result: {
+      total_records_with_duration: number;
+      total_hours: number;
+      records_with_result: number;
+      result_rate: number;         // 0~100 有结果记录占比
+    };
+    // 主轴4：近期时间分布（已有item_time_ranking，此处为7天摘要）
+    recent_time_summary: {
+      total_hours_7d: number;
+      total_hours_30d: number;
+      change_percent: number | null;  // 近7天vs前7天变化百分比
+      top_item_title: string | null;
+      top_item_hours: number | null;
+    };
+  };
+  // 固定时间对比（本周vs上周/本月vs上月）
+  period_comparison?: {
+    this_week: { record_count: number; total_hours: number; total_cost: number };
+    last_week: { record_count: number; total_hours: number; total_cost: number };
+    this_month: { record_count: number; total_hours: number; total_cost: number };
+    last_month: { record_count: number; total_hours: number; total_cost: number };
+  };
+  // 口径化指标（5大核心指标按事项计算）
+  metrics_by_item?: Array<{
+    item_id: string;
+    item_title: string;
+    activity: number;         // 活跃度 0~100
+    effort: number;           // 投入 0~100（相对于最大值）
+    stagnation_days: number;  // 停滞天数
+    plan_achievement: number; // 计划达成率 0~100
+    effectiveness: number;   // 效果 0~100
+  }>;
+  // 推断数据统计
+  inferred_stats?: {
+    total_records: number;       // 范围内总记录数
+    inferred_count: number;      // 推断记录数
+    fact_count: number;          // 事实记录数
+    inferred_ratio: number;      // 推断占比 0~100
+  };
 }
 
 // ============ 目标与阶段 ============
@@ -318,8 +433,12 @@ export const PHASE_STATUSES = ['进行中', '已结束', '停滞'] as const;
 export type PhaseStatus = typeof PHASE_STATUSES[number];
 
 // 度量类型
-export const GOAL_MEASURE_TYPES = ['boolean', 'numeric'] as const;
+export const GOAL_MEASURE_TYPES = ['boolean', 'numeric', 'repeat'] as const;
 export type GoalMeasureType = typeof GOAL_MEASURE_TYPES[number];
+
+// 重复频率
+export const REPEAT_FREQUENCIES = ['daily', 'weekly', 'monthly'] as const;
+export type RepeatFrequency = typeof REPEAT_FREQUENCIES[number];
 
 // 目标接口
 export interface Goal {
@@ -327,6 +446,7 @@ export interface Goal {
   user_id: string;
   item_id: string | null;
   phase_id: string | null;
+  sub_item_id: string | null;
   title: string;
   description: string | null;
   status: GoalStatus;
@@ -339,6 +459,9 @@ export interface Goal {
   daily_target: number | null;    // 日均期望值（如 110）
   start_date: string | null;      // 起算日（如 '2024-12-23'）
   deadline_date: string | null;   // 截止日（可选，如 '2026-12-31'）
+  // 重复型目标字段
+  repeat_frequency: RepeatFrequency | null;  // 重复频率（daily/weekly/monthly）
+  repeat_count: number | null;               // 每周期完成次数
   created_at: string;
   updated_at: string;
 }
@@ -369,6 +492,7 @@ export interface CreateGoalPayload {
   status?: GoalStatus;
   item_id?: string;
   phase_id?: string | null;
+  sub_item_id?: string | null;
   measure_type?: GoalMeasureType;
   target_value?: number | null;
   current_value?: number | null;
@@ -378,6 +502,9 @@ export interface CreateGoalPayload {
   daily_target?: number | null;
   start_date?: string | null;
   deadline_date?: string | null;
+  // 重复型目标字段
+  repeat_frequency?: RepeatFrequency | null;
+  repeat_count?: number | null;
 }
 
 // 更新目标请求
@@ -387,6 +514,7 @@ export interface UpdateGoalPayload {
   status?: GoalStatus;
   item_id?: string | null;
   phase_id?: string | null;
+  sub_item_id?: string | null;
   measure_type?: GoalMeasureType;
   target_value?: number | null;
   current_value?: number | null;
@@ -396,6 +524,9 @@ export interface UpdateGoalPayload {
   daily_target?: number | null;
   start_date?: string | null;
   deadline_date?: string | null;
+  // 重复型目标字段
+  repeat_frequency?: RepeatFrequency | null;
+  repeat_count?: number | null;
 }
 
 // 创建阶段请求
@@ -426,6 +557,7 @@ export interface GoalsQuery {
   status?: GoalStatus;
   item_id?: string;
   phase_id?: string;
+  sub_item_id?: string;
 }
 
 export interface PhasesQuery {
@@ -471,6 +603,93 @@ export interface ItemAggregation {
   record_count: number;
 }
 
+// ============ 子项 ============
+
+// 子项接口
+export interface SubItem {
+  id: string;
+  user_id: string;
+  item_id: string;
+  title: string;
+  description: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  // 动态附加（查询时计算）
+  record_count?: number;
+  goal_count?: number;
+  last_record_at?: string | null;
+}
+
+// 创建子项请求
+export interface CreateSubItemPayload {
+  item_id: string;
+  title: string;
+  description?: string;
+  sort_order?: number;
+}
+
+// 更新子项请求
+export interface UpdateSubItemPayload {
+  title?: string;
+  description?: string | null;
+  sort_order?: number;
+}
+
+// 子项查询参数
+export interface SubItemsQuery {
+  item_id?: string;
+}
+
+// ============ 用户规则 ============
+
+// 规则类型
+export const RULE_TYPES = ['item_mapping', 'sub_item_mapping', 'type_routing', 'fuzzy_resolution'] as const;
+export type RuleType = typeof RULE_TYPES[number];
+
+// 规则来源
+export const RULE_SOURCES = ['ai_learned', 'user_set', 'system_default'] as const;
+export type RuleSource = typeof RULE_SOURCES[number];
+
+// 规则置信度
+export const RULE_CONFIDENCES = ['high', 'medium', 'low'] as const;
+export type RuleConfidence = typeof RULE_CONFIDENCES[number];
+
+// 用户规则接口
+export interface UserRule {
+  id: string;
+  user_id: string;
+  rule_type: RuleType;
+  trigger_pattern: string;
+  target_id: string | null;
+  target_type: 'item' | 'sub_item' | null;
+  confidence: RuleConfidence;
+  source: RuleSource;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateUserRulePayload {
+  rule_type: RuleType;
+  trigger_pattern: string;
+  target_id?: string | null;
+  target_type?: 'item' | 'sub_item' | null;
+  confidence?: RuleConfidence;
+  source?: RuleSource;
+  is_active?: boolean;
+}
+
+export interface UpdateUserRulePayload {
+  rule_type?: RuleType;
+  trigger_pattern?: string;
+  target_id?: string | null;
+  target_type?: 'item' | 'sub_item' | null;
+  confidence?: RuleConfidence;
+  source?: RuleSource;
+  is_active?: boolean;
+}
+
 // ============ 量化目标引擎输出 ============
 
 export interface GoalEngineResult {
@@ -509,6 +728,22 @@ export interface GoalEngineResult {
   monthly_target: number;          // daily_target × 30
   weekly_projection: number;       // daily_average × 7
   monthly_projection: number;      // daily_average × 30
+}
+
+// 重复型目标引擎输出
+export interface RepeatGoalEngineResult {
+  goal_id: string;
+  goal_title: string;
+  repeat_frequency: RepeatFrequency;
+  repeat_count: number;            // 每周期期望次数
+  // 当前周期
+  current_period_start: string;
+  current_period_end: string;
+  current_period_actual: number;   // 当前周期内完成次数
+  current_period_progress: number; // current_period_actual / repeat_count
+  // 最近7天/30天
+  count_7d: number;
+  count_30d: number;
 }
 
 // 阶段聚合数据（阶段时间范围内的汇总）

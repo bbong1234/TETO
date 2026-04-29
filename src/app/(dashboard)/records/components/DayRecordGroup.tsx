@@ -19,6 +19,9 @@ interface DayRecordGroupProps {
   onStarToggle: (record: Record) => void;
   onComplete?: (record: Record) => void;
   onPostpone?: (record: Record) => void;
+  onCancel?: (record: Record) => void;
+  onConvertToPlan?: (record: Record) => void;
+  onConvertToItem?: (record: Record) => void;
   onError: (message: string) => void;
 }
 
@@ -50,6 +53,9 @@ export default function DayRecordGroup({
   onStarToggle,
   onComplete,
   onPostpone,
+  onCancel,
+  onConvertToPlan,
+  onConvertToItem,
   onError,
 }: DayRecordGroupProps) {
   // 列模式：固定头 + 可滚动记录区 + 底部总结
@@ -86,6 +92,9 @@ export default function DayRecordGroup({
               onToggleSelect={onToggleSelect}
               onComplete={onComplete}
               onPostpone={onPostpone}
+              onCancel={onCancel}
+              onConvertToPlan={onConvertToPlan}
+              onConvertToItem={onConvertToItem}
               compact
             />
           ) : (
@@ -121,6 +130,9 @@ export default function DayRecordGroup({
           onToggleSelect={onToggleSelect}
           onComplete={onComplete}
           onPostpone={onPostpone}
+          onCancel={onCancel}
+          onConvertToPlan={onConvertToPlan}
+          onConvertToItem={onConvertToItem}
         />
       ) : (
         <div className="rounded-xl bg-white/50 p-4 text-center border border-dashed border-slate-200">

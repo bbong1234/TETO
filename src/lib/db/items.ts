@@ -3,12 +3,29 @@ import type { Item, CreateItemPayload, UpdateItemPayload, ItemsQuery, Record as 
 
 /**
  * 创建事项
+ *
+ * 创建前检查是否有同名归档事项：
+ * - 有同名已搁置/已完成事项 → 返回提示信息，让用户选择是否在原事项下建新阶段重启
  */
 export async function createItem(
   userId: string,
   payload: CreateItemPayload
 ): Promise<Item> {
   const supabase = await createClient();
+
+  // 检查同名归档事项
+  const { data: existingItems } = await supabase
+    .from('items')
+    .select('id, title, status')
+    .eq('user_id', userId)
+    .eq('title', payload.title)
+    .in('status', ['已搁置', '已完成']);
+
+  if (existingItems && existingItems.length > 0) {
+    throw new Error(
+      `发现同名归档事项「${payload.title}」，是否在原事项下建新阶段重启？`,
+    );
+  }
 
   const { data, error } = await supabase
     .from('items')
@@ -21,7 +38,7 @@ export async function createItem(
       icon: payload.icon ?? null,
       is_pinned: payload.is_pinned ?? false,
       started_at: payload.started_at ?? null,
-      goal_id: payload.goal_id ?? null,
+      folder_id: payload.folder_id ?? null,
     })
     .select()
     .single();
@@ -52,7 +69,6 @@ export async function updateItem(
   if (payload.is_pinned !== undefined) updateData.is_pinned = payload.is_pinned;
   if (payload.started_at !== undefined) updateData.started_at = payload.started_at;
   if (payload.ended_at !== undefined) updateData.ended_at = payload.ended_at;
-  if (payload.goal_id !== undefined) updateData.goal_id = payload.goal_id;
   if (payload.folder_id !== undefined) updateData.folder_id = payload.folder_id;
 
   const { data, error } = await supabase
@@ -71,14 +87,45 @@ export async function updateItem(
 }
 
 /**
- * 删除事项
+ * 删除事项（软删除：置空关联记录的 item_id，禁止物理删除）
+ *
+ * 操作流程：
+ * 1. 将关联记录的 item_id 置空
+ * 2. 将关联记录的 phase_id 置空
+ * 3. 将关联记录的 sub_item_id 置空
+ * 4. 将关联目标的 sub_item_id 置空
+ * 5. 将事项状态改为 '已搁置'（而非物理删除）
  */
 export async function deleteItem(userId: string, id: string): Promise<void> {
   const supabase = await createClient();
 
+  // 1. 置空关联记录的 item_id、phase_id、sub_item_id
+  const { error: recordsError } = await supabase
+    .from('records')
+    .update({ item_id: null, phase_id: null, sub_item_id: null })
+    .eq('user_id', userId)
+    .eq('item_id', id);
+
+  if (recordsError) {
+    throw new Error(`删除事项 - 置空关联记录失败: ${recordsError.message}`);
+  }
+
+  // 2. 置空关联目标的 sub_item_id（子项级目标）
+  const { error: goalsSubItemError } = await supabase
+    .from('goals')
+    .update({ sub_item_id: null })
+    .eq('user_id', userId)
+    .eq('item_id', id)
+    .not('sub_item_id', 'is', null);
+
+  if (goalsSubItemError) {
+    throw new Error(`删除事项 - 置空关联目标子项失败: ${goalsSubItemError.message}`);
+  }
+
+  // 3. 将事项状态改为 '已搁置'（软删除，不物理删除）
   const { error } = await supabase
     .from('items')
-    .delete()
+    .update({ status: '已搁置' })
     .eq('id', id)
     .eq('user_id', userId);
 
@@ -112,7 +159,7 @@ export async function getItemById(
   // 附带该事项关联的所有记录（按时间倒序）
   const { data: records, error: recordsError } = await supabase
     .from('records')
-    .select('id, content, type, occurred_at, status, result, mood, energy, note, item_id, phase_id, goal_id, sort_order, is_starred, created_at, updated_at, user_id, record_day_id, cost, metric_value, metric_unit, metric_name, duration_minutes')
+    .select('id, content, type, occurred_at, status, result, mood, energy, note, item_id, phase_id, goal_id, sub_item_id, sort_order, is_starred, created_at, updated_at, user_id, record_day_id, cost, metric_value, metric_unit, metric_name, duration_minutes')
     .eq('item_id', id)
     .eq('user_id', userId)
     .order('occurred_at', { ascending: false, nullsFirst: false })
@@ -156,6 +203,10 @@ export async function listItems(
 
   if (query.is_pinned !== undefined) {
     q = q.eq('is_pinned', query.is_pinned);
+  }
+
+  if (query.folder_id !== undefined) {
+    q = q.eq('folder_id', query.folder_id);
   }
 
   const { data, error } = await q.order('created_at', { ascending: false });

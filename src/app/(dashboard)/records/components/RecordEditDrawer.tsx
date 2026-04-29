@@ -1,10 +1,12 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { X, Save, Trash2, DollarSign, Timer, BarChart3, Plus, MapPin, Users, Smile, Zap, Activity, Link2, Search } from 'lucide-react';
-import type { Record, Tag, Item, RecordType, UpdateRecordPayload, RecordLinkType } from '@/types/teto';
+import { X, Save, Trash2, DollarSign, Timer, BarChart3, Plus, MapPin, Users, Smile, Zap, Activity, Link2, Search, RefreshCw, Layers, HelpCircle } from 'lucide-react';
+import type { Record, Tag, Item, RecordType, UpdateRecordPayload, RecordLinkType, SubItem } from '@/types/teto';
+import type { ParsedSemantic } from '@/types/semantic';
 import { RECORD_TYPES } from '@/types/teto';
 import type { RecordLinkWithPeer } from '@/lib/db/record-links';
+import { generateContentSummary } from '@/lib/utils/generate-content-summary';
 
 // ================================
 // 紧凑 Input（统一样式）
@@ -70,6 +72,9 @@ export default function RecordEditDrawer({
     record.tags?.map((t) => t.id) || []
   );
   const [selectedItemId, setSelectedItemId] = useState(record.item_id || '');
+  const [selectedSubItemId, setSelectedSubItemId] = useState(record.sub_item_id || '');
+  const [subItemsForSelectedItem, setSubItemsForSelectedItem] = useState<SubItem[]>([]);
+  const [loadingSubItems, setLoadingSubItems] = useState(false);
   const [occurredAt, setOccurredAt] = useState(() => {
     if (!record.occurred_at) return '';
     const d = new Date(record.occurred_at);
@@ -87,6 +92,11 @@ export default function RecordEditDrawer({
   const [metricUnit, setMetricUnit] = useState(record.metric_unit || '');
   const [durationMinutes, setDurationMinutes] = useState(record.duration_minutes != null ? String(record.duration_minutes) : '');
 
+  // 原始输入编辑
+  const [rawInput, setRawInput] = useState(record.raw_input || '');
+  const [isEditingRawInput, setIsEditingRawInput] = useState(false);
+  const [isReParsing, setIsReParsing] = useState(false);
+
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -96,6 +106,21 @@ export default function RecordEditDrawer({
   const [linkSearchResults, setLinkSearchResults] = useState<{ id: string; content: string; type: string; occurred_at: string | null }[]>([]);
   const [linkSearching, setLinkSearching] = useState(false);
   const [showLinkSearch, setShowLinkSearch] = useState(false);
+
+  // 选事项后，动态拉取该事项的子项列表
+  useEffect(() => {
+    const itemId = selectedItemId;
+    if (!itemId) {
+      setSubItemsForSelectedItem([]);
+      return;
+    }
+    setLoadingSubItems(true);
+    fetch(`/api/v2/sub-items?item_id=${itemId}`)
+      .then(res => res.ok ? res.json() : { data: [] })
+      .then(json => setSubItemsForSelectedItem(json.data || []))
+      .catch(() => setSubItemsForSelectedItem([]))
+      .finally(() => setLoadingSubItems(false));
+  }, [selectedItemId]);
 
   // 加载关联记录
   useEffect(() => {
@@ -170,6 +195,79 @@ export default function RecordEditDrawer({
     );
   };
 
+  // --- 重新 AI 解析原始输入 ---
+  const handleReParse = async () => {
+    if (!rawInput.trim() || isReParsing) return;
+    setIsReParsing(true);
+    try {
+      const date = record.date || new Date().toISOString().split('T')[0];
+      // 获取近期记录作为上下文
+      let recentRecords: Array<{ id: string; content: string; date: string; type: string }> | undefined;
+      try {
+        const now = new Date();
+        const threeDaysAgo = new Date(now);
+        threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+        const fmtDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        const recentRes = await fetch(`/api/v2/records?date_from=${fmtDate(threeDaysAgo)}&date_to=${fmtDate(now)}`);
+        if (recentRes.ok) {
+          const recentJson = await recentRes.json();
+          if (Array.isArray(recentJson.data)) {
+            recentRecords = recentJson.data.map((r: { id: string; content: string; date: string; type: string }) => ({
+              id: r.id, content: r.content, date: r.date, type: r.type,
+            }));
+          }
+        }
+      } catch { /* 获取近期记录失败不影响重解析 */ }
+
+      const parseRes = await fetch('/api/v2/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: rawInput.trim(),
+          date,
+          recent_records: recentRecords,
+          items: items.map(i => ({ id: i.id, title: i.title })),
+        }),
+      });
+      if (!parseRes.ok) { onError('AI 解析失败'); return; }
+      const json = await parseRes.json();
+      if (!json?.data?.parsed?.units?.[0]) { onError('AI 解析返回空结果'); return; }
+
+      const unit = json.data.parsed.units[0] as ParsedSemantic;
+      const typeHint = json.data.type_hints?.[0] as string | undefined;
+
+      // 用 AI 解析结果覆盖所有结构化字段
+      const newContent = generateContentSummary(unit, rawInput);
+      if (newContent) setContent(newContent);
+      if (typeHint && ['发生', '计划', '想法', '总结'].includes(typeHint)) setType(typeHint as RecordType);
+      if (unit.mood) setMood(unit.mood);
+      if (unit.energy) setEnergy(unit.energy);
+      if (unit.location) setLocation(unit.location);
+      if (unit.people && unit.people.length > 0) setPeopleStr(unit.people.join(', '));
+      if (unit.cost != null && unit.cost > 0) setCost(String(unit.cost));
+      if (unit.duration_minutes != null && unit.duration_minutes > 0) setDurationMinutes(String(unit.duration_minutes));
+      if (unit.metric) {
+        if (unit.metric.name) setMetricName(unit.metric.name);
+        if (unit.metric.value != null) setMetricValue(String(unit.metric.value));
+        if (unit.metric.unit) setMetricUnit(unit.metric.unit);
+      }
+      // item_hint 匹配
+      if (unit.item_hint) {
+        const hint = unit.item_hint.toLowerCase();
+        const matched = items.find(i => i.title.toLowerCase() === hint)
+          || items.find(i => i.title.toLowerCase().includes(hint))
+          || items.find(i => hint.includes(i.title.toLowerCase()) && i.title.length >= 2);
+        if (matched) setSelectedItemId(matched.id);
+      }
+
+      setIsEditingRawInput(false);
+    } catch {
+      onError('AI 重新解析失败，请重试');
+    } finally {
+      setIsReParsing(false);
+    }
+  };
+
   // --- 保存 ---
   const handleSave = async () => {
     if (saving) return;
@@ -208,6 +306,18 @@ export default function RecordEditDrawer({
       }
 
       payload.item_id = selectedItemId || null;
+      payload.sub_item_id = selectedSubItemId || null;
+
+      // 如果原始输入被编辑过，也传回 raw_input
+      if (rawInput && rawInput !== record.raw_input) {
+        payload.raw_input = rawInput;
+      }
+
+      // 清除 needs_clarification 标记（用户手动编辑 = 已确认）
+      const ps = record.parsed_semantic as { needs_clarification?: boolean } | null;
+      if (ps?.needs_clarification) {
+        payload.parsed_semantic = { ...ps, needs_clarification: false } as any;
+      }
 
       const res = await fetch(`/api/v2/records/${record.id}`, {
         method: 'PUT',
@@ -280,11 +390,47 @@ export default function RecordEditDrawer({
           {/* ================================ */}
           {/* 区块 1: 核心内容 */}
           {/* ================================ */}
-          {/* 原始输入（只读） */}
-          {record.raw_input && record.raw_input !== record.content && (
+          {/* 原始输入（可编辑 + 重新解析） */}
+          {(rawInput || record.raw_input) && (
             <div className="rounded-lg bg-slate-50 px-3 py-2">
-              <span className="text-[10px] text-slate-400">原始输入</span>
-              <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{record.raw_input}</p>
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-slate-400">原始输入</span>
+                {!isEditingRawInput ? (
+                  <button
+                    onClick={() => setIsEditingRawInput(true)}
+                    className="text-[10px] text-blue-500 hover:text-blue-600"
+                  >
+                    编辑
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={handleReParse}
+                      disabled={isReParsing || !rawInput.trim()}
+                      className="flex items-center gap-0.5 rounded-md bg-indigo-500 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-600 disabled:opacity-50 transition-colors"
+                    >
+                      <RefreshCw className={`h-2.5 w-2.5 ${isReParsing ? 'animate-spin' : ''}`} />
+                      {isReParsing ? '解析中...' : '重新解析'}
+                    </button>
+                    <button
+                      onClick={() => { setRawInput(record.raw_input || ''); setIsEditingRawInput(false); }}
+                      className="text-[10px] text-slate-400 hover:text-slate-600"
+                    >
+                      取消
+                    </button>
+                  </div>
+                )}
+              </div>
+              {isEditingRawInput ? (
+                <textarea
+                  value={rawInput}
+                  onChange={(e) => setRawInput(e.target.value)}
+                  rows={2}
+                  className="w-full rounded-md border border-blue-200 bg-white px-2 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none resize-none"
+                />
+              ) : (
+                <p className="text-xs text-slate-500 leading-relaxed">{rawInput}</p>
+              )}
             </div>
           )}
 
@@ -339,7 +485,10 @@ export default function RecordEditDrawer({
               <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">关联事项</label>
               <select
                 value={selectedItemId}
-                onChange={(e) => setSelectedItemId(e.target.value)}
+                onChange={(e) => {
+                  setSelectedItemId(e.target.value);
+                  setSelectedSubItemId(''); // 事项变化时清空子项
+                }}
                 className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
               >
                 <option value="">不选择</option>
@@ -348,6 +497,45 @@ export default function RecordEditDrawer({
                 ))}
               </select>
             </div>
+
+            {/* 关联子项 — 仅当选中了有子项的事项时显示 */}
+            {selectedItemId && subItemsForSelectedItem.length > 0 && (
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                  关联子项 <span className="font-normal text-slate-400">（可选）</span>
+                </label>
+                {loadingSubItems ? (
+                  <div className="text-[11px] text-slate-400 py-1">加载子项...</div>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      onClick={() => setSelectedSubItemId('')}
+                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                        !selectedSubItemId
+                          ? 'bg-blue-500 text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      不指定子项
+                    </button>
+                    {subItemsForSelectedItem.map(sub => (
+                      <button
+                        key={sub.id}
+                        onClick={() => setSelectedSubItemId(sub.id)}
+                        className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                          selectedSubItemId === sub.id
+                            ? 'bg-blue-500 text-white'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        <Layers className="inline h-2.5 w-2.5 mr-0.5" />
+                        {sub.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 关联记录 */}
             <div>
@@ -431,6 +619,87 @@ export default function RecordEditDrawer({
           {/* ================================ */}
           <div>
             <label className="mb-2 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">结构化详情</label>
+
+            {/* 待确认澄清区域 */}
+            {(() => {
+              const ps = record.parsed_semantic as { needs_clarification?: boolean; clarification_issues?: Array<{ type: string; message: string; reason: string; options?: Array<{ label: string; value: string }>; sharedContext?: { field: string; value: unknown; raw: string } }> } | null;
+              if (!ps?.needs_clarification) return null;
+              const issues = ps.clarification_issues || [];
+              if (issues.length === 0) return null;
+              return (
+                <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 mb-2 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Activity className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                    <span className="text-xs font-semibold text-amber-700">AI 解析存在歧义，请确认</span>
+                  </div>
+                  {issues.map((issue, idx) => (
+                    <div key={idx} className="space-y-1">
+                      <div className="text-[10px] text-amber-600">原因：{issue.reason}</div>
+                      <div className="text-[11px] text-slate-700">{issue.message}</div>
+                      {issue.type === 'shared_duration' && issue.sharedContext && (
+                        <div className="text-[10px] text-amber-500">共享时长：{String(issue.sharedContext.raw)}（请在下方"时长"字段手动补充）</div>
+                      )}
+                      {issue.type === 'sub_item_ambiguous' && issue.options && (
+                        <div className="text-[10px] text-amber-500">请在下方"子项"下拉框中选择正确的子项</div>
+                      )}
+                      {issue.type === 'item_missing' && (
+                        <div className="text-[10px] text-amber-500">请在下方"事项"下拉框中选择关联事项</div>
+                      )}
+                      {issue.type === 'low_confidence' && (
+                        <div className="text-[10px] text-amber-500">请核对下方结构化字段是否正确</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {/* AI 判断理由回显 */}
+            {(() => {
+              const ps = record.parsed_semantic as { reasoning?: string } | null;
+              if (!ps?.reasoning) return null;
+              return (
+                <div className="rounded-xl bg-blue-50 border border-blue-200 px-3 py-2.5 mb-2">
+                  <div className="flex items-start gap-1.5">
+                    <HelpCircle className="h-3.5 w-3.5 text-blue-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="text-[10px] font-medium text-blue-600">AI 判断理由</span>
+                      <p className="text-[11px] text-blue-700 mt-0.5">{ps.reasoning}</p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* AI 低置信度提示 */}
+            {(() => {
+              const ps = record.parsed_semantic;
+              const confidence = ps && typeof ps.confidence === 'number' ? ps.confidence : null;
+              const fieldConf = ps?.field_confidence || {};
+              const guessedFields = Object.entries(fieldConf).filter(([, v]) => v === 'guess').map(([k]) => k);
+              if (confidence !== null && confidence < 0.7) {
+                const labelMap: { [key: string]: string } = {
+                  mood: '心情', energy: '能量', item_hint: '关联事项',
+                  type_hint: '类型', location: '地点', people: '关系人',
+                  record_link_hint: '关联记录',
+                };
+                return (
+                  <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 mb-2">
+                    <p className="text-xs font-medium text-amber-700 mb-1">AI 无法确定以下信息，请手动补充</p>
+                    {guessedFields.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {guessedFields.map(f => (
+                          <span key={f} className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-600">{labelMap[f] || f}</span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-amber-500">解析置信度较低（{Math.round(confidence * 100)}%），请核对结构化字段</p>
+                    )}
+                  </div>
+                );
+              }
+              return null;
+            })()}
             <div className="grid grid-cols-2 gap-2">
               <CompactInput
                 icon={<DollarSign className="h-3 w-3" />}
