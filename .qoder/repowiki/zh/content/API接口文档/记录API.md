@@ -4,6 +4,9 @@
 **本文引用的文件**
 - [src/app/api/v2/records/route.ts](file://src/app/api/v2/records/route.ts)
 - [src/app/api/v2/records/[id]/route.ts](file://src/app/api/v2/records/[id]/route.ts)
+- [src/app/api/v2/records/[id]/cancel/route.ts](file://src/app/api/v2/records/[id]/cancel/route.ts)
+- [src/app/api/v2/records/[id]/complete/route.ts](file://src/app/api/v2/records/[id]/complete/route.ts)
+- [src/app/api/v2/records/[id]/postpone/route.ts](file://src/app/api/v2/records/[id]/postpone/route.ts)
 - [src/app/api/v2/records/batch-delete/route.ts](file://src/app/api/v2/records/batch-delete/route.ts)
 - [src/app/api/v2/records/link/route.ts](file://src/app/api/v2/records/link/route.ts)
 - [src/app/api/v2/record-links/route.ts](file://src/app/api/v2/record-links/route.ts)
@@ -13,6 +16,13 @@
 - [src/lib/auth/server/get-current-user-id.ts](file://src/lib/auth/server/get-current-user-id.ts)
 - [src/app/auth/callback/route.ts](file://src/app/auth/callback/route.ts)
 </cite>
+
+## 更新摘要
+**所做更改**
+- 新增记录取消API端点：/api/v2/records/[id]/cancel
+- 更新记录状态管理功能说明
+- 完善生命周期状态管理文档
+- 增加状态转换对比表格
 
 ## 目录
 1. [简介](#简介)
@@ -27,7 +37,7 @@
 10. [附录](#附录)
 
 ## 简介
-本文件为 TETO 的“记录”RESTful API 文档，覆盖个人日常记录的增删改查、批量删除、记录链接（两种关联模型）等能力。API 采用 Next.js App Router 的 server-side 路由，基于 Supabase 进行认证与数据访问，并通过行级安全策略保障数据隔离。
+本文件为 TETO 的"记录"RESTful API 文档，覆盖个人日常记录的增删改查、批量删除、记录链接（两种关联模型）、记录状态管理等能力。API 采用 Next.js App Router 的 server-side 路由，基于 Supabase 进行认证与数据访问，并通过行级安全策略保障数据隔离。
 
 - 支持的功能
   - 列表查询：日期范围、单日、类型过滤、标签过滤、收藏标记、关键词搜索、限制数量
@@ -36,6 +46,7 @@
   - 删除记录：单条删除
   - 批量删除：仅删除当前用户拥有的记录，自动清理关联
   - 记录链接：微关联（一对一/多对多）与强关联（来源/目标记录）
+  - 状态管理：激活、完成、推迟、取消四种生命周期状态
 
 - 认证与授权
   - 基于 Supabase 的会话认证；开发模式下可通过环境变量绕过登录
@@ -54,6 +65,9 @@
     - GET /api/v2/records/{id}（详情）
     - PUT /api/v2/records/{id}（更新）
     - DELETE /api/v2/records/{id}（删除）
+    - /api/v2/records/[id]/cancel（取消）
+    - /api/v2/records/[id]/complete（完成）
+    - /api/v2/records/[id]/postpone（推迟）
   - /api/v2/records/batch-delete（批量删除）
   - /api/v2/records/link（微关联：设置 linked_record_id）
 - 关联资源：/api/v2/record-links
@@ -70,6 +84,9 @@ subgraph "Next.js 路由层"
 R1["GET /api/v2/records"]
 R2["POST /api/v2/records"]
 RID["GET/PUT/DELETE /api/v2/records/[id]"]
+RC["POST /api/v2/records/[id]/cancel"]
+RCO["POST /api/v2/records/[id]/complete"]
+RPO["POST /api/v2/records/[id]/postpone"]
 RB["POST /api/v2/records/batch-delete"]
 RL["POST /api/v2/records/link"]
 RL2["GET/POST/DELETE /api/v2/record-links"]
@@ -84,12 +101,18 @@ end
 C --> R1
 C --> R2
 C --> RID
+C --> RC
+C --> RCO
+C --> RPO
 C --> RB
 C --> RL
 C --> RL2
 R1 --> AU
 R2 --> AU
 RID --> AU
+RC --> AU
+RCO --> AU
+RPO --> AU
 RB --> AU
 RL --> AU
 RL2 --> AU
@@ -98,16 +121,22 @@ DB --> Q
 ```
 
 **图示来源**
-- [src/app/api/v2/records/route.ts:1-86](file://src/app/api/v2/records/route.ts#L1-L86)
-- [src/app/api/v2/records/[id]/route.ts](file://src/app/api/v2/records/[id]/route.ts#L1-L87)
+- [src/app/api/v2/records/route.ts:1-154](file://src/app/api/v2/records/route.ts#L1-L154)
+- [src/app/api/v2/records/[id]/route.ts:1-131](file://src/app/api/v2/records/[id]/route.ts#L1-L131)
+- [src/app/api/v2/records/[id]/cancel/route.ts:1-53](file://src/app/api/v2/records/[id]/cancel/route.ts#L1-L53)
+- [src/app/api/v2/records/[id]/complete/route.ts:1-81](file://src/app/api/v2/records/[id]/complete/route.ts#L1-L81)
+- [src/app/api/v2/records/[id]/postpone/route.ts:1-79](file://src/app/api/v2/records/[id]/postpone/route.ts#L1-L79)
 - [src/app/api/v2/records/batch-delete/route.ts:1-69](file://src/app/api/v2/records/batch-delete/route.ts#L1-L69)
 - [src/app/api/v2/records/link/route.ts:1-78](file://src/app/api/v2/records/link/route.ts#L1-L78)
 - [src/app/api/v2/record-links/route.ts:1-100](file://src/app/api/v2/record-links/route.ts#L1-L100)
 - [src/lib/auth/server/get-current-user-id.ts:1-85](file://src/lib/auth/server/get-current-user-id.ts#L1-L85)
 
 **章节来源**
-- [src/app/api/v2/records/route.ts:1-86](file://src/app/api/v2/records/route.ts#L1-L86)
-- [src/app/api/v2/records/[id]/route.ts](file://src/app/api/v2/records/[id]/route.ts#L1-L87)
+- [src/app/api/v2/records/route.ts:1-154](file://src/app/api/v2/records/route.ts#L1-L154)
+- [src/app/api/v2/records/[id]/route.ts:1-131](file://src/app/api/v2/records/[id]/route.ts#L1-L131)
+- [src/app/api/v2/records/[id]/cancel/route.ts:1-53](file://src/app/api/v2/records/[id]/cancel/route.ts#L1-L53)
+- [src/app/api/v2/records/[id]/complete/route.ts:1-81](file://src/app/api/v2/records/[id]/complete/route.ts#L1-L81)
+- [src/app/api/v2/records/[id]/postpone/route.ts:1-79](file://src/app/api/v2/records/[id]/postpone/route.ts#L1-L79)
 - [src/app/api/v2/records/batch-delete/route.ts:1-69](file://src/app/api/v2/records/batch-delete/route.ts#L1-L69)
 - [src/app/api/v2/records/link/route.ts:1-78](file://src/app/api/v2/records/link/route.ts#L1-L78)
 - [src/app/api/v2/record-links/route.ts:1-100](file://src/app/api/v2/record-links/route.ts#L1-L100)
@@ -126,12 +155,15 @@ DB --> Q
 - 记录链接
   - 微关联：设置 linked_record_id（一对一/多对多），支持取消
   - 强关联：record_links 表，支持来源/目标与多种 link_type
+- 状态管理
+  - 生命周期状态：active、completed、postponed、cancelled
+  - 支持取消、完成、推迟三种状态转换操作
 
 **章节来源**
 - [src/lib/auth/server/get-current-user-id.ts:1-85](file://src/lib/auth/server/get-current-user-id.ts#L1-L85)
-- [src/lib/db/records.ts:1-328](file://src/lib/db/records.ts#L1-L328)
+- [src/lib/db/records.ts:1-372](file://src/lib/db/records.ts#L1-L372)
 - [src/lib/db/record-links.ts:1-101](file://src/lib/db/record-links.ts#L1-L101)
-- [src/types/teto.ts:1-516](file://src/types/teto.ts#L1-L516)
+- [src/types/teto.ts:18-83](file://src/types/teto.ts#L18-L83)
 
 ## 架构总览
 记录 API 的调用链路如下：
@@ -155,8 +187,8 @@ end
 ```
 
 **图示来源**
-- [src/app/api/v2/records/route.ts:7-42](file://src/app/api/v2/records/route.ts#L7-L42)
-- [src/app/api/v2/records/[id]/route.ts](file://src/app/api/v2/records/[id]/route.ts#L7-L28)
+- [src/app/api/v2/records/route.ts:72-109](file://src/app/api/v2/records/route.ts#L72-L109)
+- [src/app/api/v2/records/[id]/route.ts:8-29](file://src/app/api/v2/records/[id]/route.ts#L8-L29)
 - [src/lib/auth/server/get-current-user-id.ts:12-37](file://src/lib/auth/server/get-current-user-id.ts#L12-L37)
 
 ## 详细组件分析
@@ -164,7 +196,7 @@ end
 ### 记录列表查询（GET /api/v2/records）
 - 功能要点
   - 支持按单日、日期范围、类型、标签、收藏、关键词搜索、限制数量
-  - 计划类记录支持“时间锚点投影”到指定日期范围
+  - 计划类记录支持"时间锚点投影"到指定日期范围
   - 返回记录附带标签与所属项目信息
 - 查询参数
   - date: 单日过滤（含计划投影）
@@ -193,11 +225,11 @@ Return --> End(["结束"])
 ```
 
 **图示来源**
-- [src/app/api/v2/records/route.ts:7-42](file://src/app/api/v2/records/route.ts#L7-L42)
+- [src/app/api/v2/records/route.ts:72-109](file://src/app/api/v2/records/route.ts#L72-L109)
 - [src/lib/db/records.ts:176-300](file://src/lib/db/records.ts#L176-L300)
 
 **章节来源**
-- [src/app/api/v2/records/route.ts:7-42](file://src/app/api/v2/records/route.ts#L7-L42)
+- [src/app/api/v2/records/route.ts:72-109](file://src/app/api/v2/records/route.ts#L72-L109)
 - [src/lib/db/records.ts:176-300](file://src/lib/db/records.ts#L176-L300)
 - [src/types/teto.ts:235-245](file://src/types/teto.ts#L235-L245)
 
@@ -237,13 +269,13 @@ end
 ```
 
 **图示来源**
-- [src/app/api/v2/records/route.ts:44-85](file://src/app/api/v2/records/route.ts#L44-L85)
-- [src/lib/db/records.ts:11-46](file://src/lib/db/records.ts#L11-L46)
+- [src/app/api/v2/records/route.ts:111-153](file://src/app/api/v2/records/route.ts#L111-L153)
+- [src/lib/db/records.ts:11-59](file://src/lib/db/records.ts#L11-L59)
 
 **章节来源**
-- [src/app/api/v2/records/route.ts:44-85](file://src/app/api/v2/records/route.ts#L44-L85)
-- [src/lib/db/records.ts:11-46](file://src/lib/db/records.ts#L11-L46)
-- [src/types/teto.ts:133-162](file://src/types/teto.ts#L133-L162)
+- [src/app/api/v2/records/route.ts:111-153](file://src/app/api/v2/records/route.ts#L111-L153)
+- [src/lib/db/records.ts:11-59](file://src/lib/db/records.ts#L11-L59)
+- [src/types/teto.ts:148-186](file://src/types/teto.ts#L148-L186)
 
 ### 更新记录（PUT /api/v2/records/{id}）
 - 请求体
@@ -259,8 +291,8 @@ end
   - 500 服务器错误
 
 **章节来源**
-- [src/app/api/v2/records/[id]/route.ts](file://src/app/api/v2/records/[id]/route.ts#L30-L67)
-- [src/lib/db/records.ts:52-111](file://src/lib/db/records.ts#L52-L111)
+- [src/app/api/v2/records/[id]/route.ts:31-111](file://src/app/api/v2/records/[id]/route.ts#L31-L111)
+- [src/lib/db/records.ts:66-144](file://src/lib/db/records.ts#L66-L144)
 
 ### 删除记录（DELETE /api/v2/records/{id}）
 - 行为
@@ -273,8 +305,101 @@ end
   - 500 服务器错误
 
 **章节来源**
-- [src/app/api/v2/records/[id]/route.ts](file://src/app/api/v2/records/[id]/route.ts#L69-L86)
-- [src/lib/db/records.ts:116-128](file://src/lib/db/records.ts#L116-L128)
+- [src/app/api/v2/records/[id]/route.ts:113-131](file://src/app/api/v2/records/[id]/route.ts#L113-L131)
+- [src/lib/db/records.ts:149-161](file://src/lib/db/records.ts#L149-L161)
+
+### 记录状态管理
+
+#### 取消记录（POST /api/v2/records/{id}/cancel）
+- 功能说明
+  - 取消一条计划记录，将其生命周期状态标记为 cancelled
+  - 仅适用于类型为"计划"的记录
+  - 仅当记录状态为 active 或空时允许取消
+  - 不生成新记录，不创建关联关系
+- 请求参数
+  - 路径参数：id（记录ID）
+- 校验逻辑
+  - 验证记录存在且属于当前用户
+  - 验证记录类型必须为"计划"
+  - 验证当前生命周期状态为 active 或空
+  - 更新记录 lifecycle_status = 'cancelled'
+- 响应
+  - 200 OK，返回 { data: Record }
+- 错误
+  - 400 仅计划类型记录可取消、状态不允许取消
+  - 404 记录不存在或不属于当前用户
+  - 401 未认证
+  - 500 服务器错误
+
+**章节来源**
+- [src/app/api/v2/records/[id]/cancel/route.ts:5-53](file://src/app/api/v2/records/[id]/cancel/route.ts#L5-L53)
+- [src/lib/db/records.ts:66-144](file://src/lib/db/records.ts#L66-L144)
+
+#### 完成记录（POST /api/v2/records/{id}/complete）
+- 功能说明
+  - 完成一条计划记录，生成对应的"发生"记录
+  - 创建 record_link：新记录 → 原记录，link_type = 'completes'
+  - 原记录生命周期状态标记为 'completed'
+- 请求参数
+  - 路径参数：id（记录ID）
+- 行为流程
+  - 验证原记录类型为"计划"
+  - 新建一条"发生"记录（content 相同，occurred_at = now）
+  - 创建 record_link: 新记录 → 原记录，link_type = 'completes'
+  - 原记录 lifecycle_status 标记为 'completed'
+- 响应
+  - 201 Created，返回 { data: Record }
+- 错误
+  - 400 仅计划类型记录可完成
+  - 404 记录不存在或不属于当前用户
+  - 401 未认证
+  - 500 服务器错误
+
+**章节来源**
+- [src/app/api/v2/records/[id]/complete/route.ts:6-81](file://src/app/api/v2/records/[id]/complete/route.ts#L6-L81)
+- [src/lib/db/records.ts:13-59](file://src/lib/db/records.ts#L13-L59)
+
+#### 推迟记录（POST /api/v2/records/{id}/postpone）
+- 功能说明
+  - 推迟一条计划记录到新日期
+  - 新建一条"计划"记录，投影到新日期
+  - 创建 record_link：新记录 → 原记录，link_type = 'postponed_from'
+  - 原记录生命周期状态标记为 'postponed'
+- 请求参数
+  - 路径参数：id（记录ID）
+  - 请求体：{ new_date: string }（新日期）
+- 行为流程
+  - 验证原记录类型为"计划"
+  - 验证 new_date 参数存在
+  - 新建一条"计划"记录，time_anchor_date = new_date
+  - 创建 record_link: 新记录 postponed_from 原记录
+  - 原记录 lifecycle_status 标记为 'postponed'
+- 响应
+  - 201 Created，返回 { data: Record }
+- 错误
+  - 400 new_date 为必填字段、仅计划类型记录可推迟
+  - 404 记录不存在或不属于当前用户
+  - 401 未认证
+  - 500 服务器错误
+
+**章节来源**
+- [src/app/api/v2/records/[id]/postpone/route.ts:17-79](file://src/app/api/v2/records/[id]/postpone/route.ts#L17-L79)
+- [src/lib/db/records.ts:13-59](file://src/lib/db/records.ts#L13-L59)
+
+### 生命周期状态对比
+
+| 状态 | 描述 | 允许的操作 | 生成新记录 | 创建关联 |
+|------|------|------------|------------|----------|
+| active | 激活状态 | 取消、完成、推迟 | 否 | 否 |
+| completed | 已完成 | 无限制 | 是（发生记录） | 是（completes） |
+| postponed | 已推迟 | 无限制 | 是（新计划记录） | 是（postponed_from） |
+| cancelled | 已取消 | 无限制 | 否 | 否 |
+
+**章节来源**
+- [src/types/teto.ts:18-19](file://src/types/teto.ts#L18-L19)
+- [src/app/api/v2/records/[id]/complete/route.ts:8-13](file://src/app/api/v2/records/[id]/complete/route.ts#L8-L13)
+- [src/app/api/v2/records/[id]/postpone/route.ts:7-13](file://src/app/api/v2/records/[id]/postpone/route.ts#L7-L13)
+- [src/app/api/v2/records/[id]/cancel/route.ts:7-16](file://src/app/api/v2/records/[id]/cancel/route.ts#L7-L16)
 
 ### 批量删除（POST /api/v2/records/batch-delete）
 - 请求体
@@ -337,7 +462,7 @@ Del --> Ret["返回 { data: { deleted: count } }"]
   - 返回新建关联
 - GET 查询某记录的所有强关联
   - 查询参数：record_id（必填）
-  - 返回包含“对方记录摘要”的关联列表
+  - 返回包含"对方记录摘要"的关联列表
 - DELETE 删除强关联
   - 查询参数：id（必填）
 - 错误
@@ -365,12 +490,12 @@ AU --> TP
 ```
 
 **图示来源**
-- [src/app/api/v2/records/route.ts:1-5](file://src/app/api/v2/records/route.ts#L1-L5)
+- [src/app/api/v2/records/route.ts:1-7](file://src/app/api/v2/records/route.ts#L1-L7)
 - [src/lib/auth/server/get-current-user-id.ts:1-10](file://src/lib/auth/server/get-current-user-id.ts#L1-L10)
 - [src/types/teto.ts:1-10](file://src/types/teto.ts#L1-L10)
 
 **章节来源**
-- [src/app/api/v2/records/route.ts:1-5](file://src/app/api/v2/records/route.ts#L1-L5)
+- [src/app/api/v2/records/route.ts:1-7](file://src/app/api/v2/records/route.ts#L1-L7)
 - [src/lib/auth/server/get-current-user-id.ts:1-10](file://src/lib/auth/server/get-current-user-id.ts#L1-L10)
 - [src/types/teto.ts:1-10](file://src/types/teto.ts#L1-L10)
 
@@ -384,6 +509,9 @@ AU --> TP
   - 限制单次删除数量上限，防止大事务阻塞
 - 认证
   - 仅在必要时进行用户校验，避免重复调用
+- 状态管理
+  - 状态转换操作仅涉及单条记录更新，性能开销较小
+  - 生命周期状态字段独立存储，查询效率高
 
 **章节来源**
 - [src/lib/db/records.ts:286-300](file://src/lib/db/records.ts#L286-L300)
@@ -397,16 +525,17 @@ AU --> TP
   - 检查记录/项目/关联是否存在且归属正确
 - 400 参数错误
   - 检查必填字段、参数类型与取值范围
+  - 状态管理操作需满足特定条件（如仅计划类型记录可操作）
 - 500 服务器错误
   - 查看服务端日志，确认 Supabase 连接与 RLS 配置
 
 **章节来源**
 - [src/lib/auth/server/get-current-user-id.ts:12-37](file://src/lib/auth/server/get-current-user-id.ts#L12-L37)
-- [src/app/api/v2/records/route.ts:35-41](file://src/app/api/v2/records/route.ts#L35-L41)
-- [src/app/api/v2/records/[id]/route.ts](file://src/app/api/v2/records/[id]/route.ts#L21-L27)
+- [src/app/api/v2/records/route.ts:102-108](file://src/app/api/v2/records/route.ts#L102-L108)
+- [src/app/api/v2/records/[id]/route.ts:22-28](file://src/app/api/v2/records/[id]/route.ts#L22-L28)
 
 ## 结论
-本记录 API 提供了完整的 CRUD、批量删除与两类记录关联能力，具备完善的参数校验、归属检查与错误处理机制。通过类型定义与数据库层的协同，确保了数据一致性与安全性。建议在生产环境中合理设置 limit 与批量上限，并结合缓存与索引进一步优化查询性能。
+本记录 API 提供了完整的 CRUD、批量删除、两类记录关联以及完整的生命周期状态管理能力，具备完善的参数校验、归属检查与错误处理机制。通过类型定义与数据库层的协同，确保了数据一致性与安全性。新增的记录取消功能完善了状态管理体系，与完成、推迟操作形成完整的状态转换矩阵。建议在生产环境中合理设置 limit 与批量上限，并结合缓存与索引进一步优化查询性能。
 
 ## 附录
 
