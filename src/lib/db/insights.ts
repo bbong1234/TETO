@@ -407,6 +407,25 @@ export async function getInsights(
     }
   }
 
+  // 并行计算所有独立子模块（原来串行7个await，现在并行）
+  const [
+    timeDistribution,
+    itemTimeRanking,
+    unassignedStats,
+    fourAxes,
+    periodComparison,
+    metricsByItem,
+    inferredStats,
+  ] = await Promise.all([
+    computeTimeDistribution(supabase, userId, dayIdsInRange),
+    computeItemTimeRanking(supabase, userId, dayIdsInRange),
+    computeUnassignedStats(supabase, userId, dayIdsInRange),
+    computeFourAxes(supabase, userId, dayIdsInRange),
+    computePeriodComparison(supabase, userId),
+    computeMetricsByItem(supabase, userId, dayIdsInRange),
+    computeInferredStats(supabase, userId, dayIdsInRange),
+  ]);
+
   return {
     record_overview: {
       total_7d: total7d ?? 0,
@@ -431,13 +450,13 @@ export async function getInsights(
       statusDistribution: goalStatusDistribution,
       goalsWithAssociations: goalsWithAssociations.slice(0, 5),
     },
-    time_distribution: await computeTimeDistribution(supabase, userId, dayIdsInRange),
-    item_time_ranking: await computeItemTimeRanking(supabase, userId, dayIdsInRange),
-    unassigned_stats: await computeUnassignedStats(supabase, userId, dayIdsInRange),
-    four_axes: await computeFourAxes(supabase, userId, dayIdsInRange),
-    period_comparison: await computePeriodComparison(supabase, userId),
-    metrics_by_item: await computeMetricsByItem(supabase, userId, dayIdsInRange),
-    inferred_stats: await computeInferredStats(supabase, userId, dayIdsInRange),
+    time_distribution: timeDistribution,
+    item_time_ranking: itemTimeRanking,
+    unassigned_stats: unassignedStats,
+    four_axes: fourAxes,
+    period_comparison: periodComparison,
+    metrics_by_item: metricsByItem,
+    inferred_stats: inferredStats,
   };
 }
 
@@ -561,34 +580,55 @@ async function computeFourAxes(
   userId: string,
   dayIdsInRange: string[]
 ): Promise<NonNullable<InsightsData['four_axes']>> {
-  // --- 主轴1：行动vs目标 ---
-  // 获取活跃事项
-  const { data: activeItems } = await supabase
-    .from('items')
-    .select('id, title')
-    .eq('user_id', userId)
-    .in('status', ['活跃', '推进中', '放缓']);
+  const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const now = new Date();
+  const sevenDaysAgo = new Date(now); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const prevSevenDays = new Date(now); prevSevenDays.setDate(prevSevenDays.getDate() - 14);
+  const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-  // 获取活跃目标
-  const { data: activeGoals } = await supabase
-    .from('goals')
-    .select('id, title, item_id, status, measure_type, target_value, current_value, unit')
-    .eq('user_id', userId)
-    .eq('status', '进行中');
+  // 并行获取所有需要的基础数据
+  const [
+    activeItemsResult,
+    activeGoalsResult,
+    allRecordsResult,    // 用于主轴1+3
+    planRecordsResult,   // 用于主轴2
+    days7dResult,
+    daysPrev7dResult,
+    days30dResult,
+  ] = await Promise.all([
+    supabase.from('items').select('id, title').eq('user_id', userId).in('status', ['活跃', '推进中', '放缓']),
+    supabase.from('goals').select('id, title, item_id, status, measure_type, target_value, current_value, unit').eq('user_id', userId).eq('status', '进行中'),
+    dayIdsInRange.length > 0
+      ? supabase.from('records').select('id, item_id, duration_minutes, result').eq('user_id', userId).in('record_day_id', dayIdsInRange)
+      : Promise.resolve({ data: [], error: null }),
+    dayIdsInRange.length > 0
+      ? supabase.from('records').select('id, status, time_anchor_date').eq('user_id', userId).eq('type', '计划').in('record_day_id', dayIdsInRange)
+      : Promise.resolve({ data: [], error: null }),
+    supabase.from('record_days').select('id, date').eq('user_id', userId).gte('date', fmt(sevenDaysAgo)),
+    supabase.from('record_days').select('id, date').eq('user_id', userId).gte('date', fmt(prevSevenDays)).lt('date', fmt(sevenDaysAgo)),
+    supabase.from('record_days').select('id, date').eq('user_id', userId).gte('date', fmt(thirtyDaysAgo)),
+  ]);
 
-  // 获取范围内各事项的记录统计
+  const activeItems = activeItemsResult.data || [];
+  const activeGoals = activeGoalsResult.data || [];
+  const allRecords = allRecordsResult.data || [];
+  const planRecords = planRecordsResult.data || [];
+
+  // --- 主轴1：行动vs目标（批量聚合，不用循环查询） ---
+  const itemRecordMap = new Map<string, { count: number; duration: number }>();
+  for (const r of allRecords) {
+    const iid = (r as { item_id: string | null }).item_id;
+    if (!iid) continue;
+    const existing = itemRecordMap.get(iid) || { count: 0, duration: 0 };
+    existing.count++;
+    existing.duration += (r as { duration_minutes: number | null }).duration_minutes || 0;
+    itemRecordMap.set(iid, existing);
+  }
+
   const actionVsGoal: NonNullable<InsightsData['four_axes']>['action_vs_goal'] = [];
-  for (const item of activeItems || []) {
-    const { data: itemRecords } = await supabase
-      .from('records')
-      .select('id, duration_minutes')
-      .eq('user_id', userId)
-      .eq('item_id', item.id)
-      .in('record_day_id', dayIdsInRange);
-
-    const recordCount = itemRecords?.length || 0;
-    const totalDuration = (itemRecords || []).reduce((sum: number, r: { duration_minutes: number | null }) => sum + (r.duration_minutes || 0), 0);
-    const goal = (activeGoals || []).find((g: { item_id: string | null }) => g.item_id === item.id);
+  for (const item of activeItems) {
+    const stats = itemRecordMap.get(item.id) || { count: 0, duration: 0 };
+    const goal = (activeGoals as { item_id: string | null }[]).find(g => g.item_id === item.id) as typeof activeGoals[number] | undefined;
 
     let goalProgress: number | null = null;
     let deficit: number | null = null;
@@ -607,8 +647,8 @@ async function computeFourAxes(
     actionVsGoal.push({
       item_id: item.id,
       item_title: item.title,
-      record_count: recordCount,
-      total_duration_minutes: totalDuration,
+      record_count: stats.count,
+      total_duration_minutes: stats.duration,
       has_goal: !!goal,
       goal_title: goal?.title || null,
       goal_progress: goalProgress,
@@ -617,25 +657,13 @@ async function computeFourAxes(
     });
   }
 
-  // --- 主轴2：时间vs计划 ---
-  let totalPlans = 0;
-  let completedPlans = 0;
-  let overduePlans = 0;
-  if (dayIdsInRange.length > 0) {
-    const { data: planRecords } = await supabase
-      .from('records')
-      .select('id, status, time_anchor_date')
-      .eq('user_id', userId)
-      .eq('type', '计划')
-      .in('record_day_id', dayIdsInRange);
-
-    totalPlans = planRecords?.length || 0;
-    completedPlans = (planRecords || []).filter((r: { status: string | null }) => r.status === '已完成').length;
-    const today = new Date().toISOString().split('T')[0];
-    overduePlans = (planRecords || []).filter((r: { status: string | null; time_anchor_date: string | null }) =>
-      r.status !== '已完成' && r.status !== '已取消' && r.time_anchor_date && r.time_anchor_date < today
-    ).length;
-  }
+  // --- 主轴2：时间vs计划（已批量获取） ---
+  const totalPlans = planRecords.length;
+  const completedPlans = planRecords.filter((r: { status: string | null }) => r.status === '已完成').length;
+  const today = now.toISOString().split('T')[0];
+  const overduePlans = planRecords.filter((r: { status: string | null; time_anchor_date: string | null }) =>
+    r.status !== '已完成' && r.status !== '已取消' && r.time_anchor_date && r.time_anchor_date < today
+  ).length;
   const timeVsPlan = {
     total_plans: totalPlans,
     completed_plans: completedPlans,
@@ -643,26 +671,19 @@ async function computeFourAxes(
     overdue_plans: overduePlans,
   };
 
-  // --- 主轴3：投入vs效果 ---
+  // --- 主轴3：投入vs效果（已批量获取） ---
   let totalRecordsWithDuration = 0;
   let totalHours = 0;
   let recordsWithResult = 0;
-  if (dayIdsInRange.length > 0) {
-    const { data: allRecs } = await supabase
-      .from('records')
-      .select('id, duration_minutes, result')
-      .eq('user_id', userId)
-      .in('record_day_id', dayIdsInRange);
-
-    for (const r of allRecs || []) {
-      if (r.duration_minutes) {
-        totalRecordsWithDuration++;
-        totalHours += r.duration_minutes;
-      }
-      if (r.result) recordsWithResult++;
+  for (const r of allRecords) {
+    const rec = r as { duration_minutes: number | null; result: string | null };
+    if (rec.duration_minutes) {
+      totalRecordsWithDuration++;
+      totalHours += rec.duration_minutes;
     }
-    totalHours = totalHours / 60;
+    if (rec.result) recordsWithResult++;
   }
+  totalHours = totalHours / 60;
   const effortVsResult = {
     total_records_with_duration: totalRecordsWithDuration,
     total_hours: Math.round(totalHours * 10) / 10,
@@ -671,56 +692,48 @@ async function computeFourAxes(
   };
 
   // --- 主轴4：近期时间分布摘要 ---
-  const now = new Date();
-  const sevenDaysAgo = new Date(now); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  const prevSevenDays = new Date(now); prevSevenDays.setDate(prevSevenDays.getDate() - 14);
-  const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const dayIds7d = (days7dResult.data || []).map((d: { id: string }) => d.id);
+  const dayIdsPrev7d = (daysPrev7dResult.data || []).map((d: { id: string }) => d.id);
+  const dayIds30d = (days30dResult.data || []).map((d: { id: string }) => d.id);
 
-  // 近7天时长
-  const { data: days7d } = await supabase
-    .from('record_days').select('id').eq('user_id', userId).gte('date', fmt(sevenDaysAgo));
-  const dayIds7d = (days7d || []).map((d: { id: string }) => d.id);
-  let hours7d = 0;
-  if (dayIds7d.length > 0) {
-    const { data: recs7d } = await supabase
-      .from('records').select('duration_minutes').eq('user_id', userId).in('record_day_id', dayIds7d);
-    hours7d = (recs7d || []).reduce((s: number, r: { duration_minutes: number | null }) => s + (r.duration_minutes || 0), 0) / 60;
-  }
+  // 并行获取3段时长数据
+  const [recs7dResult, recsPrev7dResult, recs30dResult] = await Promise.all([
+    dayIds7d.length > 0
+      ? supabase.from('records').select('duration_minutes, item_id, items(id, title)').eq('user_id', userId).in('record_day_id', dayIds7d)
+      : Promise.resolve({ data: [], error: null }),
+    dayIdsPrev7d.length > 0
+      ? supabase.from('records').select('duration_minutes').eq('user_id', userId).in('record_day_id', dayIdsPrev7d)
+      : Promise.resolve({ data: [], error: null }),
+    dayIds30d.length > 0
+      ? supabase.from('records').select('duration_minutes').eq('user_id', userId).in('record_day_id', dayIds30d)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
 
-  // 前7天时长（用于计算变化）
-  const { data: daysPrev7d } = await supabase
-    .from('record_days').select('id').eq('user_id', userId).gte('date', fmt(prevSevenDays)).lt('date', fmt(sevenDaysAgo));
-  const dayIdsPrev7d = (daysPrev7d || []).map((d: { id: string }) => d.id);
-  let hoursPrev7d = 0;
-  if (dayIdsPrev7d.length > 0) {
-    const { data: recsPrev7d } = await supabase
-      .from('records').select('duration_minutes').eq('user_id', userId).in('record_day_id', dayIdsPrev7d);
-    hoursPrev7d = (recsPrev7d || []).reduce((s: number, r: { duration_minutes: number | null }) => s + (r.duration_minutes || 0), 0) / 60;
-  }
-
-  // 近30天时长
-  const { data: days30d } = await supabase
-    .from('record_days').select('id').eq('user_id', userId).gte('date', fmt(thirtyDaysAgo));
-  const dayIds30d = (days30d || []).map((d: { id: string }) => d.id);
-  let hours30d = 0;
-  if (dayIds30d.length > 0) {
-    const { data: recs30d } = await supabase
-      .from('records').select('duration_minutes').eq('user_id', userId).in('record_day_id', dayIds30d);
-    hours30d = (recs30d || []).reduce((s: number, r: { duration_minutes: number | null }) => s + (r.duration_minutes || 0), 0) / 60;
-  }
+  const hours7d = (recs7dResult.data || []).reduce((s: number, r: { duration_minutes: number | null }) => s + (r.duration_minutes || 0), 0) / 60;
+  const hoursPrev7d = (recsPrev7dResult.data || []).reduce((s: number, r: { duration_minutes: number | null }) => s + (r.duration_minutes || 0), 0) / 60;
+  const hours30d = (recs30dResult.data || []).reduce((s: number, r: { duration_minutes: number | null }) => s + (r.duration_minutes || 0), 0) / 60;
 
   const changePercent = hoursPrev7d > 0 ? Math.round(((hours7d - hoursPrev7d) / hoursPrev7d) * 100) : null;
-  // 找top事项
-  const ranking = await computeItemTimeRanking(supabase, userId, dayIds7d);
-  const topItem = ranking.length > 0 ? ranking[0] : null;
+
+  // 从近7天记录中找top事项（内联聚合，不再调computeItemTimeRanking）
+  const itemDuration7d = new Map<string, { title: string; totalDuration: number }>();
+  for (const r of (recs7dResult.data || [])) {
+    const rec = r as { item_id: string | null; duration_minutes: number | null; items: unknown };
+    if (!rec.item_id || !rec.duration_minutes) continue;
+    const item = rec.items as { id: string; title: string } | null;
+    if (!item) continue;
+    const existing = itemDuration7d.get(rec.item_id) || { title: item.title, totalDuration: 0 };
+    existing.totalDuration += rec.duration_minutes;
+    itemDuration7d.set(rec.item_id, existing);
+  }
+  const topEntry = [...itemDuration7d.entries()].sort((a, b) => b[1].totalDuration - a[1].totalDuration)[0];
 
   const recentTimeSummary = {
     total_hours_7d: Math.round(hours7d * 10) / 10,
     total_hours_30d: Math.round(hours30d * 10) / 10,
     change_percent: changePercent,
-    top_item_title: topItem?.item_title || null,
-    top_item_hours: topItem ? Math.round(topItem.total_duration_minutes / 6) / 10 : null,
+    top_item_title: topEntry?.[1]?.title || null,
+    top_item_hours: topEntry ? Math.round(topEntry[1].totalDuration / 6) / 10 : null,
   };
 
   return {
@@ -770,12 +783,15 @@ async function computePeriodComparison(
     return { record_count, total_hours, total_cost };
   }
 
-  return {
-    this_week: await fetchPeriodStats(fmt(thisWeekStart), fmt(now)),
-    last_week: await fetchPeriodStats(fmt(lastWeekStart), fmt(lastWeekEnd)),
-    this_month: await fetchPeriodStats(fmt(thisMonthStart), fmt(now)),
-    last_month: await fetchPeriodStats(fmt(lastMonthStart), fmt(lastMonthEnd)),
-  };
+  // 并行获取4个时段数据
+  const [thisWeek, lastWeek, thisMonth, lastMonth] = await Promise.all([
+    fetchPeriodStats(fmt(thisWeekStart), fmt(now)),
+    fetchPeriodStats(fmt(lastWeekStart), fmt(lastWeekEnd)),
+    fetchPeriodStats(fmt(thisMonthStart), fmt(now)),
+    fetchPeriodStats(fmt(lastMonthStart), fmt(lastMonthEnd)),
+  ]);
+
+  return { this_week: thisWeek, last_week: lastWeek, this_month: thisMonth, last_month: lastMonth };
 }
 
 // ==========================================
@@ -800,81 +816,92 @@ async function computeMetricsByItem(
   const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const sevenDaysAgo = fmt(new Date(now.getTime() - 7 * 86400000));
   const thirtyDaysAgo = fmt(new Date(now.getTime() - 30 * 86400000));
+  const activeItemIds = activeItems.map(i => i.id);
 
-  // 获取近7天和近30天的 day IDs
-  const { data: days7d } = await supabase
-    .from('record_days').select('id').eq('user_id', userId).gte('date', sevenDaysAgo);
-  const dayIds7d = (days7d || []).map((d: { id: string }) => d.id);
+  // 并行批量获取所有数据
+  const [days7dResult, days30dResult, recs7dResult, recs30dResult, recsInRangeResult, recsLatestResult, planRecsResult, completedPlanRecsResult] = await Promise.all([
+    supabase.from('record_days').select('id').eq('user_id', userId).gte('date', sevenDaysAgo),
+    supabase.from('record_days').select('id').eq('user_id', userId).gte('date', thirtyDaysAgo),
+    // 近7天记录按事项聚合
+    supabase.from('records').select('item_id').eq('user_id', userId).in('item_id', activeItemIds).in('record_day_id', /* dayIds7d will be computed */ [] as string[]),
+    supabase.from('records').select('item_id').eq('user_id', userId).in('item_id', activeItemIds),
+    // 范围内记录按事项聚合（时长+结果+计划）
+    dayIdsInRange.length > 0
+      ? supabase.from('records').select('item_id, duration_minutes, result, type, status').eq('user_id', userId).in('item_id', activeItemIds).in('record_day_id', dayIdsInRange)
+      : Promise.resolve({ data: [], error: null }),
+    // 最近记录时间
+    supabase.from('records').select('item_id, created_at').eq('user_id', userId).in('item_id', activeItemIds).order('created_at', { ascending: false }).limit(1000),
+    supabase.from('records').select('item_id').eq('user_id', userId).in('item_id', activeItemIds).eq('type', '计划').in('record_day_id', dayIdsInRange),
+    supabase.from('records').select('item_id').eq('user_id', userId).in('item_id', activeItemIds).eq('type', '计划').eq('status', '已完成').in('record_day_id', dayIdsInRange),
+  ]);
 
-  const { data: days30d } = await supabase
-    .from('record_days').select('id').eq('user_id', userId).gte('date', thirtyDaysAgo);
-  const dayIds30d = (days30d || []).map((d: { id: string }) => d.id);
+  const dayIds7d = (days7dResult.data || []).map((d: { id: string }) => d.id);
+  const dayIds30d = (days30dResult.data || []).map((d: { id: string }) => d.id);
 
-  const results: NonNullable<InsightsData['metrics_by_item']> = [];
+  // 近7天按事项聚合（需二次查询，因为dayIds7d依赖第一次查询）
+  const { data: recs7dAgg } = dayIds7d.length > 0
+    ? await supabase.from('records').select('item_id').eq('user_id', userId).in('item_id', activeItemIds).in('record_day_id', dayIds7d)
+    : { data: [] };
+  const { data: recs30dAgg } = dayIds30d.length > 0
+    ? await supabase.from('records').select('item_id').eq('user_id', userId).in('item_id', activeItemIds).in('record_day_id', dayIds30d)
+    : { data: [] };
+
+  const recsInRange = recsInRangeResult.data || [];
+  const recsLatest = recsLatestResult.data || [];
+  const planRecs = planRecsResult.data || [];
+  const completedPlanRecs = completedPlanRecsResult.data || [];
+
+  // 按事项聚合
+  const countByItem7d = new Map<string, number>();
+  for (const r of (recs7dAgg || [])) countByItem7d.set((r as { item_id: string }).item_id, (countByItem7d.get((r as { item_id: string }).item_id) || 0) + 1);
+
+  const countByItem30d = new Map<string, number>();
+  for (const r of (recs30dAgg || [])) countByItem30d.set((r as { item_id: string }).item_id, (countByItem30d.get((r as { item_id: string }).item_id) || 0) + 1);
+
+  const durationByItem = new Map<string, number>();
+  const resultCountByItem = new Map<string, number>();
+  const withDurationByItem = new Map<string, number>();
+  const planCountByItem = new Map<string, number>();
+  const completedPlanByItem = new Map<string, number>();
+
+  for (const r of recsInRange) {
+    const rec = r as { item_id: string; duration_minutes: number | null; result: string | null; type: string | null; status: string | null };
+    durationByItem.set(rec.item_id, (durationByItem.get(rec.item_id) || 0) + (rec.duration_minutes || 0));
+    if (rec.result) resultCountByItem.set(rec.item_id, (resultCountByItem.get(rec.item_id) || 0) + 1);
+    if (rec.duration_minutes) withDurationByItem.set(rec.item_id, (withDurationByItem.get(rec.item_id) || 0) + 1);
+  }
+  for (const r of planRecs) planCountByItem.set((r as { item_id: string }).item_id, (planCountByItem.get((r as { item_id: string }).item_id) || 0) + 1);
+  for (const r of completedPlanRecs) completedPlanByItem.set((r as { item_id: string }).item_id, (completedPlanByItem.get((r as { item_id: string }).item_id) || 0) + 1);
+
+  const latestByItem = new Map<string, string>();
+  for (const r of recsLatest) {
+    const rec = r as { item_id: string; created_at: string };
+    if (!latestByItem.has(rec.item_id)) latestByItem.set(rec.item_id, rec.created_at);
+  }
+
   let maxDuration = 0;
   const itemStatsList: Array<{ id: string; title: string; stats: import('@/lib/stats/metrics').ItemStats }> = [];
 
   for (const item of activeItems) {
-    // 近7天记录数
-    const { count: count7d } = await supabase
-      .from('records').select('id', { count: 'exact', head: true })
-      .eq('user_id', userId).eq('item_id', item.id)
-      .in('record_day_id', dayIds7d);
-
-    // 近30天记录数
-    const { count: count30d } = await supabase
-      .from('records').select('id', { count: 'exact', head: true })
-      .eq('user_id', userId).eq('item_id', item.id)
-      .in('record_day_id', dayIds30d);
-
-    // 总时长
-    const { data: durationRecs } = await supabase
-      .from('records').select('duration_minutes')
-      .eq('user_id', userId).eq('item_id', item.id)
-      .in('record_day_id', dayIdsInRange);
-    const totalDuration = (durationRecs || []).reduce((s: number, r: { duration_minutes: number | null }) => s + (r.duration_minutes || 0), 0);
+    const totalDuration = durationByItem.get(item.id) || 0;
     if (totalDuration > maxDuration) maxDuration = totalDuration;
-
-    // 最近记录时间
-    const { data: latestRec } = await supabase
-      .from('records').select('created_at')
-      .eq('user_id', userId).eq('item_id', item.id)
-      .order('created_at', { ascending: false }).limit(1);
-    const lastRecordAt = latestRec && latestRec.length > 0 ? latestRec[0].created_at : null;
-
-    // 计划统计
-    const { count: totalPlans } = await supabase
-      .from('records').select('id', { count: 'exact', head: true })
-      .eq('user_id', userId).eq('item_id', item.id).eq('type', '计划')
-      .in('record_day_id', dayIdsInRange);
-    const { count: completedPlans } = await supabase
-      .from('records').select('id', { count: 'exact', head: true })
-      .eq('user_id', userId).eq('item_id', item.id).eq('type', '计划').eq('status', '已完成')
-      .in('record_day_id', dayIdsInRange);
-
-    // 结果统计
-    const { data: resultRecs } = await supabase
-      .from('records').select('id, duration_minutes, result')
-      .eq('user_id', userId).eq('item_id', item.id)
-      .in('record_day_id', dayIdsInRange);
-    const recordsWithDuration = (resultRecs || []).filter((r: { duration_minutes: number | null }) => !!r.duration_minutes).length;
-    const recordsWithResult = (resultRecs || []).filter((r: { result: string | null }) => !!r.result).length;
-
-    const stats = {
-      recordCount7d: count7d || 0,
-      recordCount30d: count30d || 0,
-      totalDurationMinutes: totalDuration,
-      lastRecordAt,
-      totalPlans: totalPlans || 0,
-      completedPlans: completedPlans || 0,
-      recordsWithResult,
-      recordsWithDuration,
-    };
-
-    itemStatsList.push({ id: item.id, title: item.title, stats });
+    itemStatsList.push({
+      id: item.id,
+      title: item.title,
+      stats: {
+        recordCount7d: countByItem7d.get(item.id) || 0,
+        recordCount30d: countByItem30d.get(item.id) || 0,
+        totalDurationMinutes: totalDuration,
+        lastRecordAt: latestByItem.get(item.id) || null,
+        totalPlans: planCountByItem.get(item.id) || 0,
+        completedPlans: completedPlanByItem.get(item.id) || 0,
+        recordsWithResult: resultCountByItem.get(item.id) || 0,
+        recordsWithDuration: withDurationByItem.get(item.id) || 0,
+      },
+    });
   }
 
-  // 用最大时长归一化投入
+  const results: NonNullable<InsightsData['metrics_by_item']> = [];
   for (const item of itemStatsList) {
     results.push({
       item_id: item.id,
