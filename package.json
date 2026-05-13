@@ -1,13 +1,23 @@
 {
   "name": "teto-1.0",
-  "version": "1.0.0",
+  "version": "1.5.0",
   "description": "TETO 个人记录、日记复盘、项目跟踪和基础预测系统",
   "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint . && npm run typecheck",
+    "typecheck": "tsc --noEmit",
+    "test:contract": "npx ts-node eval/runners/api-runner.ts",
+    "test:eval": "npx ts-node eval/runners/api-runner.ts",
+    "test:eval:ingest": "npx ts-node eval/runners/ingest-runner.ts",
+    "test:replay": "echo 'Replay runner — run npx ts-node eval/runners/replay-from-production.ts'",
+    "diagnose": "echo 'Diagnose runner — run npx ts-node eval/runners/diagnose-recent.ts'",
+    "test:generate-from-error": "echo 'Generate test from error — run npx ts-node eval/runners/generate-from-recent-error.ts'",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [],
   "author": "",
@@ -35,9 +45,13 @@
     "@types/node": "25.5.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@vitest/coverage-v8": "^4.0.0",
     "autoprefixer": "^10.4.27",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.6",
     "postcss": "^8.5.8",
     "tailwindcss": "^4.2.2",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vitest": "^4.0.0"
   }
 }

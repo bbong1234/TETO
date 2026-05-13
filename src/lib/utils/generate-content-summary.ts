@@ -24,6 +24,18 @@ export function generateContentSummary(
     return truncateFallback(rawInput, 30);
   }
 
+  // 如果 AI 已生成 main_text，优先使用
+  // 但如果 main_text 包含拼音/非中文（AI 幻觉），回退到原始输入
+  if (unit.main_text && unit.main_text.trim()) {
+    const trimmed = unit.main_text.trim();
+    // 检测是否含明显拼音：连续2+小写英文字母（排除常见缩写如 km/kg）
+    const hasPinyin = /[a-z]{3,}/.test(trimmed) && !/\b(km|kg|mb|gb|tb)\b/i.test(trimmed);
+    if (hasPinyin && rawInput) {
+      return truncate(rawInput.trim(), 30);
+    }
+    return truncate(trimmed, 20);
+  }
+
   const parts: string[] = [];
 
   // 时间锚点（仅取 raw，如"昨天"、"明天"）
@@ -36,11 +48,11 @@ export function generateContentSummary(
     parts.push(`在${unit.location}`);
   }
 
-  // 动作（必填字段，但可能为空字符串）
-  const action = unit.action?.trim();
+  // 动作（优先用更丰富的 action_text，兼容旧 action 字段）
+  const action = (unit.action_text?.trim() || unit.action?.trim());
 
-  // 宾语
-  const object = unit.object?.trim();
+  // 宾语（优先用更丰富的 object_text，兼容旧 object 字段）
+  const object = (unit.object_text?.trim() || unit.object?.trim());
 
   // 构建 action + object 部分
   if (action && object) {

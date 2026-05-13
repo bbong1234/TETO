@@ -12,10 +12,11 @@ interface GoalCardProps {
 }
 
 const STATUS_COLORS: Record<GoalStatus, string> = {
+  '草稿': 'bg-slate-100 text-slate-500 border-dashed',
   '进行中': 'bg-green-100 text-green-700',
-  '已达成': 'bg-blue-100 text-blue-700',
-  '已放弃': 'bg-slate-100 text-slate-500',
-  '已暂停': 'bg-yellow-100 text-yellow-700',
+  '已完成': 'bg-blue-100 text-blue-700',
+  '暂停': 'bg-yellow-100 text-yellow-700',
+  '放弃': 'bg-slate-100 text-slate-500',
 };
 
 export default function GoalCard({ goal, onEdit, onDelete, onUpdateValue }: GoalCardProps) {
@@ -29,8 +30,10 @@ export default function GoalCard({ goal, onEdit, onDelete, onUpdateValue }: Goal
     setEditingValue(false);
   };
 
-  const progress = goal.measure_type === 'numeric' && goal.target_value
-    ? Math.min(100, ((goal.current_value || 0) / goal.target_value) * 100)
+  // 根据规则类型计算进度
+  const hasNumericTarget = goal.rule_type !== '一次性完成' && goal.target_min != null;
+  const progress = hasNumericTarget && goal.target_min
+    ? Math.min(100, ((goal.current_value || 0) / goal.target_min) * 100)
     : null;
 
   return (
@@ -51,7 +54,7 @@ export default function GoalCard({ goal, onEdit, onDelete, onUpdateValue }: Goal
 
         {/* 度量展示 */}
         <div className="mt-2">
-          {goal.measure_type === 'numeric' && goal.target_value != null ? (
+          {hasNumericTarget ? (
             <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
@@ -78,16 +81,16 @@ export default function GoalCard({ goal, onEdit, onDelete, onUpdateValue }: Goal
                     onClick={() => { setTempValue(String(goal.current_value ?? '')); setEditingValue(true); }}
                     className="text-[11px] text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap"
                   >
-                    {goal.current_value ?? 0} / {goal.target_value}
+                    {goal.current_value ?? 0} / {goal.target_min}
                   </button>
                 )}
               </div>
             </div>
           ) : (
             <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${
-              goal.status === '已达成' ? 'text-green-600' : 'text-slate-400'
+              goal.status === '已完成' ? 'text-green-600' : 'text-slate-400'
             }`}>
-              {goal.status === '已达成' ? '✓ 已达标' : '○ 未达标'}
+              {goal.status === '已完成' ? '✓ 已达标' : '○ 未达标'}
             </span>
           )}
         </div>

@@ -1,9 +1,17 @@
 import { createClient } from '@/lib/supabase/server';
+import { createComponentLogger } from '@/lib/observability/logger';
+
+const log = createComponentLogger('auth-server');
 
 // 服务端使用 DEV_MODE（非 NEXT_PUBLIC_），与 server.ts 保持一致
 // 客户端模块 src/lib/auth/get-current-user-id.ts 使用 NEXT_PUBLIC_ 前缀
-const DEV_MODE = process.env.DEV_MODE === 'true';
+let DEV_MODE = process.env.DEV_MODE === 'true';
 const DEV_USER_ID = process.env.NEXT_PUBLIC_DEV_USER_ID || '00000000-0000-0000-0000-000000000001';
+
+if (DEV_MODE && process.env.NODE_ENV === 'production') {
+  log.error('DEV_MODE 在生产环境已自动禁用，请从 .env 中移除 DEV_MODE=true');
+  DEV_MODE = false;
+}
 
 export interface CurrentUser {
   id: string;
@@ -13,7 +21,7 @@ export interface CurrentUser {
 
 export async function getCurrentUserId(): Promise<string> {
   if (DEV_MODE) {
-    console.log('[getCurrentUserId] 开发模式，使用 DEV_USER_ID:', DEV_USER_ID);
+    log.info('开发模式，使用 DEV_USER_ID', { details: { DEV_USER_ID } });
     return DEV_USER_ID;
   }
 
@@ -21,26 +29,22 @@ export async function getCurrentUserId(): Promise<string> {
   const { data, error } = await supabase.auth.getUser();
 
   if (error) {
-    console.error('[getCurrentUserId] 获取用户失败:', {
-      message: error.message,
-      code: error.code,
-      status: error.status,
-    });
+    log.error('获取用户失败', { details: { message: error.message, code: error.code, status: error.status } });
     throw new Error('获取用户信息失败');
   }
 
   if (!data.user) {
-    console.log('[getCurrentUserId] 用户未登录');
+    log.info('用户未登录');
     throw new Error('请先登录');
   }
 
-  console.log('[getCurrentUserId] 当前登录用户 ID:', data.user.id);
+  log.info('当前登录用户', { details: { userId: data.user.id } });
   return data.user.id;
 }
 
 export async function getCurrentUser(): Promise<CurrentUser> {
   if (DEV_MODE) {
-    console.log('[getCurrentUser] 开发模式，返回开发用户');
+    log.info('开发模式，返回开发用户');
     return {
       id: DEV_USER_ID,
       email: 'dev@teto.local',
@@ -52,23 +56,16 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   const { data, error } = await supabase.auth.getUser();
 
   if (error) {
-    console.error('[getCurrentUser] 获取用户失败:', {
-      message: error.message,
-      code: error.code,
-      status: error.status,
-    });
+    log.error('获取用户失败', { details: { message: error.message, code: error.code, status: error.status } });
     throw new Error('获取用户信息失败');
   }
 
   if (!data.user) {
-    console.log('[getCurrentUser] 用户未登录');
+    log.info('用户未登录');
     throw new Error('请先登录');
   }
 
-  console.log('[getCurrentUser] 当前登录用户:', {
-    id: data.user.id,
-    email: data.user.email,
-  });
+  log.info('当前登录用户', { details: { id: data.user.id, email: data.user.email } });
 
   return {
     id: data.user.id,

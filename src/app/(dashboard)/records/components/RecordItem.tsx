@@ -1,7 +1,7 @@
 'use client';
 
-import { Star, Clock, Tag, FolderOpen, BarChart3, Timer, MapPin, Users, Smile, Zap, Loader2, DollarSign, Check, CheckCircle2, CalendarClock, HelpCircle, XCircle, Link2, CalendarDays, Layers, Activity, ArrowRight, PlusCircle } from 'lucide-react';
-import type { Record, RecordLinkWithPeer } from '@/types/teto';
+import { Star, Tag, FolderOpen, BarChart3, Timer, MapPin, Users, Smile, Zap, Loader2, DollarSign, Check, CheckCircle2, CalendarClock, HelpCircle, XCircle, Target, Flag, Clock } from 'lucide-react';
+import type { Record } from '@/types/teto';
 import type { ParsedSemantic } from '@/types/semantic';
 
 // ================================
@@ -13,6 +13,11 @@ const TYPE_COLORS: { [key: string]: string } = {
   '想法': 'bg-amber-100 text-amber-700',
   '总结': 'bg-slate-100 text-slate-700',
 };
+
+/** 获取类型颜色，旧类型 fallback 为 '发生' */
+function getTypeColor(type: string): string {
+  return TYPE_COLORS[type] || TYPE_COLORS['发生'];
+}
 
 // ================================
 // 胶囊组件（统一渲染所有语义属性）
@@ -50,25 +55,32 @@ interface RecordItemProps {
   onPostpone?: () => void;
   /** Todo 取消回调（仅计划类型 active 状态） */
   onCancel?: () => void;
-  /** 想法转计划回调 */
+  /** 转为计划 */
   onConvertToPlan?: () => void;
-  /** 想法转事项回调 */
+  /** 转为事项 */
   onConvertToItem?: () => void;
-}
-
-function formatTime(dateStr: string | null): string {
-  if (!dateStr) return '';
-  const d = new Date(dateStr);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  /** 转为目标 */
+  onConvertToGoal?: () => void;
 }
 
 // ================================
 // 主组件：严格三层结构
 // ================================
-export default function RecordItem({ record, onClick, onStarToggle, compact, aiPending, selectionMode, selected, onToggleSelect, onComplete, onPostpone, onCancel, onConvertToPlan, onConvertToItem }: RecordItemProps) {
-  const timeDisplay = formatTime(record.occurred_at) || formatTime(record.created_at);
-  const typeColor = TYPE_COLORS[record.type] || 'bg-slate-100 text-slate-700';
+export default function RecordItem({ record, onClick, onStarToggle, compact, aiPending, selectionMode, selected, onToggleSelect, onComplete, onPostpone, onCancel, onConvertToPlan, onConvertToItem, onConvertToGoal }: RecordItemProps) {
+  const sessionUi = (
+    record.parsed_semantic as { _session_ui?: { lifecycle?: string; errorMessage?: string | null } } | null | undefined
+  )?._session_ui;
+  const isSessionCard = record.id.startsWith('session:');
+  const isSessionParsing = Boolean(isSessionCard && sessionUi?.lifecycle === 'parsing');
+  const isSessionAwaiting = Boolean(isSessionCard && sessionUi?.lifecycle === 'awaiting_confirmation');
+  const isSessionDeferred = Boolean(isSessionCard && sessionUi?.lifecycle === 'deferred');
+  const isSessionFailed = Boolean(isSessionCard && sessionUi?.lifecycle === 'failed');
+  const isLegacyParsing = record.id.startsWith('pending:');
+  const isLegacyDefer = record.id.startsWith('defer:');
 
+  const isParsingPlaceholder = isSessionParsing || isLegacyParsing;
+  /** 旧 defer: 与新版「待确认 / 已收起」均禁用部分操作 */
+  const isDeferLike = isLegacyDefer || isSessionAwaiting || isSessionDeferred;
   // 置信度映射：判断哪些字段是 guess
   const parsed = record.parsed_semantic as ParsedSemantic | null | undefined;
   const fc = parsed?.field_confidence;
@@ -76,25 +88,13 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
   const lowConfidence = parsed?.confidence != null && parsed.confidence < 0.7;
   const needsClarification = !!(parsed as { needs_clarification?: boolean } | null)?.needs_clarification;
 
+  const typeColor = getTypeColor(record.type);
+
   // Todo 生命周期：计划类型 + active 状态才可操作
   const canLifecycleAction = record.type === '计划' && (!record.lifecycle_status || record.lifecycle_status === 'active');
 
   // 计划投影：如果记录类型是"计划"且有未来的 time_anchor_date，显示半透明效果
   const isPlanShadow = record.type === '计划' && record.time_anchor_date && record.time_anchor_date !== record.date;
-
-  // 子项名称解析
-  const subItemName = record.sub_item_id
-    ? (record.item && 'sub_item_title' in record.item
-        ? (record.item as { sub_item_title?: string }).sub_item_title
-        : undefined)
-    : undefined;
-
-  // 关联链接
-  const linkedRecords: RecordLinkWithPeer[] = record.linked_records || [];
-
-  // AI 判断理由（1.5 新增）
-  const parsedSemantic = record.parsed_semantic as ParsedSemantic | null | undefined;
-  const aiReasoning = parsedSemantic?.reasoning;
 
   // 判断底部是否有任何胶囊需要渲染
   const hasCapsules =
@@ -106,15 +106,18 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
     (record.duration_minutes != null && record.duration_minutes > 0) ||
     record.metric_value != null ||
     (record.tags && record.tags.length > 0) ||
-    linkedRecords.length > 0 ||
+    (!!(record.occurred_at || record.occurred_at_end || record.time_text)) ||
     aiPending;
 
   return (
     <div
       onClick={selectionMode ? onToggleSelect : onClick}
-      className={`group cursor-pointer rounded-xl shadow-sm hover:shadow-md transition-shadow ${compact ? 'px-3 py-2' : 'px-4 py-3'} ${
+      className={`group rounded-xl shadow-sm transition-shadow ${
+        isParsingPlaceholder ? 'cursor-default' : 'cursor-pointer hover:shadow-md'
+      } ${compact ? 'px-3 py-2' : 'px-4 py-3'} ${
         isPlanShadow ? 'bg-blue-50/60 border border-dashed border-blue-200'
           : selected ? 'bg-blue-50 border border-blue-300 ring-1 ring-blue-200'
+          : isSessionFailed ? 'bg-red-50/40 border border-red-100'
           : 'bg-white'
       }`}
     >
@@ -134,17 +137,20 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
       {/* ======================= */}
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-1.5 min-w-0">
-          {/* 时间 */}
-          {timeDisplay && (
-            <span className="flex items-center gap-0.5 text-[11px] text-slate-400 shrink-0">
-              <Clock className="h-3 w-3" />
-              {timeDisplay}
-            </span>
-          )}
           {/* 类型 Badge */}
           <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold shrink-0 ${typeColor}`}>
             {record.type}
           </span>
+          {isSessionFailed && (
+            <span className="inline-flex shrink-0 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-800 ring-1 ring-red-100">
+              失败
+            </span>
+          )}
+          {!isSessionFailed && isDeferLike && (
+            <span className="inline-flex shrink-0 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 ring-1 ring-amber-100">
+              {isSessionDeferred ? '已收起' : '待确认'}
+            </span>
+          )}
           {/* AI 低置信度标记 */}
           {lowConfidence && !needsClarification && (
             <span className="inline-flex items-center shrink-0 text-amber-500" title="AI 解析置信度较低，请核对结构化字段">
@@ -159,45 +165,18 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
               </span>
             </span>
           )}
-          {/* 规律记录标记 */}
-          {record.is_period_rule && (
-            <span className="inline-flex items-center gap-0.5 rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-500 shrink-0" title="概括性规律记录（非逐日精确事实）">
-              <Activity className="h-2.5 w-2.5" />
-              规律
-            </span>
-          )}
-          {/* 推断数据标记 */}
-          {record.data_nature === 'inferred' && (
-            <span className="inline-flex items-center gap-0.5 rounded bg-orange-50 px-1.5 py-0.5 text-[10px] text-orange-400 shrink-0" title="由概括性规律推断生成的条目，非原始事实">
-              推断
-            </span>
-          )}
-          {/* 关联事项 + 子项 */}
+          {/* 关联事项 */}
           {record.item && (
-            <span className="inline-flex items-center gap-0.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 truncate max-w-[180px]">
+            <span className="inline-flex items-center gap-0.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 truncate max-w-[140px]">
               <FolderOpen className="h-2.5 w-2.5 shrink-0" />
               <span className="truncate">{record.item.title}</span>
-              {record.sub_item_id && (
-                <>
-                  <span className="text-slate-300 mx-0.5">/</span>
-                  <Layers className="h-2 w-2 shrink-0 text-slate-400" />
-                  <span className="truncate">子项</span>
-                </>
-              )}
-            </span>
-          )}
-          {/* 时间锚点日期标记（计划投影到其他日期） */}
-          {isPlanShadow && record.time_anchor_date && (
-            <span className="inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-500 shrink-0">
-              <CalendarDays className="h-2.5 w-2.5" />
-              {record.time_anchor_date}
             </span>
           )}
         </div>
         {/* 右侧操作区：生命周期按钮 + 星标 */}
         <div className="flex items-center gap-1 shrink-0">
           {/* 计划记录的完成/推迟图标按钮 */}
-          {canLifecycleAction && !selectionMode && (
+          {canLifecycleAction && !selectionMode && !isParsingPlaceholder && !isDeferLike && !isSessionFailed && (
             <>
               <button
                 onClick={(e) => { e.stopPropagation(); onComplete?.(); }}
@@ -225,50 +204,55 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
               </button>
             </>
           )}
-          {/* 想法记录的转计划/转事项按钮 */}
-          {record.type === '想法' && !selectionMode && (
-            <>
-              <button
-                onClick={(e) => { e.stopPropagation(); onConvertToPlan?.(); }}
-                className="p-1 rounded-lg text-blue-500 hover:bg-blue-50 hover:text-blue-700 transition-colors"
-                aria-label="转为计划"
-                title="转计划"
-              >
-                <ArrowRight className="h-3.5 w-3.5" />
-              </button>
-              <button
-                onClick={(e) => { e.stopPropagation(); onConvertToItem?.(); }}
-                className="p-1 rounded-lg text-purple-500 hover:bg-purple-50 hover:text-purple-700 transition-colors"
-                aria-label="创建为新事项"
-                title="转事项"
-              >
-                <PlusCircle className="h-3.5 w-3.5" />
-              </button>
-            </>
-          )}
           {/* 星标 */}
           <button
             onClick={(e) => { e.stopPropagation(); onStarToggle(); }}
-            className="shrink-0 p-0.5 rounded-lg hover:bg-slate-100 transition-colors"
+            disabled={isParsingPlaceholder || isDeferLike || isSessionFailed}
+            className="shrink-0 p-0.5 rounded-lg hover:bg-slate-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             aria-label={record.is_starred ? '取消星标' : '添加星标'}
           >
             <Star className={`h-3.5 w-3.5 ${record.is_starred ? 'fill-amber-400 text-amber-400' : 'text-slate-300 group-hover:text-slate-400'}`} />
           </button>
+          {/* 转为事项 */}
+          {onConvertToItem && !selectionMode && !isParsingPlaceholder && !isDeferLike && !isSessionFailed && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onConvertToItem(); }}
+              className="shrink-0 p-0.5 rounded-lg hover:bg-violet-50 text-slate-300 hover:text-violet-500 transition-colors opacity-0 group-hover:opacity-100"
+              aria-label="转为事项"
+              title="转为事项"
+            >
+              <Target className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {/* 转为目标 */}
+          {onConvertToGoal && !selectionMode && !isParsingPlaceholder && !isDeferLike && !isSessionFailed && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onConvertToGoal(); }}
+              className="shrink-0 p-0.5 rounded-lg hover:bg-rose-50 text-slate-300 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100"
+              aria-label="转为目标"
+              title="转为目标"
+            >
+              <Flag className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
       {/* ======================= */}
       {/* Layer 2: Content（正文主干） */}
       {/* ======================= */}
-      <p className={`${compact ? 'text-sm' : 'text-[15px]'} leading-relaxed text-slate-900 break-words`}>
-        {record.content || record.raw_input || ''}
+      <p className={`${compact ? 'text-sm' : 'text-[15px]'} font-medium leading-relaxed text-slate-900 break-words`}>
+        {(record.content || '').trim() || (record.raw_input || '').trim() || ''}
       </p>
-      {/* 原始输入（当 AI 重写了 content 且与 raw_input 不同时显示） */}
-      {record.raw_input && record.content && record.raw_input !== record.content && (
-        <p className="mt-0.5 text-[11px] text-slate-400 italic break-words">
-          原始：{record.raw_input}
-        </p>
-      )}
+      {(() => {
+        const main = (record.content || '').trim();
+        const raw = (record.raw_input || '').trim();
+        const showRaw =
+          !isParsingPlaceholder && raw && main && raw !== main;
+        return showRaw ? (
+          <p className="mt-0.5 text-[11px] text-slate-400 leading-snug break-words">原文：{raw}</p>
+        ) : null;
+      })()}
 
       {/* ======================= */}
       {/* Layer 3: BottomBar（语义胶囊） */}
@@ -305,6 +289,26 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
               {record.energy}
             </Capsule>
           )}
+          {/* 🕐 时间 */}
+          {(() => {
+            const formatHm = (iso: string) =>
+              new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+            let label = '';
+            if (record.occurred_at) {
+              label = formatHm(record.occurred_at);
+              if (record.occurred_at_end) label += `–${formatHm(record.occurred_at_end)}`;
+            } else if (record.occurred_at_end) {
+              label = formatHm(record.occurred_at_end);
+            } else if (record.time_text) {
+              label = record.time_text;
+            }
+            if (!label) return null;
+            return (
+              <Capsule icon={<Clock className="h-2.5 w-2.5" />} color="bg-blue-50 text-blue-600">
+                {label}
+              </Capsule>
+            );
+          })()}
           {/* ⏱ 时长 */}
           {record.duration_minutes != null && record.duration_minutes > 0 && (
             <Capsule icon={<Timer className="h-2.5 w-2.5" />} color="bg-teal-50 text-teal-600">
@@ -323,29 +327,11 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
               {tag.name}
             </Capsule>
           ))}
-          {/* 关联链接 */}
-          {linkedRecords.length > 0 && linkedRecords.map((link) => (
-            <Capsule
-              key={link.id}
-              icon={<Link2 className="h-2.5 w-2.5" />}
-              color={
-                link.link_type === 'completes' ? 'bg-green-50 text-green-600' :
-                link.link_type === 'derived_from' ? 'bg-indigo-50 text-indigo-600' :
-                link.link_type === 'postponed_from' ? 'bg-amber-50 text-amber-600' :
-                'bg-slate-50 text-slate-500'
-              }
-            >
-              {link.link_type === 'completes' ? '完成' :
-               link.link_type === 'derived_from' ? '源自' :
-               link.link_type === 'postponed_from' ? '推迟自' :
-               '关联'}：{link.peer_content?.slice(0, 12) || '...'}
-            </Capsule>
-          ))}
           {/* AI 处理中 */}
           {aiPending && (
             <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-500 animate-pulse">
               <Loader2 className="h-2.5 w-2.5 animate-spin" />
-              AI处理中
+              解析中
             </span>
           )}
         </div>
@@ -364,16 +350,6 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
             {record.lifecycle_status === 'completed' ? '已完成' :
              record.lifecycle_status === 'postponed' ? '已推迟' :
              record.lifecycle_status === 'cancelled' ? '已取消' : record.lifecycle_status}
-          </span>
-        </div>
-      )}
-
-      {/* AI 判断理由 */}
-      {aiReasoning && (
-        <div className="mt-1.5 pt-1 border-t border-slate-100">
-          <span className="inline-flex items-start gap-1 text-[10px] text-slate-400 leading-relaxed">
-            <HelpCircle className="h-3 w-3 shrink-0 mt-0.5" />
-            <span className="italic">{aiReasoning}</span>
           </span>
         </div>
       )}

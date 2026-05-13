@@ -1,4 +1,11 @@
+@config "../../tailwind.config.cjs";
 @import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════
+   TETO 1.6 基础视觉层
+   所有颜色/阴影/圆角通过 theme() 读取 tailwind.config.cjs → tokens.json
+   修改 tokens.json 后重启 dev server 即可全局生效
+   ═══════════════════════════════════════════════════════════ */
 
 html,
 body {
@@ -16,17 +23,17 @@ body {
 
 /* 毛玻璃卡片 */
 .glass {
-  background: rgba(255, 255, 255, 0.72);
+  background: theme('colors.teto-glass');
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
 }
 .glass-heavy {
-  background: rgba(255, 255, 255, 0.85);
+  background: theme('colors.teto-glass-heavy');
   backdrop-filter: blur(40px) saturate(200%);
   -webkit-backdrop-filter: blur(40px) saturate(200%);
 }
 .glass-dark {
-  background: rgba(15, 23, 42, 0.65);
+  background: theme('colors.teto-glass-dark');
   backdrop-filter: blur(24px) saturate(150%);
   -webkit-backdrop-filter: blur(24px) saturate(150%);
 }
@@ -34,33 +41,37 @@ body {
 /* 桌面背景网格 */
 .desktop-bg {
   background:
-    linear-gradient(135deg, #f0f4f8 0%, #e8edf5 30%, #f5f0ff 60%, #eef2ff 100%);
+    linear-gradient(135deg,
+      theme('colors.teto-surface-0') 0%,
+      theme('colors.teto-surface-1') 30%,
+      theme('colors.teto-surface-2') 60%,
+      theme('colors.teto-surface-3') 100%);
 }
 
 /* 微光晕效果 */
 .glow-sm {
-  box-shadow: 0 0 15px -3px rgba(99, 102, 241, 0.15);
+  box-shadow: 0 0 15px -3px color-mix(in srgb, theme('colors.teto-brand-primary') 15%, transparent);
 }
 .glow-md {
-  box-shadow: 0 0 30px -5px rgba(99, 102, 241, 0.2);
+  box-shadow: 0 0 30px -5px color-mix(in srgb, theme('colors.teto-brand-primary') 20%, transparent);
 }
 
 /* 柔和阴影层级 */
 .shadow-soft {
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.06);
+  box-shadow: theme('boxShadow.teto-soft');
 }
 .shadow-soft-lg {
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.08);
+  box-shadow: theme('boxShadow.teto-soft-lg');
 }
 .shadow-soft-xl {
-  box-shadow: 0 4px 12px rgba(0,0,0,0.05), 0 16px 48px rgba(0,0,0,0.1);
+  box-shadow: theme('boxShadow.teto-soft-xl');
 }
 
 /* Bento Grid 拖拽占位符 */
 .dnd-placeholder {
-  background: rgba(99, 102, 241, 0.08);
-  border: 2px dashed rgba(99, 102, 241, 0.25);
-  border-radius: 24px;
+  background: color-mix(in srgb, theme('colors.teto-brand-primary') 8%, transparent);
+  border: 2px dashed color-mix(in srgb, theme('colors.teto-brand-primary') 25%, transparent);
+  border-radius: theme('borderRadius.teto-xl');
 }
 
 /* 环形进度条 */
@@ -72,8 +83,8 @@ body {
   height: var(--size);
   border-radius: 50%;
   background: conic-gradient(
-    #6366f1 calc(var(--progress) * 1%),
-    #e2e8f0 calc(var(--progress) * 1%)
+    theme('colors.teto-brand-primary') calc(var(--progress) * 1%),
+    theme('colors.teto-neutral-200') calc(var(--progress) * 1%)
   );
   display: flex;
   align-items: center;

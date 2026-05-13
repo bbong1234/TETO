@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-golden-004",
+  "source": "golden",
+  "description": "POST /api/v2/inputs：统一 envelope + trace；403 时允许 ingest 关闭",
+  "input": {
+    "endpoint": "POST /api/v2/inputs",
+    "body": {
+      "raw_input": "[EVAL] ingest golden smoke",
+      "date": "2026-05-08",
+      "source": "quick"
+    }
+  },
+  "expected": {
+    "httpStatusAnyOf": [200, 201, 400, 403],
+    "hasMetaTraceId": true,
+    "acceptableErrorCodes": ["ERR-INPUT-001"],
+    "dataKeysContain": ["input", "units", "pending", "promoted_record_ids"]
+  }
+}

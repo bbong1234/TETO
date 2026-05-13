@@ -1,0 +1,28 @@
+/**
+ * eval/test-cases/golden/tcase-golden-001.json
+ * Golden Test: 单动作输入正确归类
+ */
+{
+  "testCaseId": "TCASE-golden-001",
+  "source": "golden",
+  "status": "pending_verification",
+  "description": "单动作输入：'今天跑步5公里' → 1 条记录，归入跑步事项",
+  "input": {
+    "endpoint": "POST /api/v2/parse",
+    "body": {
+      "input": "今天跑步5公里",
+      "date": "2026-05-05",
+      "items": [
+        { "id": "00000000-0000-0000-0000-000000000001", "title": "跑步" },
+        { "id": "00000000-0000-0000-0000-000000000002", "title": "学习" }
+      ]
+    }
+  },
+  "expected": {
+    "status": 200,
+    "ok": true,
+    "recordCount": 1,
+    "hasType": "发生",
+    "hasMetricValue": true
+  }
+}

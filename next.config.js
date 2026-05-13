@@ -1,4 +1,6 @@
 // next.config.js
-export default {
+const nextConfig = {
   allowedDevOrigins: ['192.168.2.59'],
-}
+};
+
+export default nextConfig;

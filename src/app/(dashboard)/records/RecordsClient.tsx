@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, CheckSquare, X, Trash2, CalendarClock, CheckCircle2 } from 'lucide-react';
 import type { Record, Tag, Item, RecordType } from '@/types/teto';
-import QuickInput from './components/QuickInput';
+import QuickInput, { type IngestClarifyState } from './components/QuickInput';
 import FilterBar from './components/FilterBar';
 import RecordList from './components/RecordList';
 import DayRecordGroup from './components/DayRecordGroup';
@@ -45,6 +46,7 @@ function generateDatesAfter(startDate: string, count: number): string[] {
 const LOAD_BATCH = 7;
 
 const STORAGE_KEY_MULTI_DAY = 'teto_records_multi_day';
+const STORAGE_KEY_PENDING_INPUTS = 'teto_records_pending_inputs_v1';
 
 function getRecordDisplayDate(r: Record): string {
   if (r.type === '计划' && r.time_anchor_date && r.time_anchor_date !== r.date) {
@@ -53,13 +55,161 @@ function getRecordDisplayDate(r: Record): string {
   return r.date ?? '';
 }
 
+/** 时间轴会话卡生命周期（同一 input 单槽位） */
+export type SessionLifecycle =
+  | 'parsing'
+  | 'awaiting_confirmation'
+  | 'deferred'
+  | 'saved'
+  | 'cancelled'
+  | 'failed';
+
+export interface PendingInputDraft {
+  /** 稳定列表主键：session:${client_session_id} */
+  id: string;
+  client_session_id: string;
+  content: string;
+  date: string;
+  createdAt: string;
+  lifecycle: SessionLifecycle;
+  inputId?: string;
+  rawContext?: string;
+  clarifySnapshot?: IngestClarifyState;
+  errorMessage?: string;
+}
+
+function migratePendingDraft(raw: { [key: string]: unknown }): PendingInputDraft | null {
+  const id = typeof raw.id === 'string' ? raw.id : '';
+  const content = typeof raw.content === 'string' ? raw.content : '';
+  const date = typeof raw.date === 'string' ? raw.date : '';
+  const createdAt = typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString();
+  const legacyKind = raw.kind as string | undefined;
+  let lifecycle = raw.lifecycle as SessionLifecycle | undefined;
+  if (!lifecycle) {
+    if (legacyKind === 'await_confirm') lifecycle = 'deferred';
+    else lifecycle = 'parsing';
+  }
+  if (id.startsWith('defer:')) {
+    const inputId = id.slice('defer:'.length);
+    return {
+      id: `session:legacy-defer-${inputId}`,
+      client_session_id: `legacy-defer-${inputId}`,
+      content,
+      date,
+      createdAt,
+      lifecycle: 'deferred',
+      inputId,
+      rawContext: typeof raw.rawContext === 'string' ? raw.rawContext : content,
+      clarifySnapshot: raw.clarifySnapshot as IngestClarifyState | undefined,
+    };
+  }
+  const client_session_id =
+    typeof raw.client_session_id === 'string'
+      ? raw.client_session_id
+      : id.startsWith('session:')
+        ? id.slice('session:'.length)
+        : id.startsWith('pending:')
+          ? id.replace(/^pending:/, '')
+          : id || `mig-${createdAt}`;
+  return {
+    id: id.startsWith('session:') ? id : `session:${client_session_id}`,
+    client_session_id,
+    content,
+    date,
+    createdAt,
+    lifecycle: lifecycle ?? 'parsing',
+    inputId: typeof raw.inputId === 'string' ? raw.inputId : undefined,
+    rawContext: typeof raw.rawContext === 'string' ? raw.rawContext : undefined,
+    clarifySnapshot: raw.clarifySnapshot as IngestClarifyState | undefined,
+    errorMessage: typeof raw.errorMessage === 'string' ? raw.errorMessage : undefined,
+  };
+}
+
+function loadPendingDraftsFromStorage(): PendingInputDraft[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY_PENDING_INPUTS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as { [key: string]: unknown }[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((row) => migratePendingDraft(row)).filter((x): x is PendingInputDraft => x != null);
+  } catch {
+    return [];
+  }
+}
+
+function toPendingRecord(draft: PendingInputDraft): Record {
+  const mainLine = draft.content;
+  const rawLine = draft.rawContext && draft.lifecycle === 'deferred' ? draft.rawContext : draft.content;
+  const pendingUi = {
+    lifecycle: draft.lifecycle,
+    errorMessage: draft.errorMessage ?? null,
+  };
+  return {
+    id: draft.id,
+    user_id: 'pending',
+    record_day_id: `pending:${draft.date}`,
+    content: mainLine,
+    type: '发生',
+    occurred_at: null,
+    status: null,
+    mood: null,
+    energy: null,
+    result: null,
+    note: draft.lifecycle === 'failed' && draft.errorMessage ? draft.errorMessage : null,
+    item_id: null,
+    phase_id: null,
+    sub_item_id: null,
+    sort_order: 0,
+    is_starred: false,
+    cost: null,
+    metric_value: null,
+    metric_unit: null,
+    metric_name: null,
+    duration_minutes: null,
+    raw_input: rawLine,
+    parsed_semantic: { _session_ui: pendingUi } as unknown as Record['parsed_semantic'],
+    time_anchor_date: draft.date,
+    linked_record_id: null,
+    location: null,
+    people: [],
+    batch_id: null,
+    input_id: draft.inputId ?? null,
+    parent_input_id: null,
+    lifecycle_status: 'active',
+    review_status: 'unchecked',
+    confidence_level: null,
+    input_source: 'ai',
+    created_at: draft.createdAt,
+    updated_at: draft.createdAt,
+    date: draft.date,
+    tags: [],
+    item: null,
+    linked_records: [],
+  };
+}
+
 export default function RecordsClient() {
+  const searchParams = useSearchParams();
+
+  // 从 URL date 参数计算初始偏移量
+  const getInitialOffset = useCallback(() => {
+    const dateParam = searchParams.get('date');
+    if (!dateParam) return 0;
+    try {
+      const target = new Date(dateParam + 'T00:00:00');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      return Math.round((target.getTime() - today.getTime()) / 86400000);
+    } catch { return 0; }
+  }, [searchParams]);
+
   // 从 localStorage 恢复模式选择
   const [isMultiDay, setIsMultiDayRaw] = useState(() => {
     if (typeof window === 'undefined') return false;
     return localStorage.getItem(STORAGE_KEY_MULTI_DAY) === 'true';
   });
-  const [singleDayOffset, setSingleDayOffset] = useState(0);
+  const [singleDayOffset, setSingleDayOffset] = useState(getInitialOffset);
   const [multiDayDates, setMultiDayDates] = useState<string[]>([]);
   const [multiDayEarliestOffset, setMultiDayEarliestOffset] = useState(0);
   const [records, setRecords] = useState<Record[]>([]);
@@ -67,15 +217,162 @@ export default function RecordsClient() {
   const [items, setItems] = useState<Item[]>([]);
   const [filterType, setFilterType] = useState<RecordType | ''>('');
   const [filterTagId, setFilterTagId] = useState('');
-  const [filterItemId, setFilterItemId] = useState('');
+  const [filterItemId, setFilterItemId] = useState(() => searchParams.get('item_id') || '');
   const [refreshKey, setRefreshKey] = useState(0);
   const [editingRecord, setEditingRecord] = useState<Record | null>(null);
   const [loading, setLoading] = useState(false);
-  const [aiPendingIds, setAiPendingIds] = useState<Set<string>>(new Set());
+  const [pendingInputs, setPendingInputs] = useState<PendingInputDraft[]>([]);
+  const [resumeClarify, setResumeClarify] = useState<{
+    nonce: number;
+    snapshot: IngestClarifyState;
+  } | null>(null);
+
+  useEffect(() => {
+    setPendingInputs(loadPendingDraftsFromStorage());
+  }, []);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(STORAGE_KEY_PENDING_INPUTS, JSON.stringify(pendingInputs));
+    } catch {
+      /* ignore */
+    }
+  }, [pendingInputs]);
+
+  const aiPendingIds = useMemo(() => {
+    return new Set(
+      pendingInputs.filter((p) => p.lifecycle === 'parsing').map((p) => p.id)
+    );
+  }, [pendingInputs]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchDeleting, setBatchDeleting] = useState(false);
   const { toasts, showError, dismissToast } = useToast();
+
+  // ================================
+  // 客户端排序：按记录类型不同排序方向
+  // 发生/想法/总结：从晚到早（最新在上）
+  // 计划：从早到晚（最早在上）
+  // 无时间记录：按创建时间（紧邻同批次有时间的记录）
+  // ================================
+  /** 从 time_text 提取时间段排序权重（0-23） */
+  const getTimeTextWeight = (timeText: string | null | undefined): number => {
+    if (!timeText) return 12;
+    const lower = timeText.toLowerCase();
+    if (lower.includes('凌晨') || lower.includes('深夜')) return 0;
+    if (lower.includes('早上') || lower.includes('早晨') || lower.includes('清晨') || lower.includes('上午')) return 8;
+    if (lower.includes('中午') || lower.includes('午饭') || lower.includes('午休')) return 12;
+    if (lower.includes('下午')) return 15;
+    if (lower.includes('傍晚') || lower.includes('黄昏')) return 18;
+    if (lower.includes('晚上') || lower.includes('夜晚') || lower.includes('夜里') || lower.includes('晚饭')) return 20;
+    const hourMatch = timeText.match(/(\d{1,2})\s*点/);
+    if (hourMatch) {
+      let h = parseInt(hourMatch[1]);
+      if (h <= 12 && (lower.includes('下午') || lower.includes('晚上'))) h += 12;
+      return h;
+    }
+    return 12;
+  };
+
+  /** 获取计划记录的可排序时间值（综合 time_anchor_date + time_text 时段权重） */
+  const getPlanSortKey = (record: Record): string => {
+    if (record.occurred_at) return record.occurred_at;
+    const dateStr = record.time_anchor_date || record.created_at;
+    // 在日期后追加小时权重，使字符串比较也能正确排序
+    const weight = getTimeTextWeight(record.time_text);
+    return `${dateStr}T${String(weight).padStart(2, '0')}:00:00`;
+  };
+
+  const sortRecords = (rawRecords: Record[]): Record[] => {
+    // 1. 按 batch_id 分组（同批次拆分记录排在一起）
+    const batchMap = new Map<string, Record[]>();
+    const standalone: Record[] = [];
+    for (const r of rawRecords) {
+      if (r.batch_id) {
+        if (!batchMap.has(r.batch_id)) batchMap.set(r.batch_id, []);
+        batchMap.get(r.batch_id)!.push(r);
+      } else {
+        standalone.push(r);
+      }
+    }
+
+    // 2. 为每组 batch 计算排序键（含 time_text / time_anchor_date 供计划排序）
+    //    同时对批次内记录按各自时间排序（批次整体排序后，内部也应有正确顺序）
+    const batchSortKey = new Map<string, { occurred_at: string | null; created_at: string; type: string; time_text: string | null; time_anchor_date: string | null }>();
+    for (const [batchId, group] of batchMap) {
+      const isPlan = group[0]?.type === '计划';
+      // 批次内记录按各自时间排序
+      if (isPlan) {
+        // 计划：升序（最早在上）
+        group.sort((a, b) => getPlanSortKey(a).localeCompare(getPlanSortKey(b)));
+      } else {
+        // 发生/想法/总结：降序（最新在上）
+        group.sort((a, b) => {
+          const aTime = a.occurred_at || a.created_at;
+          const bTime = b.occurred_at || b.created_at;
+          return bTime.localeCompare(aTime);
+        });
+      }
+      // 排序键：计划用最早的记录，其他用最晚的记录
+      const keyRecord = isPlan ? group[0] : group[0]; // 排序后 [0] 已是极值
+      const withTime = group.find(r => r.occurred_at && r.time_precision !== 'inherited');
+      batchSortKey.set(batchId, {
+        occurred_at: withTime?.occurred_at || null,
+        created_at: keyRecord.created_at,
+        type: keyRecord.type,
+        time_text: keyRecord.time_text ?? null,
+        time_anchor_date: keyRecord.time_anchor_date ?? null,
+      });
+    }
+
+    // 3. 将 batch 组和 standalone 统一为排序单元
+    type SortUnit = { sortKey: { occurred_at: string | null; created_at: string; type: string; time_text: string | null; time_anchor_date: string | null }; records: Record[] };
+    const units: SortUnit[] = [];
+
+    for (const r of standalone) {
+      units.push({ sortKey: { occurred_at: r.occurred_at, created_at: r.created_at, type: r.type, time_text: r.time_text ?? null, time_anchor_date: r.time_anchor_date ?? null }, records: [r] });
+    }
+    for (const [batchId, group] of batchMap) {
+      units.push({ sortKey: batchSortKey.get(batchId)!, records: group });
+    }
+
+    // 4. 排序：计划类型升序（最早在上），其他类型降序（最新在上）
+    units.sort((a, b) => {
+      const aIsPlan = a.sortKey.type === '计划';
+      const bIsPlan = b.sortKey.type === '计划';
+
+      // 先按类型分组：计划排前面，其他排后面
+      if (aIsPlan !== bIsPlan) return aIsPlan ? -1 : 1;
+
+      if (aIsPlan && bIsPlan) {
+        // 计划：从早到晚（最早在上）
+        // 使用 getPlanSortKey 综合 time_anchor_date + time_text 时段权重排序
+        const aKey = a.sortKey.occurred_at
+          ? a.sortKey.occurred_at
+          : `${a.sortKey.time_anchor_date || a.sortKey.created_at}T${String(getTimeTextWeight(a.sortKey.time_text)).padStart(2, '0')}:00:00`;
+        const bKey = b.sortKey.occurred_at
+          ? b.sortKey.occurred_at
+          : `${b.sortKey.time_anchor_date || b.sortKey.created_at}T${String(getTimeTextWeight(b.sortKey.time_text)).padStart(2, '0')}:00:00`;
+        return aKey.localeCompare(bKey);
+      } else {
+        // 发生/想法/总结：从晚到早（最新在上）
+        const aTime = a.sortKey.occurred_at || a.sortKey.created_at;
+        const bTime = b.sortKey.occurred_at || b.sortKey.created_at;
+        return bTime.localeCompare(aTime);
+      }
+    });
+
+    // 5. 展平结果
+    return units.flatMap(u => u.records);
+  };
+
+  // 计划完成/推迟对话框状态
+  const [completingRecord, setCompletingRecord] = useState<Record | null>(null);
+  const [completeDate, setCompleteDate] = useState('');
+  const [completeTime, setCompleteTime] = useState('');
+  const [completionContent, setCompletionContent] = useState('');
+  const [postponingRecord, setPostponingRecord] = useState<Record | null>(null);
+  const [postponeDate, setPostponeDate] = useState('');
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const todayColRef = useRef<HTMLDivElement>(null);
@@ -215,7 +512,7 @@ export default function RecordsClient() {
       const res = await fetch(`/api/v2/records?${params.toString()}`);
       const data = await res.json();
       if (data.data) {
-        setRecords(data.data);
+        setRecords(sortRecords(data.data));
       }
     } catch (err) {
       console.error('加载记录失败:', err);
@@ -230,6 +527,8 @@ export default function RecordsClient() {
   }, [fetchRecords, refreshKey]);
 
   const handleRecordCreated = () => {
+    // 新记录已从录入框入库：关掉右侧编辑抽屉，避免误以为还要「改原文」
+    setEditingRecord(null);
     setRefreshKey((k) => k + 1);
   };
 
@@ -286,17 +585,23 @@ export default function RecordsClient() {
     }
   };
 
+  const pendingAsRecords = useMemo(() => pendingInputs.map(toPendingRecord), [pendingInputs]);
+  const recordsWithPending = useMemo(
+    () => sortRecords([...pendingAsRecords, ...records]),
+    [pendingAsRecords, records]
+  );
+
   const groupedRecords = useMemo(() => {
     return multiDayDates.map((date) => {
-      const dayRecords = records.filter((r) => getRecordDisplayDate(r) === date);
+      const dayRecords = recordsWithPending.filter((r) => getRecordDisplayDate(r) === date);
       return { date, records: dayRecords };
     });
-  }, [records, multiDayDates]);
+  }, [recordsWithPending, multiDayDates]);
 
   // 单日模式数据（包含计划投影）
-  const singleDayRecords = records.filter((r) => getRecordDisplayDate(r) === singleDayDate);
+  const singleDayRecords = recordsWithPending.filter((r) => getRecordDisplayDate(r) === singleDayDate);
   const totalRecords = isMultiDay
-    ? records.length
+    ? recordsWithPending.length
     : singleDayRecords.length;
 
   // 今日到期计划（类型=计划 + time_anchor_date=今天 + lifecycle_status=active 或 null）
@@ -308,7 +613,66 @@ export default function RecordsClient() {
     );
   }, [records, todayStr]);
 
+  const isPendingRecord = useCallback((id: string) => id.startsWith('session:'), []);
+
+  const handlePendingCreated = useCallback((clientSessionId: string, content: string, date: string) => {
+    const nowIso = new Date().toISOString();
+    const id = `session:${clientSessionId}`;
+    setPendingInputs((prev) => [
+      ...prev.filter((p) => p.client_session_id !== clientSessionId),
+      { id, client_session_id: clientSessionId, content, date, createdAt: nowIso, lifecycle: 'parsing' },
+    ]);
+  }, []);
+
+  const handlePendingResolved = useCallback((clientSessionId: string) => {
+    setPendingInputs((prev) => prev.filter((p) => p.client_session_id !== clientSessionId));
+  }, []);
+
+  const handlePendingSessionPatch = useCallback(
+    (
+      clientSessionId: string,
+      patch: Partial<
+        Pick<PendingInputDraft, 'lifecycle' | 'inputId' | 'clarifySnapshot' | 'errorMessage' | 'rawContext'>
+      >
+    ) => {
+      setPendingInputs((prev) =>
+        prev.map((p) => (p.client_session_id === clientSessionId ? { ...p, ...patch } : p))
+      );
+    },
+    []
+  );
+
+  const handleDeferResolved = useCallback((inputId: string) => {
+    setPendingInputs((prev) => prev.filter((p) => p.inputId !== inputId));
+  }, []);
+
+  const handleRecordClick = useCallback(
+    (record: Record) => {
+      if (record.id.startsWith('session:')) {
+        const draft = pendingInputs.find((p) => p.id === record.id);
+        if (
+          draft?.clarifySnapshot &&
+          (draft.lifecycle === 'deferred' || draft.lifecycle === 'awaiting_confirmation')
+        ) {
+          setResumeClarify({
+            nonce: Date.now(),
+            snapshot: {
+              ...draft.clarifySnapshot,
+              client_session_id:
+                draft.clarifySnapshot.client_session_id ?? draft.client_session_id,
+            },
+          });
+        }
+        return;
+      }
+      if (isPendingRecord(record.id)) return;
+      setEditingRecord(record);
+    },
+    [isPendingRecord, pendingInputs]
+  );
+
   const handleStarToggle = async (record: Record) => {
+    if (record.id.startsWith('session:')) return;
     try {
       await fetch(`/api/v2/records/${record.id}`, {
         method: 'PUT',
@@ -322,27 +686,31 @@ export default function RecordsClient() {
     }
   };
 
-  const handleAiStart = useCallback((recordId: string) => {
-    setAiPendingIds(prev => new Set(prev).add(recordId));
-  }, []);
-
-  const handleAiDone = useCallback((recordId: string) => {
-    setAiPendingIds(prev => {
-      const next = new Set(prev);
-      next.delete(recordId);
-      return next;
-    });
-  }, []);
-
   const quickInputDate = todayStr;
 
   // 完成计划：生成一条“发生”记录，原记录变为 completed
   const handleComplete = async (record: Record) => {
-    if (!window.confirm(`确认完成计划：「${record.content}」？\n将生成一条“发生”记录。`)) return;
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    const timeStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    setCompleteDate(dateStr);
+    setCompleteTime(timeStr);
+    setCompletionContent('');
+    setCompletingRecord(record);
+  };
+
+  const confirmComplete = async () => {
+    if (!completingRecord) return;
+    const record = completingRecord;
+    setCompletingRecord(null);
     try {
+      const occurredAt = `${completeDate}T${completeTime}:00+08:00`;
+      const payload: { [key: string]: string } = { occurred_at: occurredAt, date: completeDate };
+      if (completionContent.trim()) payload.completion_content = completionContent.trim();
       const res = await fetch(`/api/v2/records/${record.id}/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
         setRefreshKey(k => k + 1);
@@ -355,18 +723,24 @@ export default function RecordsClient() {
     }
   };
 
-  // 推迟计划：生成一条新的“计划”记录投影到明天，原记录变为 postponed
+  // 推迟计划：弹出日期选择器（默认明天）
   const handlePostpone = async (record: Record) => {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth()+1).padStart(2,'0')}-${String(tomorrow.getDate()).padStart(2,'0')}`;
-    const newDate = window.prompt(`推迟到哪天？（格式：YYYY-MM-DD）`, tomorrowStr);
-    if (!newDate) return;
+    setPostponeDate(tomorrowStr);
+    setPostponingRecord(record);
+  };
+
+  const confirmPostpone = async () => {
+    if (!postponingRecord || !postponeDate) return;
+    const record = postponingRecord;
+    setPostponingRecord(null);
     try {
       const res = await fetch(`/api/v2/records/${record.id}/postpone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ new_date: newDate }),
+        body: JSON.stringify({ new_date: postponeDate }),
       });
       if (res.ok) {
         setRefreshKey(k => k + 1);
@@ -402,10 +776,20 @@ export default function RecordsClient() {
   const handleConvertToPlan = async (record: Record) => {
     if (!window.confirm(`将「${record.content}」转为计划？`)) return;
     try {
+      const updatePayload: { [key: string]: unknown } = {
+        type: '计划',
+        lifecycle_status: 'active',
+      };
+      // 如果记录没有 time_anchor_date，设为今天（计划需要出现在时间线上）
+      if (!record.time_anchor_date) {
+        const today = new Date();
+        const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+        updatePayload.time_anchor_date = todayStr;
+      }
       const res = await fetch(`/api/v2/records/${record.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: '计划' }),
+        body: JSON.stringify(updatePayload),
       });
       if (res.ok) {
         setRefreshKey(k => k + 1);
@@ -439,12 +823,42 @@ export default function RecordsClient() {
           });
         }
         setRefreshKey(k => k + 1);
+      } else if (res.status === 409) {
+        // 同名事项冲突
+        const data = await res.json();
+        showError(data.conflict?.message || '已存在同名事项');
       } else {
         const err = await res.json();
         showError(err.error || '创建事项失败');
       }
     } catch {
       showError('创建事项失败，请重试');
+    }
+  };
+
+  // 记录→目标：用记录内容创建新目标
+  const handleConvertToGoal = async (record: Record) => {
+    const title = window.prompt('新目标名称：', record.content?.slice(0, 30) || '');
+    if (!title?.trim()) return;
+    try {
+      const res = await fetch('/api/v2/goals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title.trim(),
+          description: record.content,
+          source: 'manual',
+          ...(record.item_id ? { item_id: record.item_id } : {}),
+        }),
+      });
+      if (res.ok) {
+        setRefreshKey(k => k + 1);
+      } else {
+        const err = await res.json();
+        showError(err.error || '创建目标失败');
+      }
+    } catch {
+      showError('创建目标失败，请重试');
     }
   };
 
@@ -468,13 +882,44 @@ export default function RecordsClient() {
   }, []);
 
   const handleSelectAll = () => {
-    const allIds = (isMultiDay ? records : singleDayRecords).map(r => r.id);
-    setSelectedIds(new Set(allIds));
+    // 单日模式：toggle 全选/取消全选
+    const allIds = singleDayRecords.map(r => r.id);
+    const allSelected = allIds.length > 0 && allIds.every(id => selectedIds.has(id));
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(allIds));
+    }
+  };
+
+  // 多天模式：全选/取消全选指定日期的记录
+  const handleSelectAllForDate = (date: string) => {
+    const dayIds = records.filter(r => getRecordDisplayDate(r) === date).map(r => r.id);
+    const allSelected = dayIds.length > 0 && dayIds.every(id => selectedIds.has(id));
+    if (allSelected) {
+      // 该日已全选 → 取消全选该日
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        dayIds.forEach(id => next.delete(id));
+        return next;
+      });
+    } else {
+      // 该日未全选 → 全选该日
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        dayIds.forEach(id => next.add(id));
+        return next;
+      });
+    }
   };
 
   const handleBatchDelete = async () => {
     if (selectedIds.size === 0) return;
-    const confirmed = window.confirm(`确定删除选中的 ${selectedIds.size} 条记录？此操作不可撤销。`);
+    // 根据选中记录数给出不同级别的确认提示
+    const msg = selectedIds.size > 20
+      ? `你正在删除 ${selectedIds.size} 条记录，此操作不可撤销。确定继续？`
+      : `确定删除选中的 ${selectedIds.size} 条记录？此操作不可撤销。`;
+    const confirmed = window.confirm(msg);
     if (!confirmed) return;
 
     setBatchDeleting(true);
@@ -633,19 +1078,20 @@ export default function RecordsClient() {
               tags={tags}
               items={items}
               onRecordCreated={handleRecordCreated}
-              onAiStart={handleAiStart}
-              onAiDone={handleAiDone}
+              onPendingCreated={handlePendingCreated}
+              onPendingResolved={handlePendingResolved}
+              onPendingSessionPatch={handlePendingSessionPatch}
+              onDeferResolved={handleDeferResolved}
+              resumeClarify={resumeClarify}
+              onResumeClarifyApplied={() => setResumeClarify(null)}
               onError={showError}
             />
             <div className="mt-2">
               <FilterBar
                 filterType={filterType}
-                filterTagId={filterTagId}
                 filterItemId={filterItemId}
-                tags={tags}
                 items={items}
                 onFilterTypeChange={setFilterType}
-                onFilterTagChange={setFilterTagId}
                 onFilterItemChange={setFilterItemId}
               />
             </div>
@@ -657,12 +1103,9 @@ export default function RecordsClient() {
           <div className="mx-auto max-w-7xl mt-2">
             <FilterBar
               filterType={filterType}
-              filterTagId={filterTagId}
               filterItemId={filterItemId}
-              tags={tags}
               items={items}
               onFilterTypeChange={setFilterType}
-              onFilterTagChange={setFilterTagId}
               onFilterItemChange={setFilterItemId}
             />
           </div>
@@ -672,12 +1115,17 @@ export default function RecordsClient() {
         {selectionMode && (
           <div className={`mx-auto mt-2 flex items-center gap-3 ${isMultiDay ? 'max-w-7xl' : 'max-w-2xl'}`}>
             <span className="text-xs text-slate-500">已选 {selectedIds.size} 条</span>
-            <button
-              onClick={handleSelectAll}
-              className="rounded-lg px-2.5 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
-            >
-              全选当前
-            </button>
+            {!isMultiDay && (
+              <button
+                onClick={handleSelectAll}
+                className="rounded-lg px-2.5 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
+              >
+                全选本日
+              </button>
+            )}
+            {isMultiDay && (
+              <span className="text-[11px] text-slate-400">点击列头日期可全选该日</span>
+            )}
             <button
               onClick={handleBatchDelete}
               disabled={selectedIds.size === 0 || batchDeleting}
@@ -707,7 +1155,7 @@ export default function RecordsClient() {
               ) : (
                 <RecordList
                   records={singleDayRecords}
-                  onRecordClick={setEditingRecord}
+                  onRecordClick={handleRecordClick}
                   onStarToggle={handleStarToggle}
                   aiPendingIds={aiPendingIds}
                   selectionMode={selectionMode}
@@ -718,6 +1166,7 @@ export default function RecordsClient() {
                   onCancel={handleCancel}
                   onConvertToPlan={handleConvertToPlan}
                   onConvertToItem={handleConvertToItem}
+                  onConvertToGoal={handleConvertToGoal}
                 />
               )}
             </div>
@@ -750,13 +1199,15 @@ export default function RecordsClient() {
                       selectionMode={selectionMode}
                       selectedIds={selectedIds}
                       onToggleSelect={handleToggleSelect}
-                      onRecordClick={setEditingRecord}
+                      onSelectAllForDate={handleSelectAllForDate}
+                      onRecordClick={handleRecordClick}
                       onStarToggle={handleStarToggle}
                       onComplete={handleComplete}
                       onPostpone={handlePostpone}
                       onCancel={handleCancel}
                       onConvertToPlan={handleConvertToPlan}
                       onConvertToItem={handleConvertToItem}
+                      onConvertToGoal={handleConvertToGoal}
                       onError={showError}
                     />
                   </div>
@@ -786,8 +1237,12 @@ export default function RecordsClient() {
               tags={tags}
               items={items}
               onRecordCreated={handleRecordCreated}
-              onAiStart={handleAiStart}
-              onAiDone={handleAiDone}
+              onPendingCreated={handlePendingCreated}
+              onPendingResolved={handlePendingResolved}
+              onPendingSessionPatch={handlePendingSessionPatch}
+              onDeferResolved={handleDeferResolved}
+              resumeClarify={resumeClarify}
+              onResumeClarifyApplied={() => setResumeClarify(null)}
               onError={showError}
             />
           </div>
@@ -804,6 +1259,65 @@ export default function RecordsClient() {
           onDeleted={handleRecordUpdated}
           onError={showError}
         />
+      )}
+
+      {/* 完成计划对话框：实际完成内容+日期+时间 */}
+      {completingRecord && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setCompletingRecord(null)}>
+          <div className="bg-white rounded-xl shadow-lg p-5 w-96 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-slate-800">完成计划</h3>
+            <p className="text-xs text-slate-500">{completingRecord.content}</p>
+            <div className="space-y-2">
+              <label className="block text-xs text-slate-600">
+                实际完成内容
+                <textarea
+                  value={completionContent}
+                  onChange={(e) => setCompletionContent(e.target.value)}
+                  placeholder="描述实际完成了什么（可选，留空则沿用原计划内容）"
+                  rows={2}
+                  className="mt-1 block w-full rounded border border-slate-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none resize-none"
+                />
+              </label>
+              <label className="block text-xs text-slate-600">
+                完成日期
+                <input type="date" value={completeDate} onChange={(e) => setCompleteDate(e.target.value)}
+                  className="mt-1 block w-full rounded border border-slate-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none" />
+              </label>
+              <label className="block text-xs text-slate-600">
+                完成时间
+                <input type="time" value={completeTime} onChange={(e) => setCompleteTime(e.target.value)}
+                  className="mt-1 block w-full rounded border border-slate-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none" />
+              </label>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setCompletingRecord(null)}
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-50">取消</button>
+              <button onClick={confirmComplete}
+                className="rounded-lg bg-green-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600">确认完成</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 推迟计划对话框：日期选择 */}
+      {postponingRecord && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setPostponingRecord(null)}>
+          <div className="bg-white rounded-xl shadow-lg p-5 w-80 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-slate-800">推迟计划</h3>
+            <p className="text-xs text-slate-500">{postponingRecord.content}</p>
+            <label className="block text-xs text-slate-600">
+              推迟到
+              <input type="date" value={postponeDate} onChange={(e) => setPostponeDate(e.target.value)}
+                className="mt-1 block w-full rounded border border-slate-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none" />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setPostponingRecord(null)}
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-50">取消</button>
+              <button onClick={confirmPostpone}
+                className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600">确认推迟</button>
+            </div>
+          </div>
+        </div>
       )}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>

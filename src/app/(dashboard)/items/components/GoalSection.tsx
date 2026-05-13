@@ -9,10 +9,11 @@ import GoalCard from './GoalCard';
 import GoalForm from './GoalForm';
 
 const STATUS_LABELS: Record<GoalStatus, string> = {
+  '草稿': '草稿',
   '进行中': '进行中',
-  '已达成': '已达成',
-  '已放弃': '已放弃',
-  '已暂停': '已暂停',
+  '已完成': '已完成',
+  '暂停': '暂停',
+  '放弃': '放弃',
 };
 
 export default function GoalSection() {

@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { createClient } from '@/lib/supabase/server';
+import { handleApiError } from '@/lib/api/error-handler';
+import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
+import { ERROR_CODES } from '@/lib/observability/id-registry';
 
 export const runtime = 'edge';
 
@@ -9,6 +12,7 @@ export const runtime = 'edge';
  * 导出记录为CSV
  */
 export async function GET(request: NextRequest) {
+  const ctx = withTrace(request);
   try {
     const userId = await getCurrentUserId();
     const { searchParams } = new URL(request.url);
@@ -31,7 +35,7 @@ export async function GET(request: NextRequest) {
     const { data: days, error: daysError } = await dayQuery;
     if (daysError) throw new Error(`查询日期失败: ${daysError.message}`);
     if (!days || days.length === 0) {
-      return NextResponse.json({ error: '所选范围内无数据' }, { status: 404 });
+      return apiError(ERROR_CODES.EXPORT_NO_DATA, '所选范围内无数据', ctx.traceId, 404);
     }
 
     const dayIds = days.map(d => d.id);
@@ -97,12 +101,8 @@ export async function GET(request: NextRequest) {
     }
 
     // JSON fallback
-    return NextResponse.json({ data: records });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess(records, ctx.traceId);
+  } catch (error) {
+    return handleApiError(error);
   }
 }

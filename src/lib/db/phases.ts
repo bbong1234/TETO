@@ -1,5 +1,9 @@
 import { createClient } from '@/lib/supabase/server';
+import { tryRpc } from '@/lib/domain/transaction-service';
+import { createComponentLogger } from '@/lib/observability/logger';
 import type { Phase, CreatePhasePayload, UpdatePhasePayload, PhasesQuery } from '@/types/teto';
+
+const log = createComponentLogger('db-phases');
 
 /**
  * 获取阶段列表
@@ -167,12 +171,52 @@ export async function updatePhase(
 
 /**
  * 删除阶段
- * @param userId 用户ID
- * @param id 阶段ID
+ *
+ * P5: 优先使用 RPC 事务化操作（原子性保证）
+ * RPC 未部署时 fallback 到原有非事务逻辑，打印警告
  */
 export async function deletePhase(userId: string, id: string): Promise<void> {
   const supabase = await createClient();
 
+  // 优先使用 RPC 事务化操作（懒检测，自动缓存可用性）
+  const rpcResult = await tryRpc(supabase, 'rpc_delete_phase', {
+    p_user_id: userId,
+    p_phase_id: id,
+  });
+
+  if (rpcResult.ok) return;
+
+  // RPC 已部署但业务逻辑失败 → 抛出错误
+  if (rpcResult.rpcDeployed) {
+    throw new Error(`删除阶段失败: ${rpcResult.error}`);
+  }
+
+  // Fallback: 非事务逻辑（RPC 未部署时）
+  log.warn('rpc_delete_phase 未部署，使用非事务 fallback');
+
+  // 1. 置空关联记录的 phase_id
+  const { error: recordsError } = await supabase
+    .from('records')
+    .update({ phase_id: null })
+    .eq('user_id', userId)
+    .eq('phase_id', id);
+
+  if (recordsError) {
+    throw new Error(`删除阶段 - 置空关联记录失败: ${recordsError.message}`);
+  }
+
+  // 2. 置空关联目标的 phase_id
+  const { error: goalsError } = await supabase
+    .from('goals')
+    .update({ phase_id: null })
+    .eq('user_id', userId)
+    .eq('phase_id', id);
+
+  if (goalsError) {
+    throw new Error(`删除阶段 - 置空关联目标失败: ${goalsError.message}`);
+  }
+
+  // 3. 物理删除阶段
   const { error } = await supabase
     .from('phases')
     .delete()

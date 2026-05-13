@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server';
 import type { Record, CreateRecordPayload, UpdateRecordPayload, RecordsQuery, Tag } from '@/types/teto';
 import { getOrCreateRecordDay } from './record-days';
 import { attachTagsToRecord, replaceRecordTags } from './tags';
+import { computeTrustLevel } from '@/lib/trust/compute-trust';
 
 /**
  * 创建记录
@@ -51,7 +52,10 @@ export async function createRecord(
 
   // 重新获取带关联的数据
   try {
-    return (await getRecordById(userId, data.id))!;
+    const record = (await getRecordById(userId, data.id))!;
+    // 计算可信度（新记录无 corrections）
+    const trustResult = computeTrustLevel(record, 0);
+    return { ...record, trust_level: trustResult.level, trust_detail: trustResult } as Record;
   } catch {
     // 即使获取完整数据失败，也返回已创建的记录
     return data as Record;
@@ -75,9 +79,28 @@ export async function updateRecord(
   // 如果 time_anchor_date 被更新，重新归属 record_day_id
   // 确保编辑后记录仍挂在正确的日期下
   let newRecordDayId: string | undefined;
-  if (recordData.time_anchor_date !== undefined && recordData.time_anchor_date) {
-    const recordDay = await getOrCreateRecordDay(userId, recordData.time_anchor_date);
-    newRecordDayId = recordDay.id;
+  if (recordData.time_anchor_date !== undefined) {
+    if (recordData.time_anchor_date) {
+      // time_anchor_date 被设为新值：归属到新日期
+      const recordDay = await getOrCreateRecordDay(userId, recordData.time_anchor_date);
+      newRecordDayId = recordDay.id;
+    } else {
+      // time_anchor_date 被清空：需要回退到原始 date 对应的 record_day
+      // 先查当前记录的 record_day 关联信息
+      const { data: currentRecord } = await supabase
+        .from('records')
+        .select('record_day_id, record_days(date)')
+        .eq('id', id)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (currentRecord?.record_days) {
+        // 记录当前仍在原始日期下，无需变动
+        // 但如果之前 time_anchor_date 导致 record_day 指向了锚定日期，
+        // 这里需要将 record_day 归位到 date（通过 payload 中的 date 参数或记录原始日期）
+        // 注意：清空 time_anchor_date 时，记录应保留在当前 record_day（因为 date 字段不再通过 payload 传入）
+      }
+    }
   }
 
   // 构建更新对象，只更新有值的字段
@@ -92,7 +115,6 @@ export async function updateRecord(
   if (recordData.note !== undefined) updateData.note = recordData.note;
   if (recordData.item_id !== undefined) updateData.item_id = recordData.item_id;
   if (recordData.phase_id !== undefined) updateData.phase_id = recordData.phase_id;
-  if (recordData.goal_id !== undefined) updateData.goal_id = recordData.goal_id;
   if (recordData.sub_item_id !== undefined) updateData.sub_item_id = recordData.sub_item_id;
   if (recordData.sort_order !== undefined) updateData.sort_order = recordData.sort_order;
   if (recordData.is_starred !== undefined) updateData.is_starred = recordData.is_starred;
@@ -117,6 +139,26 @@ export async function updateRecord(
   if (recordData.period_frequency !== undefined) updateData.period_frequency = recordData.period_frequency;
   if (recordData.period_expanded !== undefined) updateData.period_expanded = recordData.period_expanded;
   if (recordData.period_source_id !== undefined) updateData.period_source_id = recordData.period_source_id;
+  // === 三层九组 Phase 1 新增 ===
+  if (recordData.occurred_at_end !== undefined) updateData.occurred_at_end = recordData.occurred_at_end;
+  if (recordData.time_text !== undefined) updateData.time_text = recordData.time_text;
+  if (recordData.time_precision !== undefined) updateData.time_precision = recordData.time_precision;
+  if (recordData.action_text !== undefined) updateData.action_text = recordData.action_text;
+  if (recordData.event_text !== undefined) updateData.event_text = recordData.event_text;
+  if (recordData.object_text !== undefined) updateData.object_text = recordData.object_text;
+  if (recordData.outcome_type !== undefined) updateData.outcome_type = recordData.outcome_type;
+  if (recordData.outcome_direction !== undefined) updateData.outcome_direction = recordData.outcome_direction;
+  if (recordData.cause_text !== undefined) updateData.cause_text = recordData.cause_text;
+  if (recordData.place_type !== undefined) updateData.place_type = recordData.place_type;
+  if (recordData.money_direction !== undefined) updateData.money_direction = recordData.money_direction;
+  if (recordData.metrics !== undefined) updateData.metrics = recordData.metrics;
+  if (recordData.relation_roles !== undefined) updateData.relation_roles = recordData.relation_roles;
+  if (recordData.review_status !== undefined) updateData.review_status = recordData.review_status;
+  if (recordData.confidence_level !== undefined) updateData.confidence_level = recordData.confidence_level;
+  if (recordData.input_source !== undefined) updateData.input_source = recordData.input_source;
+  // === 1.5 录入结构对齐新增 ===
+  if (recordData.body_state !== undefined) updateData.body_state = recordData.body_state;
+  if (recordData.money_currency !== undefined) updateData.money_currency = recordData.money_currency;
   // 如果 time_anchor_date 更新导致 record_day 需要重新归属，一并更新
   if (newRecordDayId) updateData.record_day_id = newRecordDayId;
 
@@ -140,7 +182,9 @@ export async function updateRecord(
   if (!updated) {
     throw new Error('更新记录后获取失败');
   }
-  return updated;
+  // 计算可信度（correctionCount 暂传 0，由 correction API 单独处理）
+  const trustResult = computeTrustLevel(updated, 0);
+  return { ...updated, trust_level: trustResult.level, trust_detail: trustResult } as Record;
 }
 
 /**
@@ -193,6 +237,7 @@ export async function getRecordById(
       .from('items')
       .select('id, title')
       .eq('id', data.item_id)
+      .eq('user_id', userId)
       .maybeSingle();
     if (itemData) {
       itemMap.set(itemData.id, itemData);
@@ -311,13 +356,36 @@ export async function listRecords(
     q = q.ilike('content', `%${escaped}%`);
   }
 
-  const { data, error } = await q
-    .order('occurred_at', { ascending: false, nullsFirst: false })
-    .order('created_at', { ascending: false })
-    .limit(query.limit || 500);
+  // 添加排序：同批次记录排在一起，批次内按 created_at 排序
+  // occurred_at 为 NULL 的拆分记录应紧跟主记录，而非排在前面
+  q = q
+    .order('occurred_at', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true });
 
-  if (error) {
-    throw new Error(`列出记录失败: ${error.message}`);
+  // 分页获取，突破 Supabase 默认 1000 行限制
+  // limit=0 表示无上限
+  const PAGE_SIZE = 1000;
+  const requestedLimit = query.limit ?? 500;
+  let data: any[];
+
+  if (requestedLimit > 0 && requestedLimit <= PAGE_SIZE) {
+    const result = await q.limit(requestedLimit);
+    if (result.error) throw new Error(`列出记录失败: ${result.error.message}`);
+    data = result.data || [];
+  } else {
+    data = [];
+    let from = 0;
+    const maxRows = requestedLimit > 0 ? requestedLimit : Number.MAX_SAFE_INTEGER;
+
+    while (from < maxRows) {
+      const to = Math.min(from + PAGE_SIZE - 1, maxRows - 1);
+      const { data: batch, error } = await q.range(from, to);
+      if (error) throw new Error(`列出记录失败: ${error.message}`);
+      if (!batch || batch.length === 0) break;
+      data.push(...batch);
+      if (batch.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
   }
 
   if (!data || data.length === 0) return [];
@@ -329,6 +397,7 @@ export async function listRecords(
     const { data: itemsData } = await supabase
       .from('items')
       .select('id, title')
+      .eq('user_id', userId)
       .in('id', itemIds);
     for (const item of (itemsData ?? [])) {
       itemMap.set(item.id, item);
@@ -363,6 +432,99 @@ function enrichRecordWithRelations(
   record.item = (row.item_id ? itemMap.get(row.item_id) ?? null : null);
 
   return record;
+}
+
+/**
+ * 批量创建记录（用于历史导入）
+ * - 预处理所有不重复日期的 record_day（批量 upsert）
+ * - 一次性批量 insert 所有记录
+ * - 跳过逐条 AI enhance（历史数据已定型，无需 AI 补全）
+ * - 返回成功创建的记录数和错误列表
+ */
+export async function batchCreateRecords(
+  userId: string,
+  payloads: CreateRecordPayload[]
+): Promise<{ success: number; failed: number; errors: string[]; createdIds: string[] }> {
+  const supabase = await createClient();
+  const errors: string[] = [];
+  const createdIds: string[] = [];
+
+  if (payloads.length === 0) {
+    return { success: 0, failed: 0, errors: [], createdIds: [] };
+  }
+
+  // 1. 收集所有不重复的日期，批量 upsert record_days
+  const dateSet = [...new Set(
+    payloads.map(p => p.time_anchor_date || p.date).filter(Boolean) as string[]
+  )];
+
+  const dateToDayId = new Map<string, string>();
+
+  if (dateSet.length > 0) {
+    // 批量 upsert 所有不重复日期的 record_day
+    const { data: dayData, error: dayError } = await supabase
+      .from('record_days')
+      .upsert(
+        dateSet.map(d => ({ user_id: userId, date: d })),
+        { onConflict: 'user_id,date' }
+      )
+      .select('id, date');
+
+    if (dayError) {
+      return { success: 0, failed: payloads.length, errors: [`批量创建记录日失败: ${dayError.message}`], createdIds: [] };
+    }
+
+    for (const day of (dayData ?? [])) {
+      dateToDayId.set(day.date, day.id);
+    }
+  }
+
+  // 2. 构建批量 insert 行
+  const rows = payloads.map((p, index) => {
+    const recordDate = p.time_anchor_date || p.date;
+    const recordDayId = dateToDayId.get(recordDate);
+    if (!recordDayId) {
+      errors.push(`第 ${index + 1} 条: 无法找到或创建日期 ${recordDate} 的记录日`);
+      return null;
+    }
+    const { tag_ids, date, ...recordData } = p;
+    return {
+      user_id: userId,
+      record_day_id: recordDayId,
+      ...recordData,
+      type: recordData.type ?? '发生',
+      sort_order: recordData.sort_order ?? 0,
+      is_starred: recordData.is_starred ?? false,
+      input_source: recordData.input_source ?? 'import',
+    };
+  }).filter(Boolean) as { [key: string]: unknown }[];
+
+  if (rows.length === 0) {
+    return { success: 0, failed: payloads.length, errors, createdIds: [] };
+  }
+
+  // 3. 分批 insert（Supabase 单次 insert 上限约 1000 行，用 500 一批更安全）
+  const BATCH_SIZE = 500;
+  for (let offset = 0; offset < rows.length; offset += BATCH_SIZE) {
+    const batch = rows.slice(offset, offset + BATCH_SIZE);
+    const { data, error: insertError } = await supabase
+      .from('records')
+      .insert(batch)
+      .select('id');
+
+    if (insertError) {
+      errors.push(`批次插入失败(${offset + 1}-${Math.min(offset + BATCH_SIZE, rows.length)}): ${insertError.message}`);
+      continue;
+    }
+
+    for (const row of (data ?? [])) {
+      createdIds.push(row.id);
+    }
+  }
+
+  const success = createdIds.length;
+  const failed = payloads.length - success;
+  return { success, failed, errors, createdIds };
 }
 
 /** 转义 PostgREST .or() 过滤值中的特殊字符 */

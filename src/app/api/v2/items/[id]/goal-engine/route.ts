@@ -1,16 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
-import { computeGoalEngineForItem, computeRepeatGoalEngineForItem } from '@/lib/db/goal-engine';
+import { computeGoalEngineForItem } from '@/lib/db/goal-engine';
 import { createClient } from '@/lib/supabase/server';
+import { handleApiError } from '@/lib/api/error-handler';
+import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
+import { ERROR_CODES } from '@/lib/observability/id-registry';
 
 /**
  * GET /api/v2/items/{id}/goal-engine
- * 返回该事项下所有量化目标和重复型目标的引擎计算结果
+ * 返回该事项下所有目标的引擎计算结果（统一接口）
  */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const ctx = withTrace(request);
   try {
     const userId = await getCurrentUserId();
     const { id: itemId } = await params;
@@ -28,23 +32,13 @@ export async function GET(
     }
 
     if (!item || item.user_id !== userId) {
-      return NextResponse.json({ error: '事项不存在或不属于当前用户' }, { status: 404 });
+      return apiError(ERROR_CODES.ITEM_NOT_FOUND, '事项不存在或不属于当前用户', ctx.traceId, 404);
     }
 
-    const [numericResults, repeatResults] = await Promise.all([
-      computeGoalEngineForItem(userId, itemId),
-      computeRepeatGoalEngineForItem(userId, itemId),
-    ]);
+    const results = await computeGoalEngineForItem(userId, itemId);
 
-    return NextResponse.json({
-      data: numericResults,
-      repeatGoals: repeatResults,
-    });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess(results, ctx.traceId);
+  } catch (error) {
+    return handleApiError(error);
   }
 }

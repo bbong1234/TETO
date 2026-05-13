@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { createClient } from '@/lib/supabase/server';
+import { handleApiError } from '@/lib/api/error-handler';
+import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
+import { ERROR_CODES } from '@/lib/observability/id-registry';
+import { startSpan, endSpan } from '@/lib/observability/trace';
+import { PipelineStage } from '@/lib/ai/agent-pipeline';
 
 interface PhaseSuggestion {
   title: string;
@@ -10,13 +15,14 @@ interface PhaseSuggestion {
 }
 
 export async function GET(request: NextRequest) {
+  const ctx = withTrace(request);
   try {
     const userId = await getCurrentUserId();
     const { searchParams } = new URL(request.url);
     const itemId = searchParams.get('item_id');
 
     if (!itemId) {
-      return NextResponse.json({ error: 'item_id 为必填参数' }, { status: 400 });
+      return apiError(ERROR_CODES.INSIGHT_QUERY_INVALID, 'item_id 为必填参数', ctx.traceId, 400);
     }
 
     const supabase = await createClient();
@@ -30,7 +36,7 @@ export async function GET(request: NextRequest) {
       .maybeSingle();
 
     if (!item) {
-      return NextResponse.json({ error: '事项不存在或不属于当前用户' }, { status: 404 });
+      return apiError(ERROR_CODES.ITEM_NOT_FOUND, '事项不存在或不属于当前用户', ctx.traceId, 404);
     }
 
     // 2. 获取已有阶段（用于排除已有范围和质量过滤）
@@ -52,7 +58,7 @@ export async function GET(request: NextRequest) {
       .gte('date', fromDate);
 
     if (!dayData || dayData.length === 0) {
-      return NextResponse.json({ data: [] });
+      return apiSuccess([], ctx.traceId);
     }
 
     const dayIds = dayData.map((d: { id: string }) => d.id);
@@ -67,7 +73,7 @@ export async function GET(request: NextRequest) {
       .order('created_at', { ascending: true });
 
     if (!records || records.length < 3) {
-      return NextResponse.json({ data: [] });
+      return apiSuccess([], ctx.traceId);
     }
 
     // 构建 record_day_id → date 映射
@@ -105,7 +111,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (filteredRecords.length < 3) {
-      return NextResponse.json({ data: [] });
+      return apiSuccess([], ctx.traceId);
     }
 
     // 5. 按周聚合记录密度
@@ -133,13 +139,16 @@ export async function GET(request: NextRequest) {
     }
 
     if (weeklyMap.size < 2) {
-      return NextResponse.json({ data: [] });
+      return apiSuccess([], ctx.traceId);
     }
 
     // 6. 检测密度变化点
     const weeks = Array.from(weeklyMap.entries()).sort(([a], [b]) => a.localeCompare(b));
     const densities = weeks.map(([, w]) => w.count);
     const avgDensity = densities.reduce((s, c) => s + c, 0) / densities.length;
+
+    const densitySpan = startSpan(ctx.traceId, PipelineStage.LOG, `阶段密度计算: avg=${avgDensity.toFixed(1)}, 周数=${densities.length}`);
+    endSpan(densitySpan, 'ok', `均值=${avgDensity.toFixed(1)}`);
 
     // 找连续高于均值的周段
     const suggestions: PhaseSuggestion[] = [];
@@ -218,13 +227,9 @@ export async function GET(request: NextRequest) {
       return true;
     });
 
-    return NextResponse.json({ data: filtered.slice(0, 3) });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess(filtered.slice(0, 3), ctx.traceId);
+  } catch (error) {
+    return handleApiError(error);
   }
 }
 

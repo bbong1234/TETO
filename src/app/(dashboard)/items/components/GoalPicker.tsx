@@ -6,17 +6,19 @@ import type { Goal, GoalStatus } from '@/types/teto';
 
 // 状态中文映射
 const STATUS_LABELS: Record<GoalStatus, string> = {
+  '草稿': '草稿',
   '进行中': '进行中',
-  '已达成': '已达成',
-  '已放弃': '已放弃',
-  '已暂停': '已暂停',
+  '已完成': '已完成',
+  '暂停': '暂停',
+  '放弃': '放弃',
 };
 
 const STATUS_COLORS: Record<GoalStatus, string> = {
+  '草稿': 'bg-slate-100 text-slate-500',
   '进行中': 'bg-green-100 text-green-700',
-  '已达成': 'bg-blue-100 text-blue-700',
-  '已放弃': 'bg-slate-100 text-slate-500',
-  '已暂停': 'bg-yellow-100 text-yellow-700',
+  '已完成': 'bg-blue-100 text-blue-700',
+  '暂停': 'bg-yellow-100 text-yellow-700',
+  '放弃': 'bg-slate-100 text-slate-500',
 };
 
 interface GoalPickerProps {

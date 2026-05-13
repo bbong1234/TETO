@@ -1,18 +1,17 @@
 import { createClient } from '@/lib/supabase/server';
-import type { RuleType, RuleSource, RuleConfidence } from '@/types/teto';
 
 // ================================
 // 类型定义
 // ================================
 
 export const RULE_TYPES = ['item_mapping', 'sub_item_mapping', 'type_routing', 'fuzzy_resolution'] as const;
-export type { RuleType };
+export type RuleType = typeof RULE_TYPES[number];
 
 export const RULE_SOURCES = ['ai_learned', 'user_set', 'system_default'] as const;
-export type { RuleSource };
+export type RuleSource = typeof RULE_SOURCES[number];
 
 export const RULE_CONFIDENCES = ['high', 'medium', 'low'] as const;
-export type { RuleConfidence };
+export type RuleConfidence = typeof RULE_CONFIDENCES[number];
 
 export interface UserRule {
   id: string;

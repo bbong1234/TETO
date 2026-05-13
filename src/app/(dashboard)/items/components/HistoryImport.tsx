@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { X, Upload, FileJson, FileSpreadsheet, History, Plus, CheckCircle, AlertCircle, Loader2, Download } from 'lucide-react';
-import type { CreateRecordPayload, RecordType } from '@/types/teto';
+import type { RecordType, SubItem } from '@/types/teto';
 import { RECORD_TYPES } from '@/types/teto';
 import * as XLSX from 'xlsx';
 import PhaseForm from './PhaseForm';
@@ -10,6 +10,7 @@ import PhaseForm from './PhaseForm';
 interface HistoryImportProps {
   itemId: string;
   itemTitle: string;
+  subItems: SubItem[];
   onClose: () => void;
   onRecordsImported: () => void;
   onPhaseImported: () => void;
@@ -23,6 +24,9 @@ interface HistoryRecordItem {
   type?: string;
   occurred_at?: string;
   note?: string;
+  metric_value?: number;
+  metric_unit?: string;
+  metric_name?: string;
 }
 
 // 导入结果统计
@@ -42,6 +46,7 @@ interface ImportResult {
 export default function HistoryImport({ 
   itemId, 
   itemTitle, 
+  subItems,
   onClose, 
   onRecordsImported, 
   onPhaseImported,
@@ -59,6 +64,7 @@ export default function HistoryImport({
   const [parseError, setParseError] = useState('');
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [selectedSubItemId, setSelectedSubItemId] = useState<string>('');
   
   // 阶段表单状态
   const [showPhaseForm, setShowPhaseForm] = useState(false);
@@ -71,12 +77,19 @@ export default function HistoryImport({
     if ((RECORD_TYPES as readonly string[]).includes(normalizedType)) {
       return normalizedType as RecordType;
     }
-    // 尝试匹配常见变体
+    // 尝试匹配常见变体（含旧类型收敛映射）
     const typeMap: Record<string, RecordType> = {
       'occurrence': '发生',
       'plan': '计划',
       'thought': '想法',
       'summary': '总结',
+      // 旧3种类型收敛为'发生'
+      'emotion': '发生',
+      'cost': '发生',
+      'result': '发生',
+      '情绪': '发生',
+      '花费': '发生',
+      '结果': '发生',
     };
     return typeMap[normalizedType.toLowerCase()] || '发生';
   };
@@ -92,10 +105,16 @@ export default function HistoryImport({
         if (!item.content || typeof item.content !== 'string') {
           throw new Error(`第 ${index + 1} 条记录缺少 content 字段`);
         }
+        const metricValueRaw = item.metric_value ?? item['数值'];
         return {
           content: item.content.trim(),
+          date: item.date,
           type: item.type,
           occurred_at: item.occurred_at,
+          note: item.note,
+          metric_value: metricValueRaw != null && String(metricValueRaw).trim() !== '' ? Number(metricValueRaw) : undefined,
+          metric_unit: item.metric_unit || undefined,
+          metric_name: item.metric_name || undefined,
         };
       });
     } catch (err) {
@@ -135,6 +154,11 @@ export default function HistoryImport({
     const contentIndex = headers.indexOf('content');
     const typeIndex = headers.indexOf('type');
     const occurredAtIndex = headers.indexOf('occurred_at');
+    const dateIndex = headers.indexOf('date');
+    const metricValueIndex = headers.indexOf('metric_value');
+    const metricUnitIndex = headers.indexOf('metric_unit');
+    const metricNameIndex = headers.indexOf('metric_name');
+    const noteIndex = headers.indexOf('note');
 
     if (contentIndex === -1) {
       throw new Error('CSV 必须包含 content 列');
@@ -147,10 +171,16 @@ export default function HistoryImport({
       if (!content) {
         throw new Error(`第 ${i + 1} 行缺少 content 值`);
       }
+      const metricValueRaw = metricValueIndex !== -1 ? values[metricValueIndex] : undefined;
       records.push({
         content,
+        date: dateIndex !== -1 ? values[dateIndex] : undefined,
         type: typeIndex !== -1 ? values[typeIndex] : undefined,
         occurred_at: occurredAtIndex !== -1 ? values[occurredAtIndex] : undefined,
+        note: noteIndex !== -1 ? values[noteIndex] : undefined,
+        metric_value: metricValueRaw && metricValueRaw.trim() !== '' ? Number(metricValueRaw) : undefined,
+        metric_unit: metricUnitIndex !== -1 ? values[metricUnitIndex] || undefined : undefined,
+        metric_name: metricNameIndex !== -1 ? values[metricNameIndex] || undefined : undefined,
       });
     }
     return records;
@@ -159,21 +189,44 @@ export default function HistoryImport({
   // 解析 Excel 数据
   const parseExcel = useCallback((data: ArrayBuffer): HistoryRecordItem[] => {
     try {
-      const workbook = XLSX.read(data, { type: 'array' });
+      const workbook = XLSX.read(data, { type: 'array', cellDates: true });
       const sheetName = workbook.SheetNames[0];
       if (!sheetName) throw new Error('Excel 文件中没有工作表');
       const sheet = workbook.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { raw: false, dateNF: 'yyyy-mm-dd' });
       if (rows.length === 0) throw new Error('Excel 文件中没有数据行');
       return rows.map((row, index) => {
         const content = String(row['content'] || '').trim();
         if (!content) throw new Error(`第 ${index + 2} 行缺少 content 列`);
+        const metricValueRaw = row['metric_value'] ?? row['数值'];
+        // 统一日期格式：将 2024/12/23 或 12/23/2024 等格式转为 2024-12-23
+        const normalizeDate = (val: unknown): string | undefined => {
+          if (!val) return undefined;
+          const s = String(val).trim();
+          // 已经是标准 YYYY-MM-DD 格式
+          if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+          // 斜杠格式 YYYY/MM/DD
+          const slashMatch = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+          if (slashMatch) {
+            const [, y, m, d] = slashMatch;
+            return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+          }
+          // 尝试用 Date 解析兜底
+          const dt = new Date(s);
+          if (!isNaN(dt.getTime())) {
+            return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+          }
+          return s; // 无法识别则原样返回
+        };
         return {
           content,
-          date: row['date'] ? String(row['date']).trim() : undefined,
+          date: normalizeDate(row['date']),
           type: row['type'] ? String(row['type']).trim() : undefined,
           occurred_at: row['occurred_at'] ? String(row['occurred_at']).trim() : undefined,
           note: row['note'] ? String(row['note']).trim() : undefined,
+          metric_value: metricValueRaw != null && String(metricValueRaw).trim() !== '' ? Number(metricValueRaw) : undefined,
+          metric_unit: row['metric_unit'] ? String(row['metric_unit']).trim() : (row['单位'] ? String(row['单位']).trim() : undefined),
+          metric_name: row['metric_name'] ? String(row['metric_name']).trim() : (row['指标名'] ? String(row['指标名']).trim() : undefined),
         };
       });
     } catch (err) {
@@ -182,24 +235,18 @@ export default function HistoryImport({
   }, []);
 
   // 下载模板
-  const downloadTemplate = useCallback((format: 'csv' | 'xlsx') => {
-    if (format === 'csv') {
-      // 直接下载静态 CSV 模板
-      const link = document.createElement('a');
-      link.href = '/templates/history-record-import-template.csv';
-      link.download = 'history-record-import-template.csv';
-      link.click();
-    } else {
-      // 用 xlsx 库动态生成 Excel 模板
-      const headers = ['content', 'date', 'type', 'note'];
-      const example = ['示例记录内容', '2024-03-15', '发生', '可选备注'];
-      const ws = XLSX.utils.aoa_to_sheet([headers, example]);
-      // 设置列宽
-      ws['!cols'] = [{ wch: 30 }, { wch: 15 }, { wch: 10 }, { wch: 20 }];
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '导入模板');
-      XLSX.writeFile(wb, 'history-record-import-template.xlsx');
-    }
+  const downloadTemplate = useCallback(() => {
+    // 用 xlsx 库动态生成 Excel 模板（含量化字段）
+    const headers = ['content', 'date', 'type', 'metric_value', 'metric_unit', 'metric_name', 'note'];
+    const example1 = ['背了50个单词', '2024-03-15', '发生', 50, '个', '单词', ''];
+    const example2 = ['跑步30分钟', '2024-03-16', '发生', 30, '分钟', '跑步', ''];
+    const example3 = ['看完了一本书', '2024-03-17', '发生', '', '', '', '量化列可留空'];
+    const ws = XLSX.utils.aoa_to_sheet([headers, example1, example2, example3]);
+    // 设置列宽
+    ws['!cols'] = [{ wch: 30 }, { wch: 15 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 20 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '导入模板');
+    XLSX.writeFile(wb, 'history-record-import-template.xlsx');
   }, []);
 
   // 处理粘贴的数据
@@ -293,72 +340,107 @@ export default function HistoryImport({
     }
   }, [onError, parseExcel, parseJSON, parseCSV]);
 
-  // 执行导入
+  // 执行导入（批量 API）
   const handleImport = useCallback(async () => {
     if (parsedRecords.length === 0) return;
-    
+
     setImporting(true);
     setImportResult(null);
-    
-    const result: ImportResult = {
-      total: parsedRecords.length,
-      success: 0,
-      failed: 0,
-      errors: [],
-    };
-    
-    // 逐条导入记录
-    for (let i = 0; i < parsedRecords.length; i++) {
-      const record = parsedRecords[i];
-      try {
-        // 提取日期：优先使用 record.date，其次从 occurred_at 提取
-        let date = record.date || new Date().toISOString().slice(0, 10);
+
+    try {
+      // 标准化日期格式：将 2024/12/23 等格式统一为 2024-12-23
+      const normalizeDateStr = (val: string | undefined): string | undefined => {
+        if (!val) return undefined;
+        const s = val.trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+        const slashMatch = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+        if (slashMatch) {
+          const [, y, m, d] = slashMatch;
+          return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+        }
+        const dt = new Date(s);
+        if (!isNaN(dt.getTime())) {
+          return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+        }
+        return s;
+      };
+
+      // 预处理所有记录，构建导入行（统一走 /api/v2/inputs/import）
+      const rows = parsedRecords.map((record) => {
+        let date = normalizeDateStr(record.date) || new Date().toISOString().slice(0, 10);
         let occurredAt = record.occurred_at;
-        
+
         if (occurredAt) {
           const dateObj = new Date(occurredAt);
           if (!isNaN(dateObj.getTime())) {
             if (!record.date) date = dateObj.toISOString().slice(0, 10);
           }
         } else {
-          occurredAt = record.date ? `${record.date}T00:00:00` : new Date().toISOString();
+          occurredAt = date ? `${date}T00:00:00` : new Date().toISOString();
         }
-        
-        const payload: CreateRecordPayload = {
-          content: record.content,
-          date,
-          type: validateRecordType(record.type),
-          occurred_at: occurredAt,
-          item_id: itemId,
-          note: record.note || undefined,
+
+        return {
+          structured: {
+            content: record.content,
+            date,
+            type: validateRecordType(record.type),
+            occurred_at: occurredAt,
+            note: record.note || undefined,
+            metric_value: record.metric_value ?? undefined,
+            metric_unit: record.metric_unit || undefined,
+            metric_name: record.metric_name || undefined,
+            // 先保留字段，后端当前暂未消费 item_title，可在后续 P1.5 接入
+            item_title: itemTitle,
+          },
+          meta: {
+            item_id: itemId,
+            sub_item_id: selectedSubItemId || undefined,
+          },
         };
-        
-        const res = await fetch('/api/v2/records', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        
-        if (res.ok) {
-          result.success++;
-        } else {
-          const errData = await res.json().catch(() => ({ error: '请求失败' }));
-          result.failed++;
-          result.errors.push(`第 ${i + 1} 条: ${errData.error || '导入失败'}`);
-        }
-      } catch (err) {
-        result.failed++;
-        result.errors.push(`第 ${i + 1} 条: ${err instanceof Error ? err.message : '导入失败'}`);
+      });
+
+      const result: ImportResult = {
+        total: parsedRecords.length,
+        success: 0,
+        failed: 0,
+        errors: [],
+      };
+
+      const res = await fetch('/api/v2/inputs/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows }),
+      });
+      const data = await res.json();
+      const envelope = data?.data ?? data;
+
+      if (res.ok) {
+        result.success = envelope?.succeeded ?? 0;
+        result.failed = envelope?.failed ?? 0;
+        result.errors = Array.isArray(envelope?.failed_rows)
+          ? envelope.failed_rows.map((r: { index: number; error: string }) => `第 ${r.index + 1} 行：${r.error}`)
+          : [];
+      } else {
+        result.failed = parsedRecords.length;
+        result.errors.push(data?.error?.message || data?.message || '导入失败');
       }
+
+      setImportResult(result);
+      setImporting(false);
+
+      if (result.success > 0) {
+        onRecordsImported();
+      }
+    } catch (err) {
+      setImportResult({
+        total: parsedRecords.length,
+        success: 0,
+        failed: parsedRecords.length,
+        errors: [err instanceof Error ? err.message : '导入失败'],
+      });
+      setImporting(false);
     }
-    
-    setImportResult(result);
-    setImporting(false);
-    
-    if (result.success > 0) {
-      onRecordsImported();
-    }
-  }, [parsedRecords, itemId, onRecordsImported]);
+  }, [parsedRecords, itemId, selectedSubItemId, onRecordsImported]);
 
   // 处理阶段保存成功
   const handlePhaseSaved = () => {
@@ -444,6 +526,25 @@ export default function HistoryImport({
         <p className="text-xs text-blue-700">清晰的历史内容，按记录进入系统。后续可在事项时间线中统一回看。</p>
       </div>
       
+      {/* 子项选择 */}
+      {subItems.length > 0 && (
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-slate-500">
+            导入到子项
+          </label>
+          <select
+            value={selectedSubItemId}
+            onChange={(e) => setSelectedSubItemId(e.target.value)}
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            <option value="">未归类（暂不确定归属）</option>
+            {subItems.map(sub => (
+              <option key={sub.id} value={sub.id}>{sub.title}</option>
+            ))}
+          </select>
+        </div>
+      )}
+      
       {/* 输入方式切换 */}
       {!parsedRecords.length && !importResult && (
         <>
@@ -519,14 +620,7 @@ content,type,occurred_at
               <div className="mt-3 flex items-center gap-2 flex-wrap">
                 <span className="text-[10px] text-slate-400">下载模板：</span>
                 <button
-                  onClick={() => downloadTemplate('csv')}
-                  className="flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-600 hover:bg-slate-200 transition-colors"
-                >
-                  <Download className="h-3 w-3" />
-                  CSV 模板
-                </button>
-                <button
-                  onClick={() => downloadTemplate('xlsx')}
+                  onClick={() => downloadTemplate()}
                   className="flex items-center gap-1 rounded-lg bg-green-50 px-2 py-1 text-[10px] font-medium text-green-700 hover:bg-green-100 transition-colors"
                 >
                   <Download className="h-3 w-3" />

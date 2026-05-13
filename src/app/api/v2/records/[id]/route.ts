@@ -1,30 +1,32 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
-import { getRecordById, updateRecord, deleteRecord } from '@/lib/db/records';
+import { getRecordById } from '@/lib/db/records';
 import { createClient } from '@/lib/supabase/server';
-import { createUserRule, findMatchingRules } from '@/lib/db/user-rules';
+import { updateRecordSafely, deleteRecordSafely } from '@/lib/domain/record-service';
+import { applyAiEnhancementSafely } from '@/lib/domain/record-ai-service';
 import type { UpdateRecordPayload } from '@/types/teto';
+import { handleApiError } from '@/lib/api/error-handler';
+import { withTrace, apiSuccess, apiError, apiDomainError } from '@/lib/api/handler-wrapper';
+import { ERROR_CODES } from '@/lib/observability/id-registry';
+import { persistTraceSummary } from '@/lib/observability/trace';
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
 
     const record = await getRecordById(userId, id);
     if (!record) {
-      return NextResponse.json({ error: '记录不存在或不属于当前用户' }, { status: 404 });
+      return apiError(ERROR_CODES.RECORD_NOT_FOUND, '记录不存在或不属于当前用户', ctx.traceId, 404);
     }
 
-    return NextResponse.json({ data: record });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess(record, ctx.traceId);
+  } catch (error) {
+    return handleApiError(error);
   }
 }
 
@@ -33,98 +35,66 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
     const body: UpdateRecordPayload = await request.json();
 
-    // 校验 item 归属
-    if (body.item_id) {
-      const supabase = await createClient();
+    const supabase = await createClient();
 
-      const { data: item, error: itemError } = await supabase
-        .from('items')
-        .select('id, user_id')
-        .eq('id', body.item_id)
-        .maybeSingle();
+    // 如果客户端传入 parsed_semantic，说明是客户端 AI 增强，需走 AI 字段归属策略
+    const isClientAi = !!(body as Record<string, unknown>).parsed_semantic;
+    const result = isClientAi
+      ? await applyAiEnhancementSafely({ userId, recordId: id, aiUpdate: body as Record<string, any>, supabase })
+      : await updateRecordSafely({ userId, id, payload: body, supabase });
 
-      if (itemError) {
-        throw new Error(`查询事项失败: ${itemError.message}`);
-      }
-
-      if (!item || item.user_id !== userId) {
-        return NextResponse.json({ error: '事项不存在或不属于当前用户' }, { status: 404 });
-      }
+    if (!result.ok) {
+      return apiDomainError(result.errors, ctx.traceId);
     }
 
-    // 被动规则学习：检测用户修正并自动写入规则
-    try {
-      const oldRecord = await getRecordById(userId, id);
-      if (oldRecord) {
-        // 1. item_id 修正学习
-        if (body.item_id && body.item_id !== oldRecord.item_id && oldRecord.raw_input) {
-          const keyword = oldRecord.raw_input.slice(0, 30); // 取原始输入前30字符作为触发模式
-          const existing = await findMatchingRules(userId, keyword);
-          const alreadyHas = existing.some(r => r.rule_type === 'item_mapping' && r.target_id === body.item_id);
-          if (!alreadyHas) {
-            await createUserRule(userId, {
-              rule_type: 'item_mapping',
-              trigger_pattern: keyword,
-              target_id: body.item_id!,
-              target_type: 'item',
-              confidence: 'high',
-              source: 'ai_learned',
-            });
-          }
-        }
+    // 持久化 trace 摘要
+    persistTraceSummary({
+      supabase,
+      userId,
+      traceId: ctx.traceId,
+      operation: 'record_update',
+      status: 'ok',
+    });
 
-        // 2. type 修正学习（记录类型路由）
-        if (body.type && body.type !== oldRecord.type && oldRecord.raw_input) {
-          const keyword = oldRecord.raw_input.slice(0, 30);
-          const existing = await findMatchingRules(userId, keyword);
-          const alreadyHas = existing.some(r => r.rule_type === 'type_routing' && r.trigger_pattern === keyword);
-          if (!alreadyHas) {
-            await createUserRule(userId, {
-              rule_type: 'type_routing',
-              trigger_pattern: keyword,
-              target_id: body.type!,
-              target_type: null,
-              confidence: 'medium',
-              source: 'ai_learned',
-            });
-          }
-        }
-      }
-    } catch (learnErr) {
-      // 规则学习失败不影响主流程
-      console.error('被动规则学习失败:', learnErr);
-    }
-
-    const record = await updateRecord(userId, id, body);
-    return NextResponse.json({ data: record });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess(result.data, ctx.traceId, 200, result.warnings.length > 0 ? result.warnings : undefined);
+  } catch (error) {
+    return handleApiError(error);
   }
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
 
-    await deleteRecord(userId, id);
-    return NextResponse.json({ data: { id } });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
+    const supabase = await createClient();
+
+    const result = await deleteRecordSafely({ userId, id, supabase, traceId: ctx.traceId });
+
+    if (!result.ok) {
+      return apiDomainError(result.errors, ctx.traceId);
     }
-    return NextResponse.json({ error: message }, { status: 500 });
+
+    // 持久化 trace 摘要
+    persistTraceSummary({
+      supabase,
+      userId,
+      traceId: ctx.traceId,
+      operation: 'record_delete',
+      status: 'ok',
+    });
+
+    return apiSuccess({ id }, ctx.traceId, 200, result.warnings.length > 0 ? result.warnings : undefined);
+  } catch (error) {
+    return handleApiError(error);
   }
 }

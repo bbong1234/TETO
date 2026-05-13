@@ -19,6 +19,7 @@
  */
 
 import type { ParsedSemantic, ParsedResult, TimeAnchor } from '@/types/semantic';
+import { RULES } from '@/lib/rules';
 
 /** 用户规则简易类型（用于降级模式匹配） */
 export interface SimpleUserRule {
@@ -47,18 +48,7 @@ export interface FallbackResult {
 // 基础时间锚点解析
 // ================================
 
-const TIME_ANCHOR_MAP: Array<{ keywords: string[]; offsetDays: number; direction: 'past' | 'present' | 'future' }> = [
-  { keywords: ['前天'], offsetDays: -2, direction: 'past' },
-  { keywords: ['昨天', '昨日'], offsetDays: -1, direction: 'past' },
-  { keywords: ['今天', '今日', '当天'], offsetDays: 0, direction: 'present' },
-  { keywords: ['明天', '明日'], offsetDays: 1, direction: 'future' },
-  { keywords: ['后天'], offsetDays: 2, direction: 'future' },
-  { keywords: ['大后天'], offsetDays: 3, direction: 'future' },
-  { keywords: ['上周', '上礼拜'], offsetDays: -7, direction: 'past' },
-  { keywords: ['下周', '下礼拜'], offsetDays: 7, direction: 'future' },
-  { keywords: ['上个月'], offsetDays: -30, direction: 'past' },
-  { keywords: ['下个月'], offsetDays: 30, direction: 'future' },
-];
+const TIME_ANCHOR_MAP = RULES.parsing.time_anchor_map;
 
 function resolveDate(baseDate: string, offsetDays: number): string {
   const base = new Date(baseDate + 'T00:00:00');
@@ -114,23 +104,8 @@ function parseTimeAnchor(input: string, baseDate: string): TimeAnchor | null {
 // ================================
 
 function parseBasicMetric(input: string): ParsedSemantic['metric'] {
-  // "N个单词" / "N个" / "N次" / "N公里" 等
-  const metricPatterns: Array<{ pattern: RegExp; unit: string; name?: string }> = [
-    { pattern: /(\d+(?:\.\d+)?)\s*(?:单词|词)/, unit: '个', name: '单词' },
-    { pattern: /(\d+(?:\.\d+)?)\s*公里/, unit: '公里', name: '距离' },
-    { pattern: /(\d+(?:\.\d+)?)\s*km\b/i, unit: '公里', name: '距离' },
-    { pattern: /(\d+(?:\.\d+)?)\s*(?:道题|道|题)/, unit: '道', name: '题目' },
-    { pattern: /(\d+(?:\.\d+)?)\s*页/, unit: '页', name: '页' },
-    { pattern: /(\d+(?:\.\d+)?)\s*次/, unit: '次' },
-    { pattern: /(\d+(?:\.\d+)?)\s*个/, unit: '个' },
-    { pattern: /(\d+(?:\.\d+)?)\s*遍/, unit: '遍' },
-    { pattern: /(\d+(?:\.\d+)?)\s*篇/, unit: '篇' },
-    { pattern: /(\d+(?:\.\d+)?)\s*章/, unit: '章' },
-    { pattern: /(\d+(?:\.\d+)?)\s*节/, unit: '节' },
-  ];
-
-  for (const { pattern, unit, name } of metricPatterns) {
-    const match = input.match(pattern);
+  for (const { pattern, unit, name } of RULES.parsing.metric_patterns) {
+    const match = input.match(new RegExp(pattern));
     if (match) {
       return {
         value: parseFloat(match[1]),
@@ -143,13 +118,8 @@ function parseBasicMetric(input: string): ParsedSemantic['metric'] {
 }
 
 function parseBasicCost(input: string): number | null {
-  const patterns = [
-    /[¥￥]\s*(\d+(?:\.\d+)?)/,
-    /(\d+(?:\.\d+)?)\s*(?:元|块|块钱)/,
-    /(?:花了|花费|消费|付了|付款|支付)\s*(\d+(?:\.\d+)?)(?![\d分钟小时半])/,
-  ];
-  for (const pattern of patterns) {
-    const match = input.match(pattern);
+  for (const { pattern } of RULES.parsing.cost_patterns) {
+    const match = input.match(new RegExp(pattern));
     if (match) return parseFloat(match[1]);
   }
   return null;
@@ -159,18 +129,20 @@ function parseBasicDuration(input: string): number | null {
   const cnNumMap: Record<string, number> = { '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
   const parseCnNum = (s: string): number => cnNumMap[s] ?? 1;
 
-  const patterns: Array<{ pattern: RegExp; calc: (m: RegExpMatchArray) => number }> = [
-    { pattern: /(\d+(?:\.\d+)?)\s*分钟/, calc: m => Math.round(parseFloat(m[1])) },
-    { pattern: /(\d+(?:\.\d+)?)\s*小时/, calc: m => Math.round(parseFloat(m[1]) * 60) },
-    { pattern: /(\d+(?:\.\d+)?)\s*(?:hr|hrs|h)\b/i, calc: m => Math.round(parseFloat(m[1]) * 60) },
-    { pattern: /([一二两三四五六七八九十\d]+)个半小时/, calc: m => parseCnNum(m[1]) * 60 + 30 },
-    { pattern: /([一二两三四五六七八九十\d]+)个?小时/, calc: m => parseCnNum(m[1]) * 60 },
-    { pattern: /半小时/, calc: () => 30 },
-  ];
-
-  for (const { pattern, calc } of patterns) {
-    const match = input.match(pattern);
-    if (match) return calc(match);
+  for (const { pattern } of RULES.parsing.duration_patterns) {
+    const match = input.match(new RegExp(pattern));
+    if (match) {
+      // 识别时长值
+      const val = parseFloat(match[1] || '0');
+      // 中文数字转换（如果匹配到的是中文）
+      const isCn = /[一二两三四五六七八九十]/.test(match[1] || '');
+      const numVal = isCn ? parseCnNum(match[1]) : val;
+      // 单位判断：分钟直接返回，小时转换
+      if (pattern.includes('小时') || pattern.includes('hr') || pattern.includes('h\\b')) {
+        return Math.round(numVal * 60);
+      }
+      return Math.round(numVal);
+    }
   }
   return null;
 }
@@ -183,20 +155,17 @@ function inferType(input: string): string {
   const lower = input.toLowerCase();
 
   // 计划型关键词
-  const planKeywords = ['明天', '后天', '下周', '打算', '准备', '计划', '要', '将会', '预定'];
-  for (const kw of planKeywords) {
+  for (const kw of RULES.parsing.type_keywords.plan) {
     if (lower.includes(kw)) return '计划';
   }
 
   // 想法型关键词
-  const ideaKeywords = ['想到', '觉得', '感觉', '突然觉得', '灵光', '忽然', '也许', '可能', '或许', '要不要'];
-  for (const kw of ideaKeywords) {
+  for (const kw of RULES.parsing.type_keywords.idea) {
     if (lower.includes(kw)) return '想法';
   }
 
   // 总结型关键词
-  const summaryKeywords = ['总结', '回顾', '总的来说', '总体', '整个', '这段时间', '复盘', '归纳'];
-  for (const kw of summaryKeywords) {
+  for (const kw of RULES.parsing.type_keywords.summary) {
     if (lower.includes(kw)) return '总结';
   }
 
@@ -214,20 +183,14 @@ function matchItemHint(
 ): { item_hint: string; matched_item_id?: string } | null {
   const lower = input.toLowerCase();
 
-  // 精确匹配 → 包含匹配 → 被包含匹配
+  // 精确匹配：完整事项名出现在输入中
   for (const item of items) {
     if (lower.includes(item.title.toLowerCase())) {
       return { item_hint: item.title, matched_item_id: item.id };
     }
   }
 
-  // 子串匹配：事项名包含在输入中
-  for (const item of items) {
-    if (item.title.length >= 2 && lower.includes(item.title.toLowerCase().slice(0, 2))) {
-      return { item_hint: item.title, matched_item_id: item.id };
-    }
-  }
-
+  // 不再做前2字子串匹配（误匹配率太高），直接返回 null
   return null;
 }
 
@@ -236,34 +199,34 @@ function matchItemHint(
 // ================================
 
 function inferMood(input: string): string | null {
-  const moodMap: Record<string, string[]> = {
-    '开心': ['开心', '高兴', '快乐', '愉快', '爽', '太好了'],
-    '烦躁': ['烦躁', '烦', '郁闷', '不爽', '抓狂'],
-    '焦虑': ['焦虑', '紧张', '担心', '不安', '慌'],
-    '疲惫': ['累', '疲惫', '困', '没精神', '乏力', '精疲力竭'],
-    '平静': ['平静', '淡定', '还好', '一般'],
-  };
-
-  for (const [mood, keywords] of Object.entries(moodMap)) {
+  for (const { keywords, value } of RULES.parsing.mood_map) {
     for (const kw of keywords) {
-      if (input.includes(kw)) return mood;
+      if (input.includes(kw)) return value;
     }
   }
   return null;
 }
 
-function inferEnergy(input: string): string | null {
-  const energyMap: Record<string, string[]> = {
-    '精力充沛': ['精力充沛', '精力旺盛', '很有精神', '状态好', '能量满满'],
-    '一般': ['一般', '还行', '凑合'],
-    '低': ['低落', '没劲', '疲惫', '累', '困', '没精神'],
-  };
-
-  for (const [energy, keywords] of Object.entries(energyMap)) {
+function inferBodyState(input: string): string | null {
+  for (const { keywords, value } of RULES.parsing.body_state_map) {
     for (const kw of keywords) {
-      if (input.includes(kw)) return energy;
+      if (input.includes(kw)) return value;
     }
   }
+  return null;
+}
+
+function inferEnergy(input: string, bodyState: string | null): string | null {
+  // "累"优先归 body_state，energy 只记精力高低层级
+  for (const { keywords, value } of RULES.parsing.energy_map) {
+    for (const kw of keywords) {
+      if (input.includes(kw)) return value;
+    }
+  }
+
+  // 如果 body_state 是低能量类（累/困/没精神），且没有更精确的 energy 词汇，映射为"低"
+  if (bodyState && RULES.parsing.low_energy_body_states.includes(bodyState)) return '低';
+
   return null;
 }
 
@@ -323,7 +286,8 @@ export function parseWithFallback(
     }
   }
   const mood = inferMood(trimmed);
-  const energy = inferEnergy(trimmed);
+  const bodyState = inferBodyState(trimmed);
+  const energy = inferEnergy(trimmed, bodyState);
 
   // 提取基础 action（取第一个动词短语，简陋但可用）
   const actionMatch = trimmed.match(/^[\s]*([^\s,，。、]+?[了着过])/);
@@ -352,8 +316,29 @@ export function parseWithFallback(
       ...(mood ? { mood: 'guess' as const } : {}),
       ...(energy ? { energy: 'guess' as const } : {}),
       ...(itemMatch ? { item_hint: 'guess' as const } : {}),
+      ...(bodyState ? { body_state: 'guess' as const } : {}),
     },
-    confidence: 0.3, // 降级模式统一低置信度
+    confidence: RULES.fallback.fallback_confidence, // 降级模式统一低置信度
+    // === 1.5 录入结构对齐新增 ===
+    main_text: trimmed.slice(0, 30),  // 降级模式：截取前30字作为主内容
+    result_text: null,
+    place_text: null,
+    state: null,
+    body_state: bodyState,
+    money_amount: cost,
+    money_currency: cost != null && cost > 0 ? 'CNY' : null,
+    // === 三层九组 Phase 1 新增（降级模式仅填基本值） ===
+    action_text: action || null,
+    event_text: null,
+    object_text: null,
+    outcome_type: null,
+    outcome_direction: null,
+    cause_text: null,
+    time_text: timeAnchor?.raw || null,
+    time_precision: null,
+    place_type: null,
+    money_direction: cost != null && cost > 0 ? 'expense' as const : null,
+    relation_roles: null,
   };
 
   return {
@@ -363,7 +348,7 @@ export function parseWithFallback(
       is_compound: false, // 降级模式不拆分复合句
       units: [unit],
       relations: [],
-      confidence: 0.3,
+      confidence: RULES.fallback.fallback_confidence,
     },
     type_hints: [typeHint],
   };
@@ -411,11 +396,5 @@ export function shouldFallback(error: unknown): FallbackResult['fallback_reason'
  * 获取降级模式的用户提示文本
  */
 export function getFallbackMessage(reason: FallbackResult['fallback_reason']): string {
-  const messages: Record<FallbackResult['fallback_reason'], string> = {
-    ai_timeout: '智能解析响应超时，已切换基础模式',
-    ai_error: '智能解析暂时不可用，已切换基础模式',
-    ai_unavailable: '智能解析服务暂不可用，已切换基础模式',
-    api_key_missing: 'AI 解析未配置，当前为基础模式',
-  };
-  return messages[reason];
+  return RULES.fallback.fallback_messages[reason];
 }

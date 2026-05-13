@@ -1,8 +1,9 @@
 /**
  * metrics.ts — TETO 1.5 统计口径统一定义层
  *
- * 所有洞察/统计页面使用的核心指标必须经过此层，
- * 保证同一指标在不同图表/组件中口径一致。
+ * @deprecated 自 TETO 1.6 起废弃。核心指标定义已迁移到 metric-definitions.ts，
+ *             计算参数已迁移到 computation/index.ts (COMPUTATION 对象)。
+ *             计算函数（computeActivity 等）保留可用但不再推荐使用。
  *
  * 5 个核心指标：
  * 1. 活跃度 — 按最近更新时间 + 记录频率综合
@@ -11,6 +12,8 @@
  * 4. 计划达成率 — 按时完成比例
  * 5. 效果 — 按结果记录 + 目标结果字段综合
  */
+
+import { COMPUTATION } from '@/lib/computation';
 
 // ================================
 // 口径定义
@@ -120,16 +123,17 @@ export interface ItemStats {
 /** 计算活跃度得分（0~100） */
 export function computeActivity(stats: ItemStats): number {
   const now = new Date();
+  const weights = COMPUTATION.metrics.activity_weights;
   // 最近7天记录数权重
-  const recentScore = Math.min(stats.recordCount7d / 10, 1) * 40;
+  const recentScore = Math.min(stats.recordCount7d / COMPUTATION.metrics.activity_7d_denominator, 1) * (weights.recent_7d * 100);
   // 最近30天记录频率权重
-  const freqScore = Math.min(stats.recordCount30d / 30, 1) * 30;
+  const freqScore = Math.min(stats.recordCount30d / COMPUTATION.metrics.activity_30d_denominator, 1) * (weights.freq_30d * 100);
   // 距今天数权重（越近越高）
   let daysSince = 999;
   if (stats.lastRecordAt) {
     daysSince = Math.floor((now.getTime() - new Date(stats.lastRecordAt).getTime()) / 86400000);
   }
-  const recencyScore = Math.max(0, 30 - daysSince) / 30 * 30;
+  const recencyScore = Math.max(0, 30 - daysSince) / 30 * (weights.recency * 100);
   return Math.round(recentScore + freqScore + recencyScore);
 }
 
@@ -148,9 +152,10 @@ export function computeStagnation(stats: ItemStats): number {
 
 /** 停滞等级 */
 export function stagnationLevel(days: number): 'active' | 'mild' | 'moderate' | 'severe' {
-  if (days <= 7) return 'active';
-  if (days <= 14) return 'mild';
-  if (days <= 30) return 'moderate';
+  const thresholds = COMPUTATION.metrics.stagnation_thresholds;
+  if (days <= thresholds.active) return 'active';
+  if (days <= thresholds.mild) return 'mild';
+  if (days <= thresholds.moderate) return 'moderate';
   return 'severe';
 }
 

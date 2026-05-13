@@ -1,56 +1,57 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
-import { getSubItemById, updateSubItem, deleteSubItem } from '@/lib/db/sub-items';
+import { getSubItemById } from '@/lib/db/sub-items';
+import { updateSubItemSafely, deleteSubItemSafely } from '@/lib/domain/sub-item-service';
+import { createClient } from '@/lib/supabase/server';
+import { handleApiError } from '@/lib/api/error-handler';
 import type { UpdateSubItemPayload } from '@/types/teto';
+import { withTrace, apiSuccess, apiError, apiDomainError } from '@/lib/api/handler-wrapper';
+import { ERROR_CODES } from '@/lib/observability/id-registry';
 
 /**
  * GET /api/v2/sub-items/{id}
  * 获取单个子项详情
  */
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
 
     const subItem = await getSubItemById(userId, id);
     if (!subItem) {
-      return NextResponse.json({ error: '子项不存在或不属于当前用户' }, { status: 404 });
+      return apiError(ERROR_CODES.SUB_ITEM_NOT_FOUND, '子项不存在或不属于当前用户', ctx.traceId, 404);
     }
 
-    return NextResponse.json({ data: subItem });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess(subItem, ctx.traceId);
+  } catch (error) {
+    return handleApiError(error);
   }
 }
 
 /**
- * PUT /api/v2/sub-items/{id}
+ * PATCH /api/v2/sub-items/{id}
  * 更新子项
  */
-export async function PUT(
+export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
     const body: UpdateSubItemPayload = await request.json();
 
-    const subItem = await updateSubItem(userId, id, body);
-    return NextResponse.json({ data: subItem });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    const supabase = await createClient();
+    const result = await updateSubItemSafely({ userId, id, payload: body, supabase });
+    if (!result.ok) return apiDomainError(result.errors, ctx.traceId);
+    return apiSuccess(result.data, ctx.traceId, 200, result.warnings);
+  } catch (error) {
+    return handleApiError(error);
   }
 }
 
@@ -59,20 +60,19 @@ export async function PUT(
  * 删除子项
  */
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
 
-    await deleteSubItem(userId, id);
-    return NextResponse.json({ success: true });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    const supabase = await createClient();
+    const result = await deleteSubItemSafely({ userId, id, supabase });
+    if (!result.ok) return apiDomainError(result.errors, ctx.traceId);
+    return apiSuccess({ id }, ctx.traceId, 200, result.warnings);
+  } catch (error) {
+    return handleApiError(error);
   }
 }

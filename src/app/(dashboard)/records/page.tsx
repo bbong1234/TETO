@@ -1,5 +1,10 @@
+import { Suspense } from 'react';
 import RecordsClient from './RecordsClient';
 
 export default function RecordsPage() {
-  return <RecordsClient />;
+  return (
+    <Suspense>
+      <RecordsClient />
+    </Suspense>
+  );
 }

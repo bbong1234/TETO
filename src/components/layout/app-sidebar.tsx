@@ -9,7 +9,8 @@ import {
   ChevronRight, 
   BookOpen, 
   ListChecks, 
-  BarChart3
+  BarChart3,
+  Shield
 } from 'lucide-react';
 
 // 主导航
@@ -17,6 +18,7 @@ const navItems = [
   { label: "记录", href: "/records", icon: BookOpen },
   { label: "事项", href: "/items", icon: ListChecks },
   { label: "洞察", href: "/insights", icon: BarChart3 },
+  { label: "诊断", href: "/debug", icon: Shield },
 ];
 
 function isActivePath(pathname: string, href: string) {
@@ -41,12 +43,12 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
   return (
     <aside 
       className={[
-        "fixed inset-y-0 left-0 z-20 shrink-0 border-r border-slate-800 bg-slate-900 text-slate-100 transition-all duration-300",
+        "fixed inset-y-0 left-0 z-20 shrink-0 border-r border-teto-neutral-800 bg-teto-neutral-900 text-teto-neutral-100 transition-all duration-300",
         collapsed ? "w-20" : "w-72"
       ].join(" ")}
     >
       {/* 顶部 Logo 区域 */}
-      <div className="border-b border-slate-800 px-4 py-4">
+      <div className="border-b border-teto-neutral-800 px-4 py-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-blue-500 text-lg font-bold text-white shadow-lg shadow-blue-500/20">
@@ -55,7 +57,7 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
             {!collapsed && (
               <div>
                 <p className="text-2xl font-bold tracking-tight">TETO</p>
-                <p className="text-sm text-slate-400">个人效率系统</p>
+                <p className="text-sm text-teto-neutral-400">个人效率系统</p>
               </div>
             )}
           </div>
@@ -63,7 +65,7 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
           {onToggle && (
             <button
               onClick={onToggle}
-              className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white transition-colors"
+              className="flex h-8 w-8 items-center justify-center rounded-teto-lg bg-teto-neutral-800 text-teto-neutral-400 hover:bg-teto-neutral-700 hover:text-white transition-colors"
               aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
             >
               {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
@@ -77,7 +79,7 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
         {/* 主导航区 */}
         <div className="mb-6">
           {!collapsed && (
-            <p className="mb-3 px-3 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+            <p className="mb-3 px-3 text-xs font-medium uppercase tracking-[0.2em] text-teto-neutral-500">
               主导航
             </p>
           )}
@@ -95,7 +97,7 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
                     collapsed ? "justify-center" : "",
                     active
                       ? "bg-gradient-to-r from-blue-500 to-indigo-500 text-white shadow-lg shadow-blue-500/20"
-                      : "text-slate-300 hover:bg-slate-800 hover:text-white",
+                      : "text-teto-neutral-300 hover:bg-teto-neutral-800 hover:text-white",
                   ].join(" ")}
                   title={collapsed ? item.label : undefined}
                 >
@@ -111,31 +113,31 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
       </div>
 
       {/* 底部信息区域 */}
-      <div className="border-t border-slate-800 p-2">
+      <div className="border-t border-teto-neutral-800 p-2">
         {user && !collapsed && (
-          <div className="mb-2 rounded-xl bg-slate-800/80 p-2">
-            <p className="text-xs font-medium text-slate-300">
+          <div className="mb-2 rounded-xl bg-teto-neutral-800/80 p-2">
+            <p className="text-xs font-medium text-teto-neutral-300">
               {user.isDevMode ? '开发模式' : user.email || '用户'}
             </p>
             <button
               onClick={handleLogout}
-              className="mt-1 w-full rounded-lg bg-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-600"
+              className="mt-1 w-full rounded-teto-lg bg-teto-neutral-700 px-2 py-1 text-xs font-medium text-teto-neutral-300 hover:bg-teto-neutral-600"
             >
               登出
             </button>
           </div>
         )}
         {!collapsed && (
-          <div className="rounded-xl bg-slate-800/80 p-2">
-            <p className="text-xs font-medium text-slate-300">TETO 1.4</p>
-            <p className="mt-1 text-xs leading-4 text-slate-400">
+          <div className="rounded-xl bg-teto-neutral-800/80 p-2">
+            <p className="text-xs font-medium text-teto-neutral-300">TETO 1.4</p>
+            <p className="mt-1 text-xs leading-4 text-teto-neutral-400">
               记录 / 事项 / 洞察
             </p>
           </div>
         )}
         {collapsed && (
           <div className="flex justify-center">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-800 text-xs font-bold text-white">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-teto-neutral-800 text-xs font-bold text-white">
               T
             </div>
           </div>

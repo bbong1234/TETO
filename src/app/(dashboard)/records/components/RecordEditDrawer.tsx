@@ -1,12 +1,37 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { X, Save, Trash2, DollarSign, Timer, BarChart3, Plus, MapPin, Users, Smile, Zap, Activity, Link2, Search, RefreshCw, Layers, HelpCircle } from 'lucide-react';
+import { X, Save, Trash2, DollarSign, Timer, BarChart3, Plus, MapPin, Users, Smile, Zap, Activity, Link2, Search, RefreshCw, Layers, TrendingUp, Clock, Target, ChevronDown, ChevronRight, Heart, Info, Loader2 } from 'lucide-react';
 import type { Record, Tag, Item, RecordType, UpdateRecordPayload, RecordLinkType, SubItem } from '@/types/teto';
 import type { ParsedSemantic } from '@/types/semantic';
-import { RECORD_TYPES } from '@/types/teto';
+import { RECORD_TYPES, OUTCOME_TYPE_LABELS, OUTCOME_DIRECTION_LABELS, PLACE_TYPE_LABELS, MONEY_DIRECTION_LABELS } from '@/types/teto';
 import type { RecordLinkWithPeer } from '@/lib/db/record-links';
 import { generateContentSummary } from '@/lib/utils/generate-content-summary';
+import { parseClientApiJson } from '@/lib/observability/client-request';
+
+type RecordExplainPayload = {
+  record_id: string;
+  content_preview: string;
+  type: string;
+  review_status: string;
+  record_quality_tag: string | null;
+  input_source: string | null;
+  input_id: string | null;
+  parent_input_id: string | null;
+  input_unit_id: string | null;
+  input_summary: { id: string; raw_input: string; status: string } | null;
+  ingest_clearing: {
+    root_input_id: string | null;
+    root_raw_input_preview: string | null;
+    unit_id: string | null;
+    unit_index: number | null;
+    peer_unit_count: number | null;
+    classifier_content_summary: string | null;
+    unit_status: string | null;
+  } | null;
+  eligibility_display: { eligible: boolean; caliber: string; exclusionReason?: string };
+  eligibility_insight: { eligible: boolean; caliber: string; exclusionReason?: string };
+};
 
 // ================================
 // 紧凑 Input（统一样式）
@@ -80,6 +105,11 @@ export default function RecordEditDrawer({
     const d = new Date(record.occurred_at);
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   });
+  const [occurredAtEnd, setOccurredAtEnd] = useState(() => {
+    if (!record.occurred_at_end) return '';
+    const d = new Date(record.occurred_at_end);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  });
   const [mood, setMood] = useState(record.mood || '');
   const [energy, setEnergy] = useState(record.energy || '');
   const [status, setStatus] = useState(record.status || '');
@@ -92,6 +122,24 @@ export default function RecordEditDrawer({
   const [metricUnit, setMetricUnit] = useState(record.metric_unit || '');
   const [durationMinutes, setDurationMinutes] = useState(record.duration_minutes != null ? String(record.duration_minutes) : '');
 
+  // === 三层九组 Phase 1 新增状态 ===
+  const [actionText, setActionText] = useState(record.action_text || '');
+  const [eventText, setEventText] = useState(record.event_text || '');
+  const [objectText, setObjectText] = useState(record.object_text || '');
+  const [outcomeType, setOutcomeType] = useState(record.outcome_type || '');
+  const [outcomeDirection, setOutcomeDirection] = useState(record.outcome_direction || '');
+  const [causeText, setCauseText] = useState(record.cause_text || '');
+  const [timeText, setTimeText] = useState(record.time_text || '');
+  const [timePrecision, setTimePrecision] = useState(record.time_precision || '');
+  const [placeType, setPlaceType] = useState(record.place_type || '');
+  const [moneyDirection, setMoneyDirection] = useState(record.money_direction || '');
+  const [relationRolesStr, setRelationRolesStr] = useState((record.relation_roles || []).join(', '));
+
+  // === 1.5 录入结构对齐新增状态 ===
+  const [bodyState, setBodyState] = useState(record.body_state || '');
+  const [moneyCurrency, setMoneyCurrency] = useState(record.money_currency || 'CNY');
+  const [resultText, setResultText] = useState(record.result || '');
+
   // 原始输入编辑
   const [rawInput, setRawInput] = useState(record.raw_input || '');
   const [isEditingRawInput, setIsEditingRawInput] = useState(false);
@@ -99,6 +147,12 @@ export default function RecordEditDrawer({
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const [explainOpen, setExplainOpen] = useState(false);
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [explainData, setExplainData] = useState<RecordExplainPayload | null>(null);
+  const [explainFetchErr, setExplainFetchErr] = useState<string | null>(null);
 
   // --- 关联记录 ---
   const [linkedRecords, setLinkedRecords] = useState<RecordLinkWithPeer[]>([]);
@@ -121,6 +175,40 @@ export default function RecordEditDrawer({
       .catch(() => setSubItemsForSelectedItem([]))
       .finally(() => setLoadingSubItems(false));
   }, [selectedItemId]);
+
+  useEffect(() => {
+    setExplainData(null);
+    setExplainFetchErr(null);
+  }, [record.id]);
+
+  useEffect(() => {
+    if (!explainOpen) return;
+    let cancelled = false;
+    setExplainLoading(true);
+    setExplainFetchErr(null);
+    fetch(`/api/v2/records/${record.id}/explain`)
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          const pe = parseClientApiJson(j);
+          throw new Error(pe.message || '加载失败');
+        }
+        const env = parseClientApiJson(j);
+        return env.data as RecordExplainPayload | undefined;
+      })
+      .then((d) => {
+        if (!cancelled) setExplainData(d ?? null);
+      })
+      .catch((e) => {
+        if (!cancelled) setExplainFetchErr(e instanceof Error ? e.message : '加载失败');
+      })
+      .finally(() => {
+        if (!cancelled) setExplainLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [explainOpen, record.id]);
 
   // 加载关联记录
   useEffect(() => {
@@ -236,35 +324,89 @@ export default function RecordEditDrawer({
       const unit = json.data.parsed.units[0] as ParsedSemantic;
       const typeHint = json.data.type_hints?.[0] as string | undefined;
 
-      // 用 AI 解析结果覆盖所有结构化字段
+      // 用 AI 解析结果覆盖所有结构化字段（始终覆盖，null 清空旧值）
       const newContent = generateContentSummary(unit, rawInput);
-      if (newContent) setContent(newContent);
+      setContent(newContent || rawInput.trim());
       if (typeHint && ['发生', '计划', '想法', '总结'].includes(typeHint)) setType(typeHint as RecordType);
-      if (unit.mood) setMood(unit.mood);
-      if (unit.energy) setEnergy(unit.energy);
-      if (unit.location) setLocation(unit.location);
-      if (unit.people && unit.people.length > 0) setPeopleStr(unit.people.join(', '));
-      if (unit.cost != null && unit.cost > 0) setCost(String(unit.cost));
-      if (unit.duration_minutes != null && unit.duration_minutes > 0) setDurationMinutes(String(unit.duration_minutes));
+      setMood(unit.mood ?? '');
+      setEnergy(unit.energy ?? '');
+      setLocation(unit.location ?? '');
+      setPeopleStr(unit.people?.length ? unit.people.join(', ') : '');
+      setCost(unit.cost != null && unit.cost > 0 ? String(unit.cost) : '');
+      setDurationMinutes(unit.duration_minutes != null && unit.duration_minutes > 0 ? String(unit.duration_minutes) : '');
       if (unit.metric) {
-        if (unit.metric.name) setMetricName(unit.metric.name);
-        if (unit.metric.value != null) setMetricValue(String(unit.metric.value));
-        if (unit.metric.unit) setMetricUnit(unit.metric.unit);
+        setMetricName(unit.metric.name ?? '');
+        setMetricValue(unit.metric.value != null ? String(unit.metric.value) : '');
+        setMetricUnit(unit.metric.unit ?? '');
+      } else {
+        setMetricName('');
+        setMetricValue('');
+        setMetricUnit('');
       }
-      // item_hint 匹配
+      // item_hint 匹配：仅精确匹配
       if (unit.item_hint) {
         const hint = unit.item_hint.toLowerCase();
         const matched = items.find(i => i.title.toLowerCase() === hint)
-          || items.find(i => i.title.toLowerCase().includes(hint))
-          || items.find(i => hint.includes(i.title.toLowerCase()) && i.title.length >= 2);
+          || items.find(i => i.title.toLowerCase() === hint.replace(/\s+/g, ''));
         if (matched) setSelectedItemId(matched.id);
       }
+
+      // 三层九组 Phase 1 字段回填（始终覆盖，null 清空旧值）
+      setActionText(unit.action_text ?? '');
+      setEventText(unit.event_text ?? '');
+      setObjectText(unit.object_text ?? '');
+      setOutcomeType(unit.outcome_type ?? '');
+      setOutcomeDirection(unit.outcome_direction ?? '');
+      setCauseText(unit.cause_text ?? '');
+      setTimeText(unit.time_text ?? '');
+      setTimePrecision(unit.time_precision ?? '');
+      setPlaceType(unit.place_type ?? '');
+      setMoneyDirection(unit.money_direction ?? '');
+      setRelationRolesStr(unit.relation_roles?.length ? unit.relation_roles.join(', ') : '');
 
       setIsEditingRawInput(false);
     } catch {
       onError('AI 重新解析失败，请重试');
     } finally {
       setIsReParsing(false);
+    }
+  };
+
+  // TETO 1.6: 比对 AI 原值与用户修改值，差异字段调用纠错 API
+  const triggerCorrectionsForEditedFields = async (
+    original: { [key: string]: unknown },
+    updated: { [key: string]: unknown }
+  ) => {
+    // AI 推断的核心字段列表（这些字段若被用户修改，需要记录纠错）
+    const aiInferredFields = [
+      'item_id', 'sub_item_id', 'type', 'mood', 'energy', 'status',
+      'location', 'cost', 'duration_minutes', 'metric_value', 'metric_unit', 'metric_name',
+      'outcome_type', 'outcome_direction', 'place_type', 'money_direction',
+      'action_text', 'event_text', 'object_text', 'cause_text',
+      'time_text', 'body_state',
+    ];
+
+    for (const field of aiInferredFields) {
+      const oldVal = original[field];
+      const newVal = updated[field];
+
+      // 跳过两者都为空的情况
+      if (oldVal == null && newVal == null) continue;
+      // 跳过值未变化的情况
+      if (String(oldVal ?? '') === String(newVal ?? '')) continue;
+
+      // fire-and-forget：不阻塞用户操作
+      fetch(`/api/v2/records/${original.id}/correct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          field_corrected: field,
+          new_value: newVal ?? null,
+          decision_type: 'USER_EDIT',
+        }),
+      }).catch(() => {
+        // 纠错记录写入失败不影响主流程
+      });
     }
   };
 
@@ -290,6 +432,24 @@ export default function RecordEditDrawer({
         metric_unit: metricUnit.trim() || null,
         metric_name: metricName.trim() || null,
         duration_minutes: durationMinutes ? parseInt(durationMinutes, 10) : null,
+        // === 三层九组 Phase 1 新增 ===
+        action_text: actionText.trim() || undefined,
+        event_text: eventText.trim() || undefined,
+        object_text: objectText.trim() || undefined,
+        outcome_type: outcomeType || undefined,
+        outcome_direction: (outcomeDirection || undefined) as 'positive' | 'neutral' | 'negative' | undefined,
+        cause_text: causeText.trim() || undefined,
+        time_text: timeText.trim() || undefined,
+        time_precision: (timePrecision || undefined) as 'exact' | 'approx' | 'fuzzy' | 'unknown' | undefined,
+        place_type: placeType || undefined,
+        money_direction: (moneyDirection || undefined) as 'expense' | 'income' | 'none' | undefined,
+        relation_roles: relationRolesStr.trim()
+          ? relationRolesStr.split(/[,，、]/).map(s => s.trim()).filter(Boolean)
+          : undefined,
+        // === 1.5 录入结构对齐新增 ===
+        body_state: bodyState.trim() || undefined,
+        money_currency: moneyCurrency || undefined,
+        result: resultText.trim() || undefined,
       };
 
       if (occurredAt) {
@@ -303,6 +463,20 @@ export default function RecordEditDrawer({
         payload.occurred_at = `${dateStr}T${occurredAt}:00${tzStr}`;
       } else {
         payload.occurred_at = null;
+      }
+
+      // 结束时间
+      if (occurredAtEnd) {
+        const dateStr = record.occurred_at
+          ? record.occurred_at.split('T')[0]
+          : new Date().toISOString().split('T')[0];
+        const tzOffset = -new Date().getTimezoneOffset();
+        const sign = tzOffset >= 0 ? '+' : '-';
+        const pad = (n: number) => String(Math.floor(Math.abs(n))).padStart(2, '0');
+        const tzStr = `${sign}${pad(tzOffset / 60)}:${pad(tzOffset % 60)}`;
+        payload.occurred_at_end = `${dateStr}T${occurredAtEnd}:00${tzStr}`;
+      } else {
+        payload.occurred_at_end = null;
       }
 
       payload.item_id = selectedItemId || null;
@@ -326,6 +500,10 @@ export default function RecordEditDrawer({
       });
 
       if (res.ok) {
+        // TETO 1.6: 比对 AI 原值与用户修改值，差异字段触发纠错记录
+        if (record.review_status === 'confirmed' || record.input_source === 'ai') {
+          triggerCorrectionsForEditedFields(record as unknown as { [key: string]: unknown }, payload as unknown as { [key: string]: unknown });
+        }
         onSaved();
       } else {
         const err = await res.json();
@@ -388,7 +566,7 @@ export default function RecordEditDrawer({
 
         <div className="px-5 py-4 space-y-4">
           {/* ================================ */}
-          {/* 区块 1: 核心内容 */}
+          {/* 区块 1: 原文与主表达 */}
           {/* ================================ */}
           {/* 原始输入（可编辑 + 重新解析） */}
           {(rawInput || record.raw_input) && (
@@ -434,9 +612,36 @@ export default function RecordEditDrawer({
             </div>
           )}
 
-          {/* 内容（大文本框） */}
+          {(() => {
+            const fmt = (iso: string | null | undefined) => {
+              if (!iso) return '';
+              const d = new Date(iso);
+              if (isNaN(d.getTime())) return '';
+              return d.toLocaleString('zh-CN', {
+                month: 'numeric',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+            };
+            const hasStoredTime = !!(record.occurred_at || record.occurred_at_end || record.time_text);
+            if (!hasStoredTime) return null;
+            return (
+              <div className="rounded-lg border border-slate-100 bg-white px-3 py-2 text-[11px] text-slate-600 space-y-0.5">
+                <div className="text-[10px] font-medium text-slate-500">已入库时间（只读）</div>
+                {record.date ? <div>归属日：{record.date}</div> : null}
+                {record.occurred_at ? <div>开始：{fmt(record.occurred_at)}</div> : null}
+                {record.occurred_at_end ? <div>结束：{fmt(record.occurred_at_end)}</div> : null}
+                {!record.occurred_at && record.time_text ? (
+                  <div>时间表达：{record.time_text}</div>
+                ) : null}
+              </div>
+            );
+          })()}
+
+          {/* 主内容（大文本框） */}
           <div>
-            <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">内容</label>
+            <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">主内容</label>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
@@ -445,49 +650,310 @@ export default function RecordEditDrawer({
             />
           </div>
 
+          {/* 主类型 */}
+          <div>
+            <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">主类型</label>
+            <div className="flex flex-wrap gap-1">
+              {RECORD_TYPES.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setType(t)}
+                  className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                    type === t
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 解析与统计口径（GET /records/:id/explain） */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50/80 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setExplainOpen((v) => !v)}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-slate-100/80 transition-colors"
+            >
+              <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-700">
+                <Info className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+                解析与统计口径
+              </span>
+              <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${explainOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {explainOpen && (
+              <div className="border-t border-slate-200 bg-white px-3 py-2.5 space-y-2 text-[11px] text-slate-600">
+                {explainLoading && (
+                  <div className="flex items-center gap-1.5 text-slate-500">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                    加载中…
+                  </div>
+                )}
+                {explainFetchErr && !explainLoading && (
+                  <p className="text-red-600">{explainFetchErr}</p>
+                )}
+                {explainData && !explainLoading && (
+                  <div className="grid gap-2">
+                    <div>
+                      <span className="text-slate-400">审核</span>
+                      <span className="ml-2 text-slate-800">{explainData.review_status}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">质量标签</span>
+                      <span className="ml-2 text-slate-800">{explainData.record_quality_tag ?? '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">溯源 input</span>
+                      <span className="ml-2 break-all text-slate-800">{explainData.input_id ?? '—'}</span>
+                    </div>
+                    {explainData.input_summary && (
+                      <div className="rounded bg-slate-50 px-2 py-1.5 text-[10px] text-slate-500 space-y-0.5">
+                        <div className="font-medium text-slate-600">录入原文摘要</div>
+                        <div className="whitespace-pre-wrap break-words">
+                          {explainData.input_summary.raw_input || '（空）'}
+                        </div>
+                        <div>状态：{explainData.input_summary.status}</div>
+                      </div>
+                    )}
+                    {explainData.ingest_clearing && (
+                      <div className="rounded border border-indigo-100 bg-indigo-50/50 px-2 py-1.5 space-y-1">
+                        <div className="text-[10px] font-semibold text-indigo-800">清分说明（input_unit）</div>
+                        <div className="text-[10px] text-slate-600 space-y-0.5">
+                          <div>
+                            <span className="text-slate-400">根 input</span>{' '}
+                            <span className="break-all">{explainData.ingest_clearing.root_input_id ?? '—'}</span>
+                          </div>
+                          {explainData.ingest_clearing.root_raw_input_preview && (
+                            <div className="whitespace-pre-wrap break-words text-slate-500">
+                              原文预览：{explainData.ingest_clearing.root_raw_input_preview}
+                            </div>
+                          )}
+                          <div>
+                            单元序号：{explainData.ingest_clearing.unit_index ?? '—'}（同批共{' '}
+                            {explainData.ingest_clearing.peer_unit_count ?? '—'} 个）
+                          </div>
+                          <div className="break-all">
+                            单元 ID：{explainData.ingest_clearing.unit_id ?? '—'}
+                          </div>
+                          <div>单元状态：{explainData.ingest_clearing.unit_status ?? '—'}</div>
+                          {explainData.ingest_clearing.classifier_content_summary && (
+                            <div className="whitespace-pre-wrap break-words">
+                              分类摘要：{explainData.ingest_clearing.classifier_content_summary}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    <div className="rounded border border-slate-100 bg-slate-50/50 px-2 py-1.5 space-y-0.5">
+                      <div className="font-medium text-slate-700">展示口径</div>
+                      <p>
+                        {explainData.eligibility_display.eligible
+                          ? '计入列表与展示聚合'
+                          : `不计入 — ${explainData.eligibility_display.exclusionReason ?? ''}`}
+                      </p>
+                    </div>
+                    <div className="rounded border border-slate-100 bg-slate-50/50 px-2 py-1.5 space-y-0.5">
+                      <div className="font-medium text-slate-700">洞察口径</div>
+                      <p>
+                        {explainData.eligibility_insight.eligible
+                          ? '计入洞察与统计'
+                          : `不计入 — ${explainData.eligibility_insight.exclusionReason ?? ''}`}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* ================================ */}
-          {/* 区块 2: 基础属性（类型 + 时间 并排，事项全行） */}
+          {/* 区块 2: 主链信息 */}
           {/* ================================ */}
           <div className="space-y-3">
-            <div className="flex items-start gap-3">
-              {/* 类型 */}
-              <div className="flex-1">
-                <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">类型</label>
-                <div className="flex flex-wrap gap-1">
-                  {RECORD_TYPES.map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => setType(t)}
-                      className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                        type === t
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-                      }`}
-                    >
-                      {t}
-                    </button>
-                  ))}
+            <label className="block text-[11px] font-semibold text-indigo-500 uppercase tracking-wider">主链信息</label>
+
+            {/* 时间组 */}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <CompactInput icon={<Clock className="h-3 w-3" />} label="时间表达" value={timeText} onChange={setTimeText} placeholder="如：昨晚、明天" />
+                <div className="flex items-center gap-1.5">
+                  <div className="flex-1">
+                    <label className="mb-0.5 block text-[10px] text-slate-400">开始</label>
+                    <input
+                      type="time"
+                      value={occurredAt}
+                      onChange={(e) => {
+                        setOccurredAt(e.target.value);
+                        if (e.target.value && occurredAtEnd) {
+                          const start = parseInt(e.target.value.split(':')[0]) * 60 + parseInt(e.target.value.split(':')[1]);
+                          const end = parseInt(occurredAtEnd.split(':')[0]) * 60 + parseInt(occurredAtEnd.split(':')[1]);
+                          if (end > start) setDurationMinutes(String(end - start));
+                        }
+                      }}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+                  <span className="text-slate-300 mt-4">–</span>
+                  <div className="flex-1">
+                    <label className="mb-0.5 block text-[10px] text-slate-400">结束</label>
+                    <input
+                      type="time"
+                      value={occurredAtEnd}
+                      onChange={(e) => {
+                        setOccurredAtEnd(e.target.value);
+                        if (occurredAt && e.target.value) {
+                          const start = parseInt(occurredAt.split(':')[0]) * 60 + parseInt(occurredAt.split(':')[1]);
+                          const end = parseInt(e.target.value.split(':')[0]) * 60 + parseInt(e.target.value.split(':')[1]);
+                          if (end > start) setDurationMinutes(String(end - start));
+                        }
+                      }}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
                 </div>
               </div>
-              {/* 时间 */}
-              <div className="w-28 shrink-0">
-                <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">时间</label>
-                <input
-                  type="time"
-                  value={occurredAt}
-                  onChange={(e) => setOccurredAt(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
-                />
+              {occurredAt && occurredAtEnd && (() => {
+                const s = parseInt(occurredAt.split(':')[0]) * 60 + parseInt(occurredAt.split(':')[1]);
+                const e = parseInt(occurredAtEnd.split(':')[0]) * 60 + parseInt(occurredAtEnd.split(':')[1]);
+                const diff = e - s;
+                return diff > 0 ? <div className="text-[10px] text-slate-400 text-center">约 {diff >= 60 ? `${Math.floor(diff/60)}小时${diff%60 ? diff%60+'分钟' : ''}` : diff+'分钟'}</div> : null;
+              })()}
+            </div>
+
+            {/* 地点 */}
+            <CompactInput icon={<MapPin className="h-3 w-3" />} label="地点" value={location} onChange={setLocation} placeholder="如：公司、家" />
+
+            {/* 事件主干组 */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <div className="flex items-center gap-1 mb-1.5">
+                <Target className="h-3 w-3 text-indigo-400" />
+                <span className="text-[10px] font-semibold text-indigo-500 uppercase tracking-wider">事件主干</span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                <CompactInput icon={<Activity className="h-3 w-3" />} label="动作" value={actionText} onChange={setActionText} placeholder="如：开会" />
+                <CompactInput icon={<Zap className="h-3 w-3" />} label="情境" value={eventText} onChange={setEventText} placeholder="如：会议太长" />
+                <CompactInput icon={<Target className="h-3 w-3" />} label="指向对象" value={objectText} onChange={setObjectText} placeholder="如：会议" />
               </div>
             </div>
+
+            {/* 原因 */}
+            <CompactInput icon={<Activity className="h-3 w-3" />} label="原因" value={causeText} onChange={setCauseText} placeholder="如：因为昨晚没睡好" />
+
+            {/* 结果 */}
+            <CompactInput icon={<TrendingUp className="h-3 w-3" />} label="结果" value={resultText} onChange={setResultText} placeholder="如：迟到了20分钟（可空）" />
+          </div>
+
+          {/* ================================ */}
+          {/* 区块 3: 附属属性 */}
+          {/* ================================ */}
+          <div className="space-y-3">
+            <label className="block text-[11px] font-semibold text-green-600 uppercase tracking-wider">附属属性</label>
+
+            {/* 情绪属性组 */}
+            <div className="grid grid-cols-4 gap-2">
+              <CompactInput
+                icon={<Smile className="h-3 w-3" />}
+                label="心情"
+                value={mood}
+                onChange={setMood}
+                placeholder="如：开心"
+              />
+              <CompactInput
+                icon={<Zap className="h-3 w-3" />}
+                label="能量"
+                value={energy}
+                onChange={setEnergy}
+                placeholder="如：中"
+              />
+              <CompactInput
+                icon={<Activity className="h-3 w-3" />}
+                label="状态"
+                value={status}
+                onChange={setStatus}
+                placeholder="如：专注"
+              />
+              <CompactInput
+                icon={<Heart className="h-3 w-3" />}
+                label="身体状态"
+                value={bodyState}
+                onChange={setBodyState}
+                placeholder="如：累、困"
+              />
+            </div>
+
+            {/* 量化属性组 */}
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <CompactInput
+                  icon={<DollarSign className="h-3 w-3" />}
+                  label="金额"
+                  value={cost}
+                  onChange={setCost}
+                  placeholder="0"
+                  type="number"
+                />
+                <CompactInput
+                  icon={<Timer className="h-3 w-3" />}
+                  label="时长(分钟)"
+                  value={durationMinutes}
+                  onChange={(val) => {
+                    setDurationMinutes(val);
+                    // 反向推算结束时间：有开始时间 + 有效时长 → 自动填结束时间
+                    if (occurredAt && val) {
+                      const dur = parseInt(val, 10);
+                      if (dur > 0) {
+                        const parts = occurredAt.split(':');
+                        const startMin = parseInt(parts[0]) * 60 + parseInt(parts[1]);
+                        const endMin = startMin + dur;
+                        if (endMin < 24 * 60) {
+                          const hh = String(Math.floor(endMin / 60)).padStart(2, '0');
+                          const mm = String(endMin % 60).padStart(2, '0');
+                          setOccurredAtEnd(`${hh}:${mm}`);
+                        }
+                      }
+                    }
+                  }}
+                  placeholder="0"
+                  type="number"
+                />
+              </div>
+              {/* 指标 */}
+              <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 focus-within:border-blue-400 focus-within:bg-white transition-colors">
+                <BarChart3 className="h-3 w-3 text-slate-400 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <span className="block text-[9px] text-slate-400 leading-none mb-0.5">指标</span>
+                  <div className="flex items-center gap-2">
+                    <input type="text" value={metricName} onChange={(e) => setMetricName(e.target.value)} placeholder="名称"
+                      className="w-20 bg-transparent text-xs text-slate-900 placeholder:text-slate-300 focus:outline-none" />
+                    <input type="number" value={metricValue} onChange={(e) => setMetricValue(e.target.value)} placeholder="数值"
+                      className="w-14 bg-transparent text-xs text-slate-900 placeholder:text-slate-300 focus:outline-none" />
+                    <input type="text" value={metricUnit} onChange={(e) => setMetricUnit(e.target.value)} placeholder="单位"
+                      className="w-14 bg-transparent text-xs text-slate-900 placeholder:text-slate-300 focus:outline-none" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 关系人 */}
+            <CompactInput icon={<Users className="h-3 w-3" />} label="关系人" value={peopleStr} onChange={setPeopleStr} placeholder="逗号分隔" />
+          </div>
+
+          {/* ================================ */}
+          {/* 区块 4: 组织信息 */}
+          {/* ================================ */}
+          <div className="space-y-3">
+            <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">组织信息</label>
+
             {/* 关联事项 */}
             <div>
-              <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">关联事项</label>
+              <label className="mb-1 block text-[10px] text-slate-400">关联事项</label>
               <select
                 value={selectedItemId}
                 onChange={(e) => {
                   setSelectedItemId(e.target.value);
-                  setSelectedSubItemId(''); // 事项变化时清空子项
+                  setSelectedSubItemId('');
                 }}
                 className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
               >
@@ -498,10 +964,10 @@ export default function RecordEditDrawer({
               </select>
             </div>
 
-            {/* 关联子项 — 仅当选中了有子项的事项时显示 */}
+            {/* 关联子项 */}
             {selectedItemId && subItemsForSelectedItem.length > 0 && (
               <div>
-                <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                <label className="mb-1 block text-[10px] text-slate-400">
                   关联子项 <span className="font-normal text-slate-400">（可选）</span>
                 </label>
                 {loadingSubItems ? (
@@ -540,7 +1006,7 @@ export default function RecordEditDrawer({
             {/* 关联记录 */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">关联记录</label>
+                <label className="text-[10px] text-slate-400">关联记录</label>
                 <button
                   onClick={() => setShowLinkSearch(v => !v)}
                   className="flex items-center gap-0.5 text-[10px] text-blue-500 hover:text-blue-600"
@@ -612,168 +1078,112 @@ export default function RecordEditDrawer({
                 </div>
               )}
             </div>
+
+            {/* 备注 */}
+            <div>
+              <label className="mb-1 block text-[10px] text-slate-400">备注</label>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                rows={2}
+                placeholder="补充说明..."
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+              />
+            </div>
           </div>
 
           {/* ================================ */}
-          {/* 区块 3: 结构化详情（AI 动态能力区） */}
+          {/* 区块 5: 高级补充（默认折叠） */}
           {/* ================================ */}
-          <div>
-            <label className="mb-2 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">结构化详情</label>
-
-            {/* 待确认澄清区域 */}
-            {(() => {
-              const ps = record.parsed_semantic as { needs_clarification?: boolean; clarification_issues?: Array<{ type: string; message: string; reason: string; options?: Array<{ label: string; value: string }>; sharedContext?: { field: string; value: unknown; raw: string } }> } | null;
-              if (!ps?.needs_clarification) return null;
-              const issues = ps.clarification_issues || [];
-              if (issues.length === 0) return null;
-              return (
-                <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 mb-2 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <Activity className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                    <span className="text-xs font-semibold text-amber-700">AI 解析存在歧义，请确认</span>
+          <div className="rounded-lg border border-slate-200 overflow-hidden">
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="w-full flex items-center justify-between px-3 py-2 bg-slate-50 hover:bg-slate-100 transition-colors"
+            >
+              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">高级补充</span>
+              {showAdvanced ? <ChevronDown className="h-3 w-3 text-slate-400" /> : <ChevronRight className="h-3 w-3 text-slate-400" />}
+            </button>
+            {showAdvanced && (
+              <div className="px-3 py-2 space-y-2 border-t border-slate-100">
+                {/* 时间精度 */}
+                <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:border-blue-400 transition-colors">
+                  <Clock className="h-3 w-3 text-slate-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <span className="block text-[9px] text-slate-400 leading-none mb-0.5">时间精度</span>
+                    <select value={timePrecision} onChange={(e) => setTimePrecision(e.target.value as any)} className="w-full bg-transparent text-xs text-slate-900 focus:outline-none">
+                      <option value="">未设定</option><option value="exact">精确</option><option value="approx">大约</option><option value="fuzzy">模糊</option><option value="unknown">未知</option>
+                    </select>
                   </div>
-                  {issues.map((issue, idx) => (
-                    <div key={idx} className="space-y-1">
-                      <div className="text-[10px] text-amber-600">原因：{issue.reason}</div>
-                      <div className="text-[11px] text-slate-700">{issue.message}</div>
-                      {issue.type === 'shared_duration' && issue.sharedContext && (
-                        <div className="text-[10px] text-amber-500">共享时长：{String(issue.sharedContext.raw)}（请在下方"时长"字段手动补充）</div>
-                      )}
-                      {issue.type === 'sub_item_ambiguous' && issue.options && (
-                        <div className="text-[10px] text-amber-500">请在下方"子项"下拉框中选择正确的子项</div>
-                      )}
-                      {issue.type === 'item_missing' && (
-                        <div className="text-[10px] text-amber-500">请在下方"事项"下拉框中选择关联事项</div>
-                      )}
-                      {issue.type === 'low_confidence' && (
-                        <div className="text-[10px] text-amber-500">请核对下方结构化字段是否正确</div>
-                      )}
+                </div>
+                {/* 地点类型 */}
+                <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:border-blue-400 transition-colors">
+                  <MapPin className="h-3 w-3 text-slate-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <span className="block text-[9px] text-slate-400 leading-none mb-0.5">地点类型</span>
+                    <select value={placeType} onChange={(e) => setPlaceType(e.target.value)} className="w-full bg-transparent text-xs text-slate-900 focus:outline-none">
+                      <option value="">未设定</option>
+                      {Object.keys(PLACE_TYPE_LABELS).map((k) => (<option key={k} value={k}>{PLACE_TYPE_LABELS[k]}</option>))}
+                    </select>
+                  </div>
+                </div>
+                {/* 结果类型 + 方向 */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:border-blue-400 transition-colors">
+                    <span className="text-[9px] text-slate-400 shrink-0">结果类型</span>
+                    <select value={outcomeType} onChange={(e) => setOutcomeType(e.target.value)} className="flex-1 bg-transparent text-[11px] text-slate-700 focus:outline-none">
+                      <option value="">未设定</option>
+                      {Object.keys(OUTCOME_TYPE_LABELS).map((k) => (<option key={k} value={k}>{OUTCOME_TYPE_LABELS[k]}</option>))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5">
+                    <span className="text-[9px] text-slate-400 shrink-0">结果方向</span>
+                    <div className="flex gap-1">
+                      {(['positive', 'neutral', 'negative'] as const).map((d) => (
+                        <button key={d} onClick={() => setOutcomeDirection(outcomeDirection === d ? '' : d)}
+                          className={`rounded-md px-1.5 py-0.5 text-[9px] font-medium transition-colors ${
+                            outcomeDirection === d ? d === 'positive' ? 'bg-green-500 text-white' : d === 'negative' ? 'bg-red-500 text-white' : 'bg-slate-500 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                          {OUTCOME_DIRECTION_LABELS[d]}
+                        </button>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              );
-            })()}
-
-            {/* AI 判断理由回显 */}
-            {(() => {
-              const ps = record.parsed_semantic as { reasoning?: string } | null;
-              if (!ps?.reasoning) return null;
-              return (
-                <div className="rounded-xl bg-blue-50 border border-blue-200 px-3 py-2.5 mb-2">
-                  <div className="flex items-start gap-1.5">
-                    <HelpCircle className="h-3.5 w-3.5 text-blue-400 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="text-[10px] font-medium text-blue-600">AI 判断理由</span>
-                      <p className="text-[11px] text-blue-700 mt-0.5">{ps.reasoning}</p>
-                    </div>
                   </div>
                 </div>
-              );
-            })()}
-
-            {/* AI 低置信度提示 */}
-            {(() => {
-              const ps = record.parsed_semantic;
-              const confidence = ps && typeof ps.confidence === 'number' ? ps.confidence : null;
-              const fieldConf = ps?.field_confidence || {};
-              const guessedFields = Object.entries(fieldConf).filter(([, v]) => v === 'guess').map(([k]) => k);
-              if (confidence !== null && confidence < 0.7) {
-                const labelMap: { [key: string]: string } = {
-                  mood: '心情', energy: '能量', item_hint: '关联事项',
-                  type_hint: '类型', location: '地点', people: '关系人',
-                  record_link_hint: '关联记录',
-                };
-                return (
-                  <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 mb-2">
-                    <p className="text-xs font-medium text-amber-700 mb-1">AI 无法确定以下信息，请手动补充</p>
-                    {guessedFields.length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {guessedFields.map(f => (
-                          <span key={f} className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-600">{labelMap[f] || f}</span>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-[10px] text-amber-500">解析置信度较低（{Math.round(confidence * 100)}%），请核对结构化字段</p>
-                    )}
-                  </div>
-                );
-              }
-              return null;
-            })()}
-            <div className="grid grid-cols-2 gap-2">
-              <CompactInput
-                icon={<DollarSign className="h-3 w-3" />}
-                label="花费"
-                value={cost}
-                onChange={setCost}
-                placeholder="0"
-                type="number"
-              />
-              <CompactInput
-                icon={<Timer className="h-3 w-3" />}
-                label="时长(分钟)"
-                value={durationMinutes}
-                onChange={setDurationMinutes}
-                placeholder="0"
-                type="number"
-              />
-              <CompactInput
-                icon={<MapPin className="h-3 w-3" />}
-                label="地点"
-                value={location}
-                onChange={setLocation}
-                placeholder="如：公司"
-              />
-              <CompactInput
-                icon={<Users className="h-3 w-3" />}
-                label="关系人"
-                value={peopleStr}
-                onChange={setPeopleStr}
-                placeholder="逗号分隔"
-              />
-              <CompactInput
-                icon={<Smile className="h-3 w-3" />}
-                label="心情"
-                value={mood}
-                onChange={setMood}
-                placeholder="如：开心"
-              />
-              <CompactInput
-                icon={<Zap className="h-3 w-3" />}
-                label="能量"
-                value={energy}
-                onChange={setEnergy}
-                placeholder="如：充沛"
-              />
-              <CompactInput
-                icon={<Activity className="h-3 w-3" />}
-                label="状态"
-                value={status}
-                onChange={setStatus}
-                placeholder="如：进行中"
-              />
-            </div>
-            {/* 指标（三列一行） */}
-            <div className="mt-2 flex items-center gap-2">
-              <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 flex-1 focus-within:border-blue-400 focus-within:bg-white transition-colors">
-                <BarChart3 className="h-3 w-3 text-slate-400 shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <span className="block text-[9px] text-slate-400 leading-none mb-0.5">指标</span>
-                  <div className="flex items-center gap-1">
-                    <input type="text" value={metricName} onChange={(e) => setMetricName(e.target.value)} placeholder="对象"
-                      className="w-12 bg-transparent text-xs text-slate-900 placeholder:text-slate-300 focus:outline-none" />
-                    <input type="number" value={metricValue} onChange={(e) => setMetricValue(e.target.value)} placeholder="值"
-                      className="w-10 bg-transparent text-xs text-slate-900 placeholder:text-slate-300 focus:outline-none" />
-                    <input type="text" value={metricUnit} onChange={(e) => setMetricUnit(e.target.value)} placeholder="单位"
-                      className="w-10 bg-transparent text-xs text-slate-900 placeholder:text-slate-300 focus:outline-none" />
+                {/* 资金方向 */}
+                <div className="flex items-center gap-1.5">
+                  <DollarSign className="h-3 w-3 text-slate-400 shrink-0" />
+                  <span className="text-[9px] text-slate-400">资金方向</span>
+                  <div className="flex gap-1">
+                    {(['expense', 'income', 'none'] as const).map((d) => (
+                      <button key={d} onClick={() => setMoneyDirection(moneyDirection === d ? '' : d)}
+                        className={`rounded-md px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                          moneyDirection === d ? d === 'expense' ? 'bg-red-500 text-white' : d === 'income' ? 'bg-green-500 text-white' : 'bg-slate-500 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                        {MONEY_DIRECTION_LABELS[d]}
+                      </button>
+                    ))}
                   </div>
                 </div>
+                {/* 币种 */}
+                <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5">
+                  <DollarSign className="h-3 w-3 text-slate-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <span className="block text-[9px] text-slate-400 leading-none mb-0.5">币种</span>
+                    <input
+                      type="text"
+                      value={moneyCurrency}
+                      onChange={(e) => setMoneyCurrency(e.target.value)}
+                      className="w-full bg-transparent text-xs text-slate-900 focus:outline-none"
+                      placeholder="CNY"
+                    />
+                  </div>
+                </div>
+                {/* 关系角色 */}
+                <CompactInput icon={<Users className="h-3 w-3" />} label="关系角色" value={relationRolesStr} onChange={setRelationRolesStr} placeholder="如：同事, 朋友" />
               </div>
-            </div>
+            )}
           </div>
 
           {/* ================================ */}
-          {/* 区块 4: 标签 */}
+          {/* 标签 */}
           {/* ================================ */}
           {tags.length > 0 && (
             <div>
@@ -796,19 +1206,40 @@ export default function RecordEditDrawer({
             </div>
           )}
 
-          {/* ================================ */}
-          {/* 区块 5: 备注 */}
-          {/* ================================ */}
-          <div>
-            <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">备注</label>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              rows={2}
-              placeholder="补充说明..."
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
-            />
-          </div>
+          {/* AI 低置信度 / 待确认提示区 */}
+          {(() => {
+            const ps = record.parsed_semantic as { needs_clarification?: boolean; clarification_issues?: Array<{ type: string; message: string; reason: string; options?: Array<{ label: string; value: string }>; sharedContext?: { field: string; value: unknown; raw: string } }> } | null;
+            if (!ps?.needs_clarification) return null;
+            const issues = ps.clarification_issues || [];
+            if (issues.length === 0) return null;
+            return (
+              <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Activity className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                  <span className="text-xs font-semibold text-amber-700">AI 解析存在歧义，请确认</span>
+                </div>
+                {issues.map((issue, idx) => (
+                  <div key={idx} className="space-y-1">
+                    <div className="text-[10px] text-amber-600">原因：{issue.reason}</div>
+                    <div className="text-[11px] text-slate-700">{issue.message}</div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+          {(() => {
+            const ps = record.parsed_semantic;
+            const confidence = ps && typeof ps.confidence === 'number' ? ps.confidence : null;
+            if (confidence !== null && confidence < 0.7) {
+              return (
+                <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5">
+                  <p className="text-xs font-medium text-amber-700 mb-1">AI 部分信息不太确定，请手动补充</p>
+                  <p className="text-[10px] text-amber-500">解析置信度较低（{Math.round(confidence * 100)}%），请核对结构化字段</p>
+                </div>
+              );
+            }
+            return null;
+          })()}
         </div>
 
         {/* 底部保存 */}

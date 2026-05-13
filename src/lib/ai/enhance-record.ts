@@ -3,45 +3,56 @@
  * 记录创建后的异步 AI 增强：
  * 1. 自动识别 item_hint 并归属事项
  * 2. 回写 AI 解析的结构化字段（metric/cost/duration/location/people/parsed_semantic/time_anchor_date）
- * 3. 仅当记录原值为空时才覆盖，不破坏用户手动填写的值
+ * 3. 通过规则中心管控写入，由 applyFieldOwnershipPolicy 处理字段归属
  */
 
 import { parseSemantic } from './parse-semantic';
-import { parseWithFallback, shouldFallback, getFallbackMessage, type SimpleUserRule } from './parse-rules-fallback';
+import { parseWithFallback, shouldFallback } from './parse-rules-fallback';
+import { matchItemSmart } from '@/lib/utils/item-match';
+import { buildUnitFields, generateContentSummary } from '@/lib/utils/record-unit-mapper';
 import { createClient } from '@/lib/supabase/server';
-import type { ParsedSemantic, ClarificationNeeded, ClarificationIssue, SharedContextItem } from '@/types/semantic';
+import { RULES } from '@/lib/rules';
+import { applyAiEnhancementSafely } from '@/lib/domain/record-ai-service';
+import { createRecordSafely } from '@/lib/domain/record-service';
+import { genDecisionId, genBehaviorId, genUnitId } from '@/lib/observability/id-registry';
+import { logDecision, logItemMatch, logFieldChanges } from '@/lib/observability/decision-logger';
+import { persistTraceSummary } from '@/lib/observability/trace';
+import { createComponentLogger } from '@/lib/observability/logger';
+import type { ParsedSemantic, ClarificationNeeded, ClarificationIssue, SharedContextItem, EnhanceResult } from '@/types/semantic';
+
+const log = createComponentLogger('enhance-record');
 
 /**
  * 对一条已保存的记录进行异步 AI 增强
  * - 调用 DeepSeek 解析语义
- * - 回写 AI 解析结果到记录（仅填充空字段，不覆盖用户手动值）
+ * - 通过规则中心回写 AI 解析结果（字段归属策略自动处理覆写规则）
  * - 自动匹配 item_hint 并归属事项
  * - 检测歧义条件，有歧义时返回 ClarificationNeeded 供前端弹出澄清框
  */
-/** 降级模式信息（供前端展示提示） */
-export interface FallbackInfo {
-  is_fallback: true;
-  reason: 'ai_timeout' | 'ai_error' | 'ai_unavailable' | 'api_key_missing';
-  message: string;
-}
-
 export async function enhanceRecord(
   userId: string,
   recordId: string,
   content: string,
-  date: string
-): Promise<ClarificationNeeded | null> {
+  date: string,
+  traceId?: string,
+  inputId?: string
+): Promise<EnhanceResult> {
+  genBehaviorId('B-004'); // enhanceRecord 入口追踪
   const supabase = await createClient();
 
-  // 先读取当前记录的现有值（用于"仅填空"逻辑）
+  // 读取当前记录（用于安全网检查 + 事项匹配 + 发生时间推算）
   const { data: existingRecord } = await supabase
     .from('records')
-    .select('item_id, sub_item_id, metric_value, metric_unit, metric_name, cost, duration_minutes, location, people, parsed_semantic, time_anchor_date, mood, energy, data_nature, is_period_rule, period_start_date, period_end_date, period_frequency, period_expanded, period_source_id')
+    .select('item_id, sub_item_id, duration_minutes, occurred_at, occurred_at_end, time_precision, parsed_semantic')
     .eq('id', recordId)
     .eq('user_id', userId)
     .maybeSingle();
 
-  if (!existingRecord) return null;
+  if (!existingRecord) return { clarification: null, compoundDetected: false, compoundUnitsCount: 0 };
+
+  // 安全网：如果记录已有 parsed_semantic，说明已被客户端 enhanceWithAi 或
+  // confirmSplitUnits 处理过，无需重复调用 DeepSeek（避免双重解析竞态）
+  if (existingRecord.parsed_semantic) return { clarification: null, compoundDetected: false, compoundUnitsCount: 0 };
 
   // 获取用户事项列表（只取活跃/推进中的）
   const { data: items } = await supabase
@@ -52,7 +63,10 @@ export async function enhanceRecord(
     .order('created_at', { ascending: false })
     .limit(50);
 
-  if (!items || items.length === 0) return null;
+  if (!items || items.length === 0) {
+    // 没有活跃事项时仍继续 AI 解析和结构化字段回写，仅跳过事项/子项匹配
+  }
+  const effectiveItems = items ?? [];
 
   // 获取用户所有子项
   const { data: subItems } = await supabase
@@ -93,179 +107,186 @@ export async function enhanceRecord(
     }
   } catch { /* 获取近期记录失败不影响主流程 */ }
 
-  // 调用语义解析（带降级兜底）
+  // 调用语义解析（AI 失败时降级到本地规则兜底）
   let result;
-  let fallbackInfo: FallbackInfo | null = null;
   try {
-    result = await parseSemantic(content, date, recentRecords, items, subItems ?? undefined);
-   } catch (err) {
-    // AI 解析失败 → 尝试本地规则兜底
-    const fallbackReason = shouldFallback(err);
-    if (fallbackReason) {
-      // 查询用户规则，降级模式下仍可使用已学习的归类偏好
-      let userRulesForFallback: SimpleUserRule[] = [];
-      try {
-        const { data: rulesData } = await supabase
-          .from('user_rules')
-          .select('trigger_pattern, target_id, target_type, rule_type')
-          .eq('user_id', userId)
-          .eq('is_active', true);
-        userRulesForFallback = (rulesData || []) as SimpleUserRule[];
-      } catch { /* 规则查询失败不影响降级 */ }
-
-      const fallbackResult = parseWithFallback(content, date, items, fallbackReason, userRulesForFallback);
-      result = {
-        parsed: fallbackResult.parsed,
-        type_hints: fallbackResult.type_hints,
-      };
-      fallbackInfo = {
-        is_fallback: true,
-        reason: fallbackReason,
-        message: getFallbackMessage(fallbackReason),
-      };
+    result = await parseSemantic(content, date, recentRecords, effectiveItems, subItems ?? undefined);
+    genDecisionId('ENHANCE');
+  } catch (err) {
+    const reason = shouldFallback(err);
+    genDecisionId('AI_FALLBACK');
+    if (reason) {
+      const fallback = parseWithFallback(content, date, effectiveItems, reason);
+      result = { parsed: fallback.parsed, type_hints: fallback.type_hints };
     } else {
-      // 非降级型错误，静默退出
-      return null;
+      return { clarification: null, compoundDetected: false, compoundUnitsCount: 0 };
     }
   }
 
   const firstUnit = result.parsed.units[0];
-  if (!firstUnit) return null;
+  if (!firstUnit) return { clarification: null, compoundDetected: false, compoundUnitsCount: 0 };
 
-  // 构建"仅填空"的更新载荷
-  const update: Record<string, unknown> = {};
+  // ──────────────────────────────────────────────────────
+  // 构建 AI 更新载荷：所有 AI 提议的值，不做 OFFE 判断
+  // 字段归属策略由 applyFieldOwnershipPolicy 在
+  // applyAiEnhancementSafely 中统一处理
+  // ──────────────────────────────────────────────────────
+  const aiUpdate: Record<string, unknown> = {};
 
-  // --- item_id：匹配事项 ---
+  // 复合句信号：如果 AI 返回多个 units，将信号存入 parsed_semantic 而非作为独立 DB 列
+  const isCompound = result.parsed.is_compound && result.parsed.units.length > 1;
+
+  // --- item_id：智能事项匹配（核心关键词验证，避免 AI 幻觉误归类） ---
+  // 仅当现有 item_id 为空时才尝试匹配（性能优化，非 OFFE 逻辑）
   if (!existingRecord.item_id && firstUnit.item_hint) {
     const hint = firstUnit.item_hint.trim();
-    let matched = items.find((i) => i.title === hint);
-    if (!matched) {
-      matched = items.find((i) => i.title.includes(hint) || hint.includes(i.title));
+    const matchResult = matchItemSmart(hint, effectiveItems, content, subItems ?? undefined);
+    if (matchResult && matchResult.confidence === 'high') {
+      aiUpdate.item_id = matchResult.itemId;
+      if (matchResult.subItemId) {
+        aiUpdate.sub_item_id = matchResult.subItemId;
+      }
     }
-    if (matched) {
-      update.item_id = matched.id;
+    // 5.2: 事项匹配决策日志
+    if (matchResult) {
+      logItemMatch(undefined, hint, matchResult.itemTitle, matchResult.matchType, matchResult.confidence);
     }
   }
 
   // --- sub_item_id：AI sub_item_hint 匹配子项（限定在已匹配的事项范围内） ---
-  const targetItemId4Sub = (update.item_id as string) || existingRecord.item_id;
-  if (!existingRecord.sub_item_id && firstUnit.sub_item_hint && targetItemId4Sub) {
-    const hint = firstUnit.sub_item_hint.trim().toLowerCase();
+  // 仅当现有 sub_item_id 为空时才尝试匹配（性能优化，非 OFFE 逻辑）
+  const targetItemId4Sub = (aiUpdate.item_id as string) || existingRecord.item_id;
+  let subItemAmbiguous: { label: string; value: string }[] | null = null;
+  if (!existingRecord.sub_item_id && targetItemId4Sub) {
     const subsUnderItem = (subItems ?? []).filter(s => s.item_id === targetItemId4Sub);
-    // 优先 action 匹配
-    const action = firstUnit.action?.trim().toLowerCase() || '';
-    let matchedSub = action
-      ? subsUnderItem.find(s => s.title.toLowerCase().includes(action))
-      : undefined;
-    if (!matchedSub) {
-      matchedSub =
-        subsUnderItem.find(s => s.title.toLowerCase() === hint) ||
-        subsUnderItem.find(s => s.title.toLowerCase().includes(hint) || hint.includes(s.title.toLowerCase()));
-    }
-    if (matchedSub) {
-      update.sub_item_id = matchedSub.id;
-    }
-  }
+    const action = firstUnit.action_text?.trim().toLowerCase() || '';
+    const hint = typeof firstUnit.sub_item_hint === 'string' ? firstUnit.sub_item_hint.trim().toLowerCase() : '';
+    const metricName = firstUnit.metric?.name || (aiUpdate.metric_name as string | undefined);
+    const metricNeedle = metricName ? metricName.toLowerCase() : '';
 
-  // --- sub_item_id 兜底：有 item_id 无 sub_item_id 时，用 action > metric_name 匹配子项 ---
-  if (!existingRecord.sub_item_id && !update.sub_item_id && targetItemId4Sub) {
-    const subsUnderItem = (subItems ?? []).filter(s => s.item_id === targetItemId4Sub);
-    // 优先 action 匹配
-    const action = firstUnit.action?.trim().toLowerCase() || '';
-    let matched = action ? subsUnderItem.find(s => s.title.toLowerCase().includes(action)) : undefined;
-    // 兜底 metric_name 匹配
-    if (!matched) {
-      const metricName = firstUnit.metric?.name || (update.metric_name as string | undefined);
-      if (metricName) {
-        const needle = metricName.toLowerCase();
-        matched =
-          subsUnderItem.find(s => s.title.toLowerCase() === needle) ||
-          subsUnderItem.find(s => s.title.toLowerCase().includes(needle) || needle.includes(s.title.toLowerCase()));
+    // 收集所有匹配的子项（用 filter 而非 find，检测歧义）
+    const matchedSubs: Array<{ id: string; title: string; source: string }> = [];
+    for (const s of subsUnderItem) {
+      const sLower = s.title.toLowerCase();
+      if (hint && sLower === hint) {
+        matchedSubs.push({ id: s.id, title: s.title, source: 'exact_hint' });
+      } else if (action && sLower.includes(action)) {
+        matchedSubs.push({ id: s.id, title: s.title, source: 'action' });
+      } else if (hint && (sLower.includes(hint) || hint.includes(sLower))) {
+        matchedSubs.push({ id: s.id, title: s.title, source: 'hint_partial' });
+      } else if (metricNeedle && (sLower.includes(metricNeedle) || metricNeedle.includes(sLower))) {
+        matchedSubs.push({ id: s.id, title: s.title, source: 'metric' });
       }
     }
-    if (matched) {
-      update.sub_item_id = matched.id;
+
+    const uniqueMatches = matchedSubs.filter((m, i, arr) => arr.findIndex(x => x.id === m.id) === i);
+
+    if (uniqueMatches.length === 1) {
+      aiUpdate.sub_item_id = uniqueMatches[0].id;
+    } else if (uniqueMatches.length > 1) {
+      subItemAmbiguous = uniqueMatches.map(m => ({ label: m.title, value: m.id }));
+    } else if (subsUnderItem.length > 0) {
+      subItemAmbiguous = subsUnderItem.map(s => ({ label: s.title, value: s.id }));
     }
   }
 
   // --- metric 字段 ---
   if (firstUnit.metric && typeof firstUnit.metric === 'object') {
-    if (existingRecord.metric_value == null && firstUnit.metric.value != null) {
-      update.metric_value = firstUnit.metric.value;
-    }
-    if (!existingRecord.metric_unit && firstUnit.metric.unit) {
-      update.metric_unit = firstUnit.metric.unit;
-    }
-    if (!existingRecord.metric_name && firstUnit.metric.name) {
-      update.metric_name = firstUnit.metric.name;
-    }
+    if (firstUnit.metric.value != null) aiUpdate.metric_value = firstUnit.metric.value;
+    if (firstUnit.metric.unit) aiUpdate.metric_unit = firstUnit.metric.unit;
+    if (firstUnit.metric.name) aiUpdate.metric_name = firstUnit.metric.name;
   }
 
   // --- cost ---
-  if (existingRecord.cost == null && firstUnit.cost != null) {
-    update.cost = firstUnit.cost;
-  }
+  if (firstUnit.cost != null) aiUpdate.cost = firstUnit.cost;
 
   // --- duration_minutes ---
-  if (existingRecord.duration_minutes == null && firstUnit.duration_minutes != null) {
-    update.duration_minutes = firstUnit.duration_minutes;
+  if (firstUnit.duration_minutes != null) aiUpdate.duration_minutes = firstUnit.duration_minutes;
+
+  // --- 反向推算 occurred_at_end ---
+  const effectiveDuration = (aiUpdate.duration_minutes as number | undefined) ?? (existingRecord.duration_minutes as number | null);
+  const effectiveStart = (existingRecord.occurred_at as string | null);
+  const alreadyHasEnd = !!(existingRecord.occurred_at_end);
+  if (effectiveDuration && effectiveDuration > 0 && effectiveStart && !alreadyHasEnd) {
+    try {
+      const startDate = new Date(effectiveStart);
+      if (!isNaN(startDate.getTime())) {
+        const endDate = new Date(startDate.getTime() + effectiveDuration * 60 * 1000);
+        aiUpdate.occurred_at_end = endDate.toISOString();
+        if (!existingRecord.time_precision || existingRecord.time_precision === 'unknown') {
+          aiUpdate.time_precision = 'approx';
+        }
+      }
+    } catch { /* 解析失败不影响主流程 */ }
   }
 
   // --- mood ---
-  if (!existingRecord.mood && firstUnit.mood) {
-    update.mood = firstUnit.mood;
-  }
+  if (firstUnit.mood) aiUpdate.mood = firstUnit.mood;
 
   // --- energy ---
-  if (!existingRecord.energy && firstUnit.energy) {
-    update.energy = firstUnit.energy;
-  }
+  if (firstUnit.energy) aiUpdate.energy = firstUnit.energy;
 
   // --- location ---
-  if (!existingRecord.location && firstUnit.location) {
-    update.location = firstUnit.location;
-  }
+  if (firstUnit.location) aiUpdate.location = firstUnit.location;
 
   // --- people ---
-  if ((!existingRecord.people || (Array.isArray(existingRecord.people) && existingRecord.people.length === 0))
-      && Array.isArray(firstUnit.people) && firstUnit.people.length > 0) {
-    update.people = firstUnit.people;
-  }
+  if (Array.isArray(firstUnit.people) && firstUnit.people.length > 0) aiUpdate.people = firstUnit.people;
 
-  // --- parsed_semantic ---
+  // --- 三层九组结构化字段 ---
+  if (firstUnit.action_text) aiUpdate.action_text = firstUnit.action_text;
+  if (firstUnit.event_text) aiUpdate.event_text = firstUnit.event_text;
+  if (firstUnit.object_text) aiUpdate.object_text = firstUnit.object_text;
+  if (firstUnit.outcome_type) aiUpdate.outcome_type = firstUnit.outcome_type;
+  if (firstUnit.outcome_direction) aiUpdate.outcome_direction = firstUnit.outcome_direction;
+  if (firstUnit.cause_text) aiUpdate.cause_text = firstUnit.cause_text;
+  if (firstUnit.time_text) aiUpdate.time_text = firstUnit.time_text;
+  if (firstUnit.time_precision) aiUpdate.time_precision = firstUnit.time_precision;
+  if (firstUnit.place_type) aiUpdate.place_type = firstUnit.place_type;
+  if (firstUnit.money_direction) aiUpdate.money_direction = firstUnit.money_direction;
+  if (Array.isArray(firstUnit.relation_roles) && firstUnit.relation_roles.length > 0) aiUpdate.relation_roles = firstUnit.relation_roles;
+
+  // --- 1.5 录入结构对齐新增字段 ---
+  if (firstUnit.body_state) aiUpdate.body_state = firstUnit.body_state;
+  if (firstUnit.money_currency) aiUpdate.money_currency = firstUnit.money_currency;
+  // result_text 映射到 result 列
+  if (firstUnit.result_text) aiUpdate.result = firstUnit.result_text;
+  // state 映射到 status 列
+  if (firstUnit.state) aiUpdate.status = firstUnit.state;
+
+  // --- parsed_semantic（AI 自有字段，需要特殊合并语义） ---
+  // 不通过 applyFieldOwnershipPolicy 的 if_empty/never 规则处理，
+  // 因为 parsed_semantic 有 JSONB 合并语义（复合句标记追加到已有数据）
+  let parsedSemanticValue: Record<string, unknown> | null = null;
   if (!existingRecord.parsed_semantic) {
-    update.parsed_semantic = firstUnit;
-  } else {
-    // 已有 parsed_semantic 时，补充 reasoning 和 risk_level
-    const existingParsed = existingRecord.parsed_semantic as Record<string, unknown>;
-    const patchParsed: Record<string, unknown> = {};
-    if (!existingParsed.reasoning && firstUnit.reasoning) patchParsed.reasoning = firstUnit.reasoning;
-    if (!existingParsed.risk_level && firstUnit.risk_level) patchParsed.risk_level = firstUnit.risk_level;
-    if (Object.keys(patchParsed).length > 0) {
-      update.parsed_semantic = { ...existingParsed, ...patchParsed };
+    const semanticData: Record<string, unknown> = { ...firstUnit };
+    if (isCompound) {
+      semanticData.compound_detected = true;
+      semanticData.compound_units_count = result.parsed.units.length;
     }
+    parsedSemanticValue = semanticData;
+  } else if (isCompound) {
+    // 已有 parsed_semantic 但需要追加复合句标记（合并语义，非覆写）
+    const existingParsed = (existingRecord.parsed_semantic as Record<string, unknown>) ?? {};
+    parsedSemanticValue = {
+      ...existingParsed,
+      compound_detected: true,
+      compound_units_count: result.parsed.units.length,
+    };
+  }
+  if (parsedSemanticValue) {
+    aiUpdate.parsed_semantic = parsedSemanticValue;
   }
 
   // --- time_anchor_date ---
-  if (!existingRecord.time_anchor_date && firstUnit.time_anchor) {
+  if (firstUnit.time_anchor) {
     const resolvedDate = resolveTimeAnchorDate(firstUnit.time_anchor, date);
-    if (resolvedDate) {
-      update.time_anchor_date = resolvedDate;
-    }
+    if (resolvedDate) aiUpdate.time_anchor_date = resolvedDate;
   }
 
-  // --- 规律/历史字段 ---
-  if (firstUnit.is_period_rule && !existingRecord.is_period_rule) {
-    update.is_period_rule = true;
-    if (firstUnit.period_frequency) update.period_frequency = firstUnit.period_frequency;
-    if (firstUnit.period_start_date && !existingRecord.period_start_date) update.period_start_date = firstUnit.period_start_date;
-    if (firstUnit.period_end_date && !existingRecord.period_end_date) update.period_end_date = firstUnit.period_end_date;
-  }
-  if (firstUnit.data_nature && !existingRecord.data_nature) {
-    update.data_nature = firstUnit.data_nature;
-  }
-
-  // --- 歧义检测（按优先级：共享时长 > 子项归属 > 事项归属 > 低置信度） ---
+  // ──────────────────────────────────────────────────────
+  // 歧义检测（按优先级：共享时长 > 子项归属 > 低置信度）
+  // 检测逻辑保持不变
+  // ──────────────────────────────────────────────────────
   const issues: ClarificationIssue[] = [];
 
   // 优先级1：共享时长
@@ -282,89 +303,25 @@ export async function enhanceRecord(
     });
   }
 
-  // 优先级2：子项归属歧义（metric_name 匹配到多个子项）
-  if (!existingRecord.sub_item_id && !update.sub_item_id && (update.item_id || existingRecord.item_id)) {
-    const targetItemId = (update.item_id as string) || existingRecord.item_id;
-    const metricName = firstUnit.metric?.name || (update.metric_name as string | undefined);
-    if (metricName) {
-      const needle = metricName.toLowerCase();
-      const subsUnderItem = (subItems ?? []).filter(s => s.item_id === targetItemId);
-      const matchedSubs = subsUnderItem.filter(s =>
-        s.title.toLowerCase().includes(needle) || needle.includes(s.title.toLowerCase())
-      );
-      if (matchedSubs.length > 1) {
-        issues.push({
-          type: 'sub_item_ambiguous',
-          unitIndex: 0,
-          message: `"${metricName}"属于哪个子项？`,
-          reason: `"${metricName}"同时匹配到${matchedSubs.map(s => '"' + s.title + '"').join('和')}两个子项`,
-          options: matchedSubs.map(s => ({ label: s.title, value: s.id })),
-        });
-      }
-    }
-  }
-
-  // 优先级3：事项归属缺失
-  if (!existingRecord.item_id && !update.item_id && !firstUnit.item_hint) {
+  // 优先级2：子项归属歧义
+  if (subItemAmbiguous && subItemAmbiguous.length > 1) {
     issues.push({
-      type: 'item_missing',
+      type: 'sub_item_ambiguous',
       unitIndex: 0,
-      message: `未匹配到事项`,
-      reason: 'AI未能从输入中识别出关联的事项名称',
-      options: items.slice(0, 5).map(i => ({ label: i.title, value: i.id })),
+      message: `属于哪个子项？`,
+      reason: `同时匹配到${subItemAmbiguous.map(s => '"' + s.label + '"').join('和')}多个子项`,
+      options: subItemAmbiguous,
     });
   }
 
-  // 优先级4：模糊输入分类（fuzzy_category）
-  if (firstUnit.fuzzy_category) {
-    const fuzzyTypeMap: Record<string, 'fuzzy_unintelligible' | 'fuzzy_insufficient' | 'fuzzy_unreasonable'> = {
-      unintelligible: 'fuzzy_unintelligible',
-      insufficient_info: 'fuzzy_insufficient',
-      unreasonable: 'fuzzy_unreasonable',
-    };
-    const fuzzyMessageMap: Record<string, string> = {
-      unintelligible: '无法理解你的输入，请补充更多信息',
-      insufficient_info: '信息不足，建议补充关键信息',
-      unreasonable: '内容过多或存在冲突，建议拆分或改写',
-    };
-    issues.push({
-      type: fuzzyTypeMap[firstUnit.fuzzy_category],
-      unitIndex: 0,
-      message: fuzzyMessageMap[firstUnit.fuzzy_category] || '输入模糊，需要确认',
-      reason: firstUnit.fuzzy_hint || 'AI判断输入属于模糊类别',
-    });
-  }
-
-  // 优先级5：高风险记录（risk_level=high）
-  if (issues.length === 0 && firstUnit.risk_level === 'high') {
-    issues.push({
-      type: 'high_risk',
-      unitIndex: 0,
-      message: '此输入错误代价较高，需要确认',
-      reason: '内容涉及历史概括/批量推断，自动处理可能导致数据失真',
-    });
-  }
-
-  // 优先级5.5：中风险记录（risk_level=medium）——候选确认
-  // 中风险：信息有一定模糊性但不严重，给出AI推测的候选结果让用户确认
-  if (issues.length === 0 && firstUnit.risk_level === 'medium') {
-    issues.push({
-      type: 'medium_risk',
-      unitIndex: 0,
-      message: 'AI推测结果可能不完全准确',
-      reason: firstUnit.reasoning || '输入有一定模糊性，AI归类可能需要确认',
-      options: items.slice(0, 3).map(i => ({ label: i.title, value: i.id })),
-    });
-  }
-
-  // 优先级6：低置信度（仅当前五种都不触发时）
-  if (issues.length === 0 && result.parsed.confidence < 0.7) {
+  // 优先级3：低置信度（仅当前两种都不触发时）
+  if (issues.length === 0 && result.parsed.confidence < RULES.fallback.low_confidence_threshold) {
     const guessFields = firstUnit.field_confidence
       ? Object.entries(firstUnit.field_confidence)
           .filter(([, v]) => v === 'guess')
           .map(([k]) => k)
       : [];
-    if (guessFields.length > 0 || !firstUnit.action) {
+    if (guessFields.length > 0 || (!firstUnit.action_text && !firstUnit.action)) {
       issues.push({
         type: 'low_confidence',
         unitIndex: 0,
@@ -374,67 +331,176 @@ export async function enhanceRecord(
     }
   }
 
-  // --- 如果有歧义，写入 needs_clarification 标记并返回 ---
+  // ──────────────────────────────────────────────────────
+  // 写入路径：通过规则中心 applyAiEnhancementSafely
+  // ──────────────────────────────────────────────────────
+
+  // --- 如果有歧义，写入无争议字段 + needs_clarification 标记并返回 ---
   if (issues.length > 0) {
-    // 回写无争议的字段
-    const safeUpdate = { ...update };
-    delete safeUpdate.duration_minutes; // 共享时长时不自动回写
-    delete safeUpdate.sub_item_id; // 子项歧义时不自动回写
+    // 回写无争议的字段（移除争议字段）
+    const safeAiUpdate = { ...aiUpdate };
+    delete safeAiUpdate.duration_minutes; // 共享时长时不自动回写
+    delete safeAiUpdate.sub_item_id; // 子项歧义时不自动回写
 
-    // 模糊输入中 unintelligible 和 unreasonable 阻断自动落地，仅 insufficient_info 允许低精度落地
-    const isFuzzyBlocked = firstUnit.fuzzy_category === 'unintelligible' || firstUnit.fuzzy_category === 'unreasonable';
-    if (isFuzzyBlocked) {
-      // 不回写任何语义字段，只标记需要澄清
-      const fieldsToRemove = ['type_hint', 'item_id', 'sub_item_id', 'metric_value', 'metric_unit', 'metric_name', 'cost', 'duration_minutes'];
-      fieldsToRemove.forEach(f => delete safeUpdate[f]);
-    }
-
-    // 写入 needs_clarification 标记 + 降级信息
-    const existingParsed = (existingRecord.parsed_semantic as Record<string, unknown>) ?? {};
-    safeUpdate.parsed_semantic = {
-      ...existingParsed,
+    // 写入 needs_clarification 标记到 parsed_semantic
+    // parsed_semantic 不走策略引擎（AI 自有字段的 JSONB 合并语义）
+    const clarificationParsedSemantic: Record<string, unknown> = {
+      ...(existingRecord.parsed_semantic as Record<string, unknown> ?? {}),
       needs_clarification: true,
       clarification_issues: issues,
-      ...(fallbackInfo ? { fallback: fallbackInfo } : {}),
     };
+    // 从 safeAiUpdate 中取出 parsed_semantic（如果有），合并进去
+    if (safeAiUpdate.parsed_semantic && typeof safeAiUpdate.parsed_semantic === 'object') {
+      Object.assign(clarificationParsedSemantic, safeAiUpdate.parsed_semantic);
+    }
+    // parsed_semantic 不走策略引擎，直接加入 safeAiUpdate
+    safeAiUpdate.parsed_semantic = clarificationParsedSemantic;
 
-    if (Object.keys(safeUpdate).length > 0) {
-      await supabase
-        .from('records')
-        .update(safeUpdate)
-        .eq('id', recordId)
-        .eq('user_id', userId);
+    if (Object.keys(safeAiUpdate).length > 0) {
+      await applyAiEnhancementSafely({
+        userId,
+        recordId,
+        aiUpdate: safeAiUpdate,
+        supabase,
+      });
+      // 5.1: 增强前后字段对比日志
+      logFieldChanges(undefined, recordId,
+        Object.entries(safeAiUpdate).filter(([k]) => k !== 'parsed_semantic').map(([k, v]) => ({
+          field: k, from: (existingRecord as unknown as Record<string, unknown>)[k], to: v,
+        })),
+        'ENHANCE_CLARIFY');
+    }
+
+    // 持久化 trace（歧义路径）
+    if (traceId) {
+      persistTraceSummary({
+        supabase,
+        userId,
+        traceId,
+        operation: 'record_enhance',
+        status: 'partial',
+      });
     }
 
     return {
+      clarification: {
+        cardType: issues.some(i => i.type === 'shared_duration')
+          ? 'split'
+          : issues.some(i => i.type === 'sub_item_ambiguous')
+            ? 'attribution'
+            : 'clarify',
+        recordId,
+        recordIds: [recordId],
+        issues,
+        timestamp: Date.now(),
+        originalInput: content,
+      },
+      compoundDetected: isCompound,
+      compoundUnitsCount: result.parsed.units.length,
+    };
+  }
+
+  // --- 无歧义：通过规则中心正常回写 ---
+  if (Object.keys(aiUpdate).length > 0) {
+    await applyAiEnhancementSafely({
+      userId,
       recordId,
-      recordIds: [recordId],
-      issues,
-      timestamp: Date.now(),
-      originalInput: content,
-    };
+      aiUpdate,
+      supabase,
+    });
+    // 5.1: 增强前后字段对比日志
+    logFieldChanges(undefined, recordId,
+      Object.entries(aiUpdate).filter(([k]) => k !== 'parsed_semantic').map(([k, v]) => ({
+        field: k, from: (existingRecord as unknown as Record<string, unknown>)[k], to: v,
+      })),
+      'ENHANCE');
   }
 
-  // --- 无歧义：正常回写 ---
-  // 降级模式下也写入降级信息到 parsed_semantic
-  if (fallbackInfo && !update.parsed_semantic) {
-    const existingParsed = (existingRecord.parsed_semantic as Record<string, unknown>) ?? {};
-    update.parsed_semantic = {
-      ...existingParsed,
-      fallback: fallbackInfo,
-    };
+  // 持久化 trace（继承 POST 的 trace_id）
+  if (traceId) {
+    persistTraceSummary({
+      supabase,
+      userId,
+      traceId,
+      operation: 'record_enhance',
+      status: 'ok',
+    });
   }
 
-  // 执行更新
-  if (Object.keys(update).length > 0) {
-    await supabase
-      .from('records')
-      .update(update)
-      .eq('id', recordId)
-      .eq('user_id', userId);
+  // --- 复合句拆分：为 units[1..n] 创建独立记录 ---
+  const splitRecordIds: string[] = [];
+  if (isCompound && inputId) {
+    const batchId = crypto.randomUUID();
+    const units = result.parsed.units;
+
+    for (let i = 1; i < units.length; i++) {
+      try {
+        const unit = units[i] as unknown as Record<string, unknown>;
+        const unitId = genUnitId(inputId, i);
+        const summary = generateContentSummary(unit, '');
+        const fields = buildUnitFields(unit);
+
+        const createPayload: Record<string, unknown> = {
+          content: summary || `（拆分 ${i + 1}/${units.length}）`,
+          date,
+          type: fields.type || '发生',
+          input_id: unitId,
+          parent_input_id: inputId,
+          batch_id: batchId,
+          parsed_semantic: unit,
+          ...fields,
+        };
+
+        const splitResult = await createRecordSafely({
+          userId,
+          payload: createPayload as any,
+          supabase,
+        });
+
+        if (splitResult.ok && splitResult.data) {
+          const splitRecord = splitResult.data as unknown as Record<string, unknown>;
+          if (splitRecord.id) {
+            splitRecordIds.push(splitRecord.id as string);
+
+            // 建立 derived_from 关联
+            await supabase.from('record_links').insert({
+              source_id: splitRecord.id,
+              target_id: recordId,
+              link_type: 'derived_from',
+              user_id: userId,
+            }).select('id').maybeSingle();
+          }
+        } else {
+          log.error('拆分记录创建失败', {
+            details: {
+              unitIndex: i,
+              errors: splitResult.errors.map(e => e.message).join('; '),
+            },
+          });
+        }
+      } catch (err) {
+        log.error('拆分记录异常', {
+          details: { unitIndex: i, error: err instanceof Error ? err.message : String(err) },
+        });
+      }
+    }
+
+    // 同时更新主记录的 batch_id
+    try {
+      const updatePayload: Record<string, unknown> = {
+        batch_id: batchId,
+        input_id: inputId,
+      };
+      await supabase.from('records').update(updatePayload).eq('id', recordId);
+    } catch { /* 静默 */ }
   }
 
-  return null;
+  return {
+    clarification: null,
+    compoundDetected: isCompound,
+    compoundUnitsCount: result.parsed.units.length,
+    splitRecordIds,
+  };
 }
 
 /**

@@ -1,0 +1,27 @@
+/**
+ * eval/test-cases/golden/tcase-golden-002.json
+ * Golden Test: 复合输入分拆归类
+ */
+{
+  "testCaseId": "TCASE-golden-002",
+  "source": "golden",
+  "status": "pending_verification",
+  "description": "复合输入：'学了英语还健身了' → 2 条记录，分别归入英语和健身",
+  "input": {
+    "endpoint": "POST /api/v2/parse",
+    "body": {
+      "input": "学了英语还健身了",
+      "date": "2026-05-05",
+      "items": [
+        { "id": "00000000-0000-0000-0000-000000000003", "title": "英语" },
+        { "id": "00000000-0000-0000-0000-000000000004", "title": "健身" }
+      ]
+    }
+  },
+  "expected": {
+    "status": 200,
+    "ok": true,
+    "minRecordCount": 2,
+    "hasItemMatch": true
+  }
+}

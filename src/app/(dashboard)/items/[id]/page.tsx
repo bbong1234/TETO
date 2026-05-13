@@ -6,7 +6,7 @@ import {
   ArrowLeft, Loader2, Trash2, Pencil, X, Check,
   ExternalLink, RefreshCw, Plus, Layers, FileText, History,
   Calendar, DollarSign, Timer, BarChart3, Target, Sparkles,
-  Zap, Archive, ChevronRight
+  ChevronRight, AlertTriangle, CheckSquare
 } from 'lucide-react';
 import type { Item, UpdateItemPayload, Record as TetoRecord, Phase, Goal, ItemAggregation, SubItem } from '@/types/teto';
 import { ITEM_STATUSES } from '@/types/teto';
@@ -15,9 +15,7 @@ import ToastContainer from '@/components/ui/use-toast';
 import PhaseForm from '../components/PhaseForm';
 import PhaseSuggest from '../components/PhaseSuggest';
 import HistoryImport from '../components/HistoryImport';
-import GoalForm from '../components/GoalForm';
-import GoalEngineDashboard from '../components/GoalEngineDashboard';
-import ItemGoalSection from '../components/ItemGoalSection';
+import UnifiedGoalPanel from '../components/UnifiedGoalPanel';
 import ItemTimeline from '../components/ItemTimeline';
 import ItemDataPanel from '../components/ItemDataPanel';
 import SubItemTabBar from '../components/SubItemTabBar';
@@ -26,6 +24,7 @@ import SubItemPromoteDialog from '../components/SubItemPromoteDialog';
 
 interface DailyStat {
   date: string;
+  sub_item_id: string | null;
   record_count: number;
   total_duration_minutes: number;
   total_cost: number;
@@ -49,6 +48,25 @@ function fieldLabel(field: string): string {
     record_link_hint: '关联记录',
   };
   return map[field] || field;
+}
+
+/** 调用纠错 API 修正 AI 推测错误的字段 */
+async function correctField(
+  recordId: string,
+  field: string,
+  newValue: string,
+  decisionId?: string
+) {
+  const res = await fetch(`/api/v2/records/${recordId}/correct`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      field_corrected: field,
+      new_value: newValue,
+      decision_id: decisionId ?? undefined,
+    }),
+  });
+  return res.ok ? await res.json() : null;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -79,19 +97,29 @@ export default function ItemDetailPage() {
   const [showPhaseForm, setShowPhaseForm] = useState(false);
   const [showHistoryImport, setShowHistoryImport] = useState(false);
   const [phaseRefreshKey, setPhaseRefreshKey] = useState(0);
+  const [goalRefreshKey, setGoalRefreshKey] = useState(0);
+  const [showPhaseSuggest, setShowPhaseSuggest] = useState(false);
   const [showGoalForm, setShowGoalForm] = useState(false);
   const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
-  const [showPhaseSuggest, setShowPhaseSuggest] = useState(false);
 
   // 子项相关状态
   const [activeSubItemId, setActiveSubItemId] = useState<string | null>(null);
   const [showSubItemForm, setShowSubItemForm] = useState(false);
   const [editingSubItem, setEditingSubItem] = useState<SubItem | null>(null);
-  const [promotingSubItem, setPromotingSubItem] = useState<SubItem | null>(null);
-  const [promoting, setPromoting] = useState(false);
 
-  // 视图切换：执行 / 档案
-  const [activeView, setActiveView] = useState<'execute' | 'archive'>('execute');
+  // 计划完成对话框状态
+  const [completingRecord, setCompletingRecord] = useState<TetoRecord | null>(null);
+  const [completeDate, setCompleteDate] = useState('');
+  const [completeTime, setCompleteTime] = useState('');
+  const [completionContent, setCompletionContent] = useState('');
+
+  // 多选模式状态
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const [promotingSubItem, setPromotingSubItem] = useState<SubItem | null>(null);
+  const [correctingField, setCorrectingField] = useState<string | null>(null);
+  const [promoting, setPromoting] = useState(false);
 
   const { toasts, showError, dismissToast } = useToast();
 
@@ -188,11 +216,30 @@ export default function ItemDetailPage() {
     setShowPhaseForm(true);
   };
 
-  const handleCompleteRecord = async (record: TetoRecord) => {
-    if (!confirm(`确认完成计划：「${record.content}」？\n将生成一条“发生”记录。`)) return;
+  const handleCompleteRecord = (record: TetoRecord) => {
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    const timeStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    setCompleteDate(dateStr);
+    setCompleteTime(timeStr);
+    setCompletionContent('');
+    setCompletingRecord(record);
+  };
+
+  const confirmCompleteRecord = async () => {
+    if (!completingRecord) return;
+    const record = completingRecord;
+    setCompletingRecord(null);
     try {
-      const res = await fetch(`/api/v2/records/${record.id}/complete`, { method: 'POST' });
-      if (res.ok) { fetchItem(); } else { const e = await res.json(); showError(e.error || '完成操作失败'); }
+      const occurredAt = `${completeDate}T${completeTime}:00+08:00`;
+      const payload: Record<string, string> = { occurred_at: occurredAt, date: completeDate };
+      if (completionContent.trim()) payload.completion_content = completionContent.trim();
+      const res = await fetch(`/api/v2/records/${record.id}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) { setGoalRefreshKey(k => k + 1); fetchItem(); } else { const e = await res.json(); showError(e.error || '完成操作失败'); }
     } catch { showError('完成操作失败，请重试'); }
   };
 
@@ -205,7 +252,7 @@ export default function ItemDetailPage() {
       const res = await fetch(`/api/v2/records/${record.id}/postpone`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ new_date: newDate }),
       });
-      if (res.ok) { fetchItem(); } else { const e = await res.json(); showError(e.error || '推迟操作失败'); }
+      if (res.ok) { setGoalRefreshKey(k => k + 1); fetchItem(); } else { const e = await res.json(); showError(e.error || '推迟操作失败'); }
     } catch { showError('推迟操作失败，请重试'); }
   };
 
@@ -213,8 +260,24 @@ export default function ItemDetailPage() {
     if (!confirm(`确认取消计划：「${record.content}」？\n取消后不会生成任何新记录。`)) return;
     try {
       const res = await fetch(`/api/v2/records/${record.id}/cancel`, { method: 'POST' });
-      if (res.ok) { fetchItem(); } else { const e = await res.json(); showError(e.error || '取消操作失败'); }
+      if (res.ok) { setGoalRefreshKey(k => k + 1); fetchItem(); } else { const e = await res.json(); showError(e.error || '取消操作失败'); }
     } catch { showError('取消操作失败，请重试'); }
+  };
+
+  const handleDeletePhase = async (phase: Phase) => {
+    if (!confirm(`确定删除阶段「${phase.title}」？此操作不可恢复。`)) return;
+    try {
+      const res = await fetch(`/api/v2/phases/${phase.id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setPhaseRefreshKey(k => k + 1);
+        fetchItem();
+      } else {
+        const errData = await res.json();
+        showError(errData.error || '删除阶段失败');
+      }
+    } catch {
+      showError('删除阶段失败，请重试');
+    }
   };
 
   const handleCreatePhase = () => {
@@ -272,17 +335,190 @@ export default function ItemDetailPage() {
   };
 
   // 所有 hooks 必须在 early return 之前调用（React Rules of Hooks）
+
+  // 游离记录：有子项的事项下，没有 sub_item_id 的非计划记录（计划有专属"待完成计划"区域）
+  const orphanRecords = useMemo(() => {
+    if (!item || !(item.sub_items || []).length) return [];
+    const allRecords = item.records || item.recent_records || [];
+    return allRecords.filter(r => !r.sub_item_id && r.type !== '计划');
+  }, [item]);
+  const [orphanAssignSubId, setOrphanAssignSubId] = useState<string>('');
+  const [assigningOrphans, setAssigningOrphans] = useState(false);
+
   const relatedRecords: TetoRecord[] = item
     ? (() => {
         const allRecords = item.records || item.recent_records || [];
         if (!activeSubItemId) return allRecords;
+        if (activeSubItemId === '__orphan__') return orphanRecords;
         return allRecords.filter(r => r.sub_item_id === activeSubItemId);
       })()
     : [];
 
+  // 时间线记录：排除活跃计划（计划在"待完成计划"section 中显示）
+  const timelineRecords = useMemo(() =>
+    relatedRecords.filter(r => !(r.type === '计划' && (!r.lifecycle_status || r.lifecycle_status === 'active'))),
+    [relatedRecords]
+  );
+
+  // 活跃计划记录（在"待完成计划"section 显示）
+  const activePlans = useMemo(() =>
+    relatedRecords.filter(r => r.type === '计划' && (!r.lifecycle_status || r.lifecycle_status === 'active')),
+    [relatedRecords]
+  );
+
+  // 计算占位日期：量化目标范围内、无记录的日期
+  const placeholderEntries = useMemo(() => {
+    if (!item?.goals) return [];
+
+    const numericGoals = item.goals.filter(g => {
+      if (g.rule_type !== '周期性达成' || !g.start_date || !g.item_id) return false;
+      if (activeSubItemId === '__orphan__') return false;
+      if (activeSubItemId) return g.sub_item_id === activeSubItemId;
+      return true;
+    });
+
+    if (numericGoals.length === 0) return [];
+
+    const earliest = numericGoals.reduce<string>((min, g) =>
+      g.start_date! < min ? g.start_date! : min, numericGoals[0].start_date!);
+
+    // 收集已有记录的日期集合
+    const recordDates = new Set<string>();
+    for (const r of relatedRecords) {
+      const d = r.occurred_at?.slice(0, 10) || r.created_at?.slice(0, 10);
+      if (d) recordDates.add(d);
+    }
+
+    const placeholders: Array<{ id: string; date: string }> = [];
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    const cur = new Date(earliest + 'T00:00:00Z');
+    const end = new Date(todayStr + 'T00:00:00Z');
+    while (cur <= end) {
+      const dateStr = `${cur.getUTCFullYear()}-${String(cur.getUTCMonth() + 1).padStart(2, '0')}-${String(cur.getUTCDate()).padStart(2, '0')}`;
+      if (!recordDates.has(dateStr)) {
+        placeholders.push({ id: `placeholder-${dateStr}`, date: dateStr });
+      }
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+
+    return placeholders;
+  }, [item?.goals, relatedRecords, activeSubItemId]);
+
+  const handleAssignOrphans = async () => {
+    if (!orphanAssignSubId || orphanRecords.length === 0) return;
+    setAssigningOrphans(true);
+    try {
+      let successCount = 0;
+      for (const rec of orphanRecords) {
+        const res = await fetch(`/api/v2/records/${rec.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sub_item_id: orphanAssignSubId }),
+        });
+        if (res.ok) successCount++;
+      }
+      if (successCount > 0) {
+        fetchItem();
+        setOrphanAssignSubId('');
+      }
+    } catch {
+      showError('分配子项失败，请重试');
+    } finally {
+      setAssigningOrphans(false);
+    }
+  };
+
+  // 多选模式操作
+  const handleToggleSelectionMode = () => {
+    if (selectionMode) {
+      setSelectionMode(false);
+      setSelectedIds(new Set());
+    } else {
+      setSelectionMode(true);
+    }
+  };
+
+  const handleToggleSelect = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleSelectAll = () => {
+    const allIds = relatedRecords.map(r => r.id);
+    const allSelected = allIds.length > 0 && allIds.every(id => selectedIds.has(id));
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(allIds));
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.size === 0) return;
+    const msg = selectedIds.size > 20
+      ? `你正在删除 ${selectedIds.size} 条记录，此操作不可撤销。确定继续？`
+      : `确定删除选中的 ${selectedIds.size} 条记录？此操作不可撤销。`;
+    if (!confirm(msg)) return;
+    setBatchDeleting(true);
+    try {
+      const ids = Array.from(selectedIds);
+      const BATCH_SIZE = 200;
+      for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+        const batch = ids.slice(i, i + BATCH_SIZE);
+        const res = await fetch('/api/v2/records/batch-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: batch }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || '批量删除失败');
+        }
+      }
+      setSelectedIds(new Set());
+      setSelectionMode(false);
+      fetchItem();
+    } catch (err: any) {
+      showError(err.message || '批量删除失败，请重试');
+    } finally {
+      setBatchDeleting(false);
+    }
+  };
+
+  const handleSelectAllInYear = useCallback((year: string) => {
+    const yearRecordIds = relatedRecords
+      .filter(r => {
+        const d = r.occurred_at || r.created_at;
+        const y = d ? new Date(d).getFullYear().toString() : '';
+        return y === year;
+      })
+      .map(r => r.id);
+
+    const allSelected = yearRecordIds.length > 0 && yearRecordIds.every(id => selectedIds.has(id));
+    if (allSelected) {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        yearRecordIds.forEach(id => next.delete(id));
+        return next;
+      });
+    } else {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        yearRecordIds.forEach(id => next.add(id));
+        return next;
+      });
+    }
+  }, [relatedRecords, selectedIds]);
+
   // 子项级聚合计算（必须在 early return 前调用，保持 hooks 顺序稳定）
   const subItemAgg = useMemo(() => {
-    if (!item || !activeSubItemId || relatedRecords.length === 0) return null;
+    if (!item || !activeSubItemId || activeSubItemId === '__orphan__' || relatedRecords.length === 0) return null;
     let totalDuration = 0;
     let totalCost = 0;
     const metricMap = new Map<string, { total: number; unit: string }>();
@@ -325,7 +561,7 @@ export default function ItemDetailPage() {
   const phases = item.phases || [];
   const agg = item.aggregation;
 
-  const effectiveAgg = activeSubItemId ? subItemAgg : agg;
+  const effectiveAgg = (activeSubItemId && activeSubItemId !== '__orphan__') ? subItemAgg : agg;
   const totalHours = effectiveAgg ? effectiveAgg.total_duration_minutes / 60 : 0;
   const totalCost = effectiveAgg?.total_cost ?? 0;
   const recordCount = effectiveAgg?.record_count ?? relatedRecords.length;
@@ -337,14 +573,14 @@ export default function ItemDetailPage() {
   // 按子项筛选目标
   const filteredGoals = (() => {
     const allGoals = item.goals || [];
-    if (!activeSubItemId) return allGoals;
+    if (!activeSubItemId || activeSubItemId === '__orphan__') return allGoals;
     // 选中子项时：显示该子项的目标 + 事项级达标型目标（无 sub_item_id 的）
-    return allGoals.filter(g => g.sub_item_id === activeSubItemId || (!g.sub_item_id && g.measure_type === 'boolean'));
+    return allGoals.filter(g => g.sub_item_id === activeSubItemId || (!g.sub_item_id && g.rule_type === '一次性完成'));
   })();
 
   return (
     <div className="flex-1 overflow-y-auto min-h-0 desktop-bg">
-      <div className="mx-auto max-w-[860px] px-4 py-5">
+      <div className="mx-auto max-w-[1200px] px-4 py-5">
 
         {/* 返回 */}
         <button
@@ -446,10 +682,6 @@ export default function ItemDetailPage() {
                 >
                   <Plus className="h-3 w-3" />记一笔
                 </button>
-                <button onClick={() => { setEditingGoal(null); setShowGoalForm(true); }}
-                  className="p-2 rounded-xl glass shadow-soft hover:shadow-soft-lg text-slate-400 hover:text-purple-500 transition-all" title="设置目标">
-                  <Target className="h-4 w-4" />
-                </button>
                 <button onClick={handleCreatePhase}
                   className="p-2 rounded-xl glass shadow-soft hover:shadow-soft-lg text-slate-400 hover:text-amber-500 transition-all" title="新建阶段">
                   <Layers className="h-4 w-4" />
@@ -471,48 +703,39 @@ export default function ItemDetailPage() {
           )}
         </section>
 
-        {/* ── 视图切换 Tab ── */}
-        <div className="flex items-center gap-1 mb-5">
-          <button
-            onClick={() => setActiveView('execute')}
-            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition-all ${
-              activeView === 'execute'
-                ? 'bg-indigo-500 text-white shadow-md'
-                : 'bg-white/60 text-slate-500 hover:bg-white/80 hover:text-slate-700'
-            }`}
-          >
-            <Zap className="h-3.5 w-3.5" />
-            执行
-          </button>
-          <button
-            onClick={() => setActiveView('archive')}
-            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition-all ${
-              activeView === 'archive'
-                ? 'bg-slate-700 text-white shadow-md'
-                : 'bg-white/60 text-slate-500 hover:bg-white/80 hover:text-slate-700'
-            }`}
-          >
-            <Archive className="h-3.5 w-3.5" />
-            档案
-          </button>
-        </div>
-
-        {/* ── 执行视图 ── */}
-        {activeView === 'execute' && (
-          <div className="space-y-5">
+        {/* ── 统一视图 ── */}
+        <div className="space-y-5 mb-5">
             {/* 待完成计划 */}
-            {relatedRecords.filter(r => r.type === '计划' && r.status !== '已完成' && r.status !== '已取消').length > 0 && (
+            {activePlans.length > 0 && (
               <section className="glass rounded-3xl shadow-soft-lg p-5">
                 <div className="flex items-center gap-2 mb-3">
                   <Calendar className="h-4 w-4 text-indigo-400" />
                   <h2 className="text-sm font-bold text-slate-700">待完成计划</h2>
                   <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-600">
-                    {relatedRecords.filter(r => r.type === '计划' && r.status !== '已完成' && r.status !== '已取消').length}
+                    {activePlans.length}
                   </span>
                 </div>
                 <div className="space-y-1.5">
-                  {relatedRecords
-                    .filter(r => r.type === '计划' && r.status !== '已完成' && r.status !== '已取消')
+                  {activePlans
+                    .sort((a, b) => {
+                      // 计划按时间升序排列（最早的在上）
+                      // 综合 time_anchor_date + time_text 时段权重，避免仅靠 created_at 排序
+                      const getPlanKey = (r: typeof a) => {
+                        if (r.occurred_at) return r.occurred_at;
+                        const date = r.time_anchor_date || r.created_at;
+                        // 从 time_text 提取时段权重
+                        const t = (r.time_text || '').toLowerCase();
+                        let h = 12;
+                        if (t.includes('凌晨') || t.includes('深夜')) h = 0;
+                        else if (t.includes('早上') || t.includes('早晨') || t.includes('清晨') || t.includes('上午')) h = 8;
+                        else if (t.includes('中午') || t.includes('午饭') || t.includes('午休')) h = 12;
+                        else if (t.includes('下午')) h = 15;
+                        else if (t.includes('傍晚') || t.includes('黄昏')) h = 18;
+                        else if (t.includes('晚上') || t.includes('夜晚') || t.includes('夜里')) h = 20;
+                        return `${date}T${String(h).padStart(2, '0')}:00:00`;
+                      };
+                      return getPlanKey(a).localeCompare(getPlanKey(b));
+                    })
                     .slice(0, 5)
                     .map(r => (
                       <div key={r.id} className="flex items-center justify-between rounded-xl bg-slate-50/80 px-3 py-2 group hover:bg-indigo-50/50 transition-colors">
@@ -589,156 +812,122 @@ export default function ItemDetailPage() {
                 </div>
               </section>
             )}
+        </div>
 
-            {/* 近期动态 */}
-            <section className="glass rounded-3xl shadow-soft-lg p-5">
-              <div className="flex items-center gap-2 mb-3">
-                <FileText className="h-4 w-4 text-slate-400" />
-                <h2 className="text-sm font-bold text-slate-700">近期动态</h2>
-              </div>
-              {relatedRecords.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/40 p-6 text-center">
-                  <FileText className="h-5 w-5 mx-auto text-slate-300 mb-2" />
-                  <p className="text-xs text-slate-400">还没有记录</p>
-                  <button
-                    onClick={() => router.push(`/records?item_id=${itemId}`)}
-                    className="mt-2 text-[11px] text-indigo-500 hover:text-indigo-600 font-medium"
-                  >
-                    记一笔 →
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-1">
-                  {relatedRecords.slice(0, 8).map(r => (
-                    <div
-                      key={r.id}
-                      className="flex items-center justify-between rounded-xl bg-slate-50/80 px-3 py-2 hover:bg-indigo-50/50 cursor-pointer transition-colors"
-                      onClick={() => setEditingRecord(r)}
-                    >
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
+        {/* ── 区域二：子项切换 ── */}
+        {(item.sub_items || []).length > 0 && (
+          <section className="glass rounded-3xl shadow-soft-lg p-4 mb-5">
+            <SubItemTabBar
+              subItems={item.sub_items || []}
+              activeSubItemId={activeSubItemId}
+              orphanCount={orphanRecords.length}
+              onTabChange={setActiveSubItemId}
+              onAdd={() => { setEditingSubItem(null); setShowSubItemForm(true); }}
+              onEdit={(sub) => { setEditingSubItem(sub); setShowSubItemForm(true); }}
+              onPromote={(sub) => setPromotingSubItem(sub)}
+            />
+            {/* 未归类区域 */}
+            {activeSubItemId === '__orphan__' && orphanRecords.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-slate-100/60">
+                <div className="rounded-xl bg-amber-50/60 border border-amber-200/60 px-4 py-3">
+                  <p className="text-xs font-medium text-amber-700 mb-2">
+                    以下 {orphanRecords.length} 条记录尚未归类到子项，建议尽快分配
+                  </p>
+                  <div className="space-y-1.5 mb-3">
+                    {orphanRecords.slice(0, 5).map(r => (
+                      <div key={r.id} className="flex items-center gap-2 rounded-lg bg-white/60 px-2.5 py-1.5">
                         <span className={`rounded-md px-1.5 py-0.5 text-[9px] font-medium ${
                           r.type === '计划' ? 'bg-blue-100 text-blue-600' :
                           r.type === '想法' ? 'bg-purple-100 text-purple-600' :
                           r.type === '总结' ? 'bg-amber-100 text-amber-600' :
                           'bg-green-100 text-green-600'
                         }`}>{r.type}</span>
-                        <span className="text-sm text-slate-700 truncate">{r.content}</span>
+                        <span className="text-xs text-slate-700 truncate flex-1">{r.content}</span>
+                        <span className="text-[10px] text-slate-400 shrink-0">
+                          {new Date(r.occurred_at || r.created_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
+                        </span>
                       </div>
-                      <span className="text-[10px] text-slate-400 shrink-0 ml-2">
-                        {new Date(r.occurred_at || r.created_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
-                      </span>
-                    </div>
-                  ))}
-                  {relatedRecords.length > 8 && (
-                    <button
-                      onClick={() => setActiveView('archive')}
-                      className="w-full text-center py-2 text-[11px] text-slate-400 hover:text-indigo-500 transition-colors"
+                    ))}
+                    {orphanRecords.length > 5 && (
+                      <p className="text-[10px] text-slate-400 text-center">还有 {orphanRecords.length - 5} 条...</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={orphanAssignSubId}
+                      onChange={(e) => setOrphanAssignSubId(e.target.value)}
+                      className="rounded-lg border border-amber-300 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
                     >
-                      查看全部 {relatedRecords.length} 条 →
+                      <option value="">选择子项...</option>
+                      {(item.sub_items || []).map(sub => (
+                        <option key={sub.id} value={sub.id}>{sub.title}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={handleAssignOrphans}
+                      disabled={!orphanAssignSubId || assigningOrphans}
+                      className="rounded-lg bg-amber-500 px-3 py-1 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {assigningOrphans ? '分配中...' : '一键分配'}
                     </button>
-                  )}
+                  </div>
                 </div>
-              )}
-            </section>
-          </div>
+              </div>
+            )}
+          </section>
         )}
 
-        {/* ── 档案视图 ── */}
-        {activeView === 'archive' && (<>
-
-        {/* ── 区域二：数据总览（基础趋势 + 目标对照合并） ── */}
-        <section className="glass rounded-3xl shadow-soft-lg p-5 mb-5">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
+        {/* ── 区域三：数据 + 目标（两栏布局） ── */}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 mb-5">
+          {/* 左栏：数据趋势 */}
+          <section className="glass rounded-3xl shadow-soft-lg p-5">
+            <div className="flex items-center gap-2 mb-3">
               <BarChart3 className="h-4 w-4 text-slate-400" />
               <h2 className="text-sm font-bold text-slate-700">
-                {activeSubItemId
+                {activeSubItemId === '__orphan__'
+                  ? '未归类数据'
+                  : activeSubItemId
                   ? `${(item.sub_items || []).find(s => s.id === activeSubItemId)?.title || '子项'} 数据`
                   : '数据总览'}
               </h2>
             </div>
-            <button
-              onClick={() => { setEditingGoal(null); setShowGoalForm(true); }}
-              className="text-[11px] text-slate-400 hover:text-purple-500 transition-colors flex items-center gap-1"
-            >
-              <Plus className="h-3 w-3" />设置目标
-            </button>
-          </div>
+            <ItemDataPanel
+              dailyStats={item.recent_daily_stats || []}
+              subItems={item.sub_items || []}
+              activeSubItemId={activeSubItemId}
+            />
+            {/* 无子项时的入口 */}
+            {(item.sub_items || []).length === 0 && (
+              <div className="mt-4 pt-4 border-t border-slate-100/60">
+                <button
+                  onClick={() => { setEditingSubItem(null); setShowSubItemForm(true); }}
+                  className="flex items-center gap-2 rounded-xl border border-dashed border-indigo-200 bg-indigo-50/50 hover:bg-indigo-100/60 px-4 py-2.5 text-xs font-medium text-indigo-500 hover:text-indigo-600 transition-all"
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                  添加子项，拆分行动线
+                </button>
+              </div>
+            )}
+          </section>
 
-          {/* 上半区：基础趋势 */}
-          {activeSubItemId && subItemAgg ? (
-            <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-xl bg-slate-50/80 px-3 py-2.5">
-                <p className="text-[10px] text-slate-400 mb-0.5">记录数</p>
-                <p className="text-lg font-bold text-slate-800">{subItemAgg.record_count}</p>
-              </div>
-              <div className="rounded-xl bg-slate-50/80 px-3 py-2.5">
-                <p className="text-[10px] text-slate-400 mb-0.5">总时长</p>
-                <p className="text-lg font-bold text-slate-800">{(subItemAgg.total_duration_minutes / 60).toFixed(1)}h</p>
-              </div>
-              <div className="rounded-xl bg-slate-50/80 px-3 py-2.5">
-                <p className="text-[10px] text-slate-400 mb-0.5">总花费</p>
-                <p className="text-lg font-bold text-slate-800">{subItemAgg.total_cost > 0 ? `¥${subItemAgg.total_cost.toLocaleString()}` : '-'}</p>
-              </div>
-              {subItemAgg.metric_summaries.map(ms => (
-                <div key={ms.metric_name} className="rounded-xl bg-purple-50/80 px-3 py-2.5">
-                  <p className="text-[10px] text-slate-400 mb-0.5">{ms.metric_name}</p>
-                  <p className="text-lg font-bold text-purple-700">{ms.total_value.toLocaleString()}{ms.metric_unit}</p>
-                </div>
-              ))}
+          {/* 右栏：目标进度 */}
+          <section className="glass rounded-3xl shadow-soft-lg p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Target className="h-4 w-4 text-slate-400" />
+              <h2 className="text-sm font-bold text-slate-700">目标进度</h2>
             </div>
-          ) : (
-            <ItemDataPanel dailyStats={item.recent_daily_stats || []} />
-          )}
-
-          {/* 子项标签页 */}
-          {(item.sub_items || []).length > 0 && (
-            <div className="mt-4 pt-4 border-t border-slate-100/60">
-              <SubItemTabBar
-                subItems={item.sub_items || []}
-                activeSubItemId={activeSubItemId}
-                onTabChange={setActiveSubItemId}
-                onAdd={() => { setEditingSubItem(null); setShowSubItemForm(true); }}
-                onEdit={(sub) => { setEditingSubItem(sub); setShowSubItemForm(true); }}
-                onPromote={(sub) => setPromotingSubItem(sub)}
-              />
-            </div>
-          )}
-          {/* 无子项时的入口 — 醒目展示 */}
-          {(item.sub_items || []).length === 0 && (
-            <div className="mt-4 pt-4 border-t border-slate-100/60">
-              <button
-                onClick={() => { setEditingSubItem(null); setShowSubItemForm(true); }}
-                className="flex items-center gap-2 rounded-xl border border-dashed border-indigo-200 bg-indigo-50/50 hover:bg-indigo-100/60 px-4 py-2.5 text-xs font-medium text-indigo-500 hover:text-indigo-600 transition-all"
-              >
-                <Layers className="h-3.5 w-3.5" />
-                添加子项，拆分行动线
-              </button>
-            </div>
-          )}
-
-          {/* 下半区：目标对照（仅当有目标时显示） */}
-          {((item.goals || []).length > 0 || (item.goal)) && (
-            <div className="mt-4 pt-4 border-t border-slate-100/60">
-              <div className="flex items-center gap-2 mb-3">
-                <Target className="h-3.5 w-3.5 text-slate-400" />
-                <h3 className="text-xs font-semibold text-slate-500">目标进度</h3>
-              </div>
-              <GoalEngineDashboard itemId={itemId} activeSubItemId={activeSubItemId} goals={item.goals || []} onAddGoal={() => { setEditingGoal(null); setShowGoalForm(true); }} />
-              <div className="mt-3">
-                <ItemGoalSection
-                  itemId={itemId}
-                  goals={filteredGoals}
-                  subItems={item.sub_items || []}
-                  activeSubItemId={activeSubItemId}
-                  phases={phases.map(p => ({ id: p.id, title: p.title }))}
-                  onGoalChanged={fetchItem}
-                  onError={showError}
-                />
-              </div>
-            </div>
-          )}
-        </section>
+            <UnifiedGoalPanel
+              itemId={itemId}
+              goals={filteredGoals}
+              subItems={item.sub_items || []}
+              activeSubItemId={activeSubItemId}
+              phases={phases.map(p => ({ id: p.id, title: p.title }))}
+              refreshKey={goalRefreshKey}
+              onGoalChanged={() => { setGoalRefreshKey(k => k + 1); fetchItem(); }}
+              onError={showError}
+            />
+          </section>
+        </div>
 
         {/* ── 区域三：阶段管理（始终可见，0阶段时展示空状态入口） ── */}
         <section className="glass rounded-3xl shadow-soft-lg p-5 mb-5">
@@ -788,13 +977,22 @@ export default function ItemDetailPage() {
                       <p className="text-base font-bold text-indigo-800">{currentPhase.title}</p>
                       <p className="text-[11px] text-indigo-500 mt-0.5">{range}</p>
                     </div>
-                    <button
-                      onClick={() => handleEditPhase(currentPhase)}
-                      className="p-2 rounded-xl hover:bg-white/60 text-indigo-400 hover:text-indigo-600 transition-colors"
-                      title="编辑阶段"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleEditPhase(currentPhase)}
+                        className="p-2 rounded-xl hover:bg-white/60 text-indigo-400 hover:text-indigo-600 transition-colors"
+                        title="编辑阶段"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeletePhase(currentPhase)}
+                        className="p-2 rounded-xl hover:bg-red-50/60 text-indigo-400 hover:text-red-500 transition-colors"
+                        title="删除阶段"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                   {currentPhase.description && (
                     <p className="text-xs text-indigo-600/70 mt-2 leading-relaxed">{currentPhase.description}</p>
@@ -847,13 +1045,22 @@ export default function ItemDetailPage() {
                       </span>
                     )}
                   </div>
-                  <button
-                    onClick={() => handleEditPhase(p)}
-                    className="shrink-0 p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-white/60 text-slate-400 hover:text-indigo-500 transition-all"
-                    title="编辑"
-                  >
-                    <Pencil className="h-3 w-3" />
-                  </button>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button
+                      onClick={() => handleEditPhase(p)}
+                      className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-white/60 text-slate-400 hover:text-indigo-500 transition-all"
+                      title="编辑"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                    <button
+                      onClick={() => handleDeletePhase(p)}
+                      className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-50/60 text-slate-400 hover:text-red-500 transition-all"
+                      title="删除"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -867,22 +1074,80 @@ export default function ItemDetailPage() {
               <FileText className="h-4 w-4 text-slate-400" />
               <h2 className="text-sm font-bold text-slate-700">时间线</h2>
             </div>
+            {relatedRecords.length > 0 && (
+              <button
+                onClick={handleToggleSelectionMode}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                  selectionMode
+                    ? 'bg-amber-500 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                <CheckSquare className="h-3.5 w-3.5" />
+                {selectionMode ? '取消' : '选择'}
+              </button>
+            )}
           </div>
 
           <ItemTimeline
             phases={phases}
-            records={relatedRecords}
+            records={timelineRecords}
             goalMap={goalMap}
             onRecordClick={setEditingRecord}
             onEditPhase={handleEditPhase}
             onComplete={handleCompleteRecord}
             onPostpone={handlePostponeRecord}
             onCancel={handleCancelRecord}
+            selectionMode={selectionMode}
+            selectedIds={selectedIds}
+            onToggleSelect={handleToggleSelect}
+            onSelectAll={handleSelectAll}
+            onBatchDelete={handleBatchDelete}
+            batchDeleting={batchDeleting}
+            placeholders={placeholderEntries}
+            onSelectAllInYear={handleSelectAllInYear}
           />
         </section>
-        </>)}
 
         {/* ── 弹窗层 ── */}
+
+        {/* 完成计划对话框 */}
+        {completingRecord && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setCompletingRecord(null)}>
+            <div className="bg-white rounded-xl shadow-lg p-5 w-96 space-y-4" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-sm font-semibold text-slate-800">完成计划</h3>
+              <p className="text-xs text-slate-500">{completingRecord.content}</p>
+              <div className="space-y-2">
+                <label className="block text-xs text-slate-600">
+                  实际完成内容
+                  <textarea
+                    value={completionContent}
+                    onChange={(e) => setCompletionContent(e.target.value)}
+                    placeholder="描述实际完成了什么（可选，留空则沿用原计划内容）"
+                    rows={2}
+                    className="mt-1 block w-full rounded border border-slate-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none resize-none"
+                  />
+                </label>
+                <label className="block text-xs text-slate-600">
+                  完成日期
+                  <input type="date" value={completeDate} onChange={(e) => setCompleteDate(e.target.value)}
+                    className="mt-1 block w-full rounded border border-slate-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none" />
+                </label>
+                <label className="block text-xs text-slate-600">
+                  完成时间
+                  <input type="time" value={completeTime} onChange={(e) => setCompleteTime(e.target.value)}
+                    className="mt-1 block w-full rounded border border-slate-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none" />
+                </label>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setCompletingRecord(null)}
+                  className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-50">取消</button>
+                <button onClick={confirmCompleteRecord}
+                  className="rounded-lg bg-green-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600">确认完成</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 记录详情 */}
         {editingRecord && (
@@ -901,7 +1166,7 @@ export default function ItemDetailPage() {
               <div className="px-6 pb-5 space-y-3">
                 <p className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">{editingRecord.content}</p>
 
-                {/* AI 低置信度提示 */}
+                {/* AI 低置信度提示 + 纠错入口 */}
                 {editingRecord.parsed_semantic && (() => {
                   const ps = editingRecord.parsed_semantic;
                   const confidence = typeof ps.confidence === 'number' ? ps.confidence : null;
@@ -910,11 +1175,29 @@ export default function ItemDetailPage() {
                   if (confidence !== null && confidence < 0.7) {
                     return (
                       <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5">
-                        <p className="text-xs font-medium text-amber-700 mb-1">AI 无法确定以下信息，请手动补充</p>
+                        <p className="text-xs font-medium text-amber-700 mb-1">AI 无法确定以下信息，点击字段可纠正</p>
                         {guessedFields.length > 0 ? (
                           <div className="flex flex-wrap gap-1">
                             {guessedFields.map(f => (
-                              <span key={f} className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-600">{fieldLabel(f)}</span>
+                              <button
+                                key={f}
+                                onClick={() => {
+                                  const val = prompt(`纠正「${fieldLabel(f)}」字段的值 (当前: AI推测)`);
+                                  if (val && editingRecord?.id) {
+                                    correctField(editingRecord.id as string, f, val).then(r => {
+                                      if (r) {
+                                        setCorrectingField(null);
+                                        // 刷新页面以反映纠错结果
+                                        window.location.reload();
+                                      }
+                                    });
+                                  }
+                                }}
+                                className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-600 hover:bg-amber-200 cursor-pointer transition-colors"
+                                title={`纠正${fieldLabel(f)}`}
+                              >
+                                ✎ {fieldLabel(f)}
+                              </button>
                             ))}
                           </div>
                         ) : (
@@ -933,14 +1216,51 @@ export default function ItemDetailPage() {
                       {new Date(editingRecord.occurred_at).toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     </p>
                   )}
+                  {editingRecord.time_text && (
+                    <p>时间描述: {editingRecord.time_text}</p>
+                  )}
+                  {editingRecord.action_text && (
+                    <p>动作: {editingRecord.action_text}</p>
+                  )}
+                  {editingRecord.event_text && (
+                    <p>事件: {editingRecord.event_text}</p>
+                  )}
+                  {editingRecord.object_text && (
+                    <p>对象: {editingRecord.object_text}</p>
+                  )}
+                  {editingRecord.cause_text && (
+                    <p>原因: {editingRecord.cause_text}</p>
+                  )}
+                  {editingRecord.outcome_type && (
+                    <p>结果类型: {editingRecord.outcome_type}</p>
+                  )}
+                  {editingRecord.outcome_direction && (
+                    <p>结果方向: {editingRecord.outcome_direction}</p>
+                  )}
+                  {editingRecord.place_type && (
+                    <p>地点: {editingRecord.place_type}</p>
+                  )}
+                  {editingRecord.location && (
+                    <p>位置: {editingRecord.location}</p>
+                  )}
+                  {editingRecord.people && editingRecord.people.length > 0 && (
+                    <p>人物: {editingRecord.people.join(', ')}</p>
+                  )}
                   {editingRecord.metric_value != null && (
                     <p>指标: +{editingRecord.metric_value.toLocaleString()} {editingRecord.metric_unit ?? ''} {editingRecord.metric_name ?? ''}</p>
                   )}
-                  {editingRecord.status && <p>状态: {editingRecord.status}</p>}
-                  {editingRecord.result && <p>结果: {editingRecord.result}</p>}
+                  {editingRecord.duration_minutes != null && (
+                    <p>时长: {editingRecord.duration_minutes}分钟</p>
+                  )}
+                  {editingRecord.cost != null && (
+                    <p>花费: ¥{editingRecord.cost.toLocaleString()}</p>
+                  )}
                   {editingRecord.mood && <p>心情: {editingRecord.mood}</p>}
                   {editingRecord.energy && <p>精力: {editingRecord.energy}</p>}
                   {editingRecord.note && <p>备注: {editingRecord.note}</p>}
+                  {editingRecord.lifecycle_status && editingRecord.lifecycle_status !== 'active' && (
+                    <p>生命周期: {editingRecord.lifecycle_status}</p>
+                  )}
                 </div>
                 <div className="pt-3">
                   <button
@@ -948,7 +1268,7 @@ export default function ItemDetailPage() {
                       const rd = editingRecord.occurred_at
                         ? new Date(editingRecord.occurred_at).toISOString().slice(0, 10)
                         : new Date(editingRecord.created_at).toISOString().slice(0, 10);
-                      router.push(`/records?date=${rd}`);
+                      router.push(`/records?date=${rd}&item_id=${itemId}`);
                     }}
                     className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-700 font-medium"
                   >
@@ -967,26 +1287,6 @@ export default function ItemDetailPage() {
             phase={editingPhase}
             onClose={() => { setShowPhaseForm(false); setEditingPhase(null); }}
             onSaved={handlePhaseSaved}
-            onError={showError}
-          />
-        )}
-
-        {/* 目标表单 */}
-        {showGoalForm && (
-          <GoalForm
-            goal={editingGoal}
-            itemId={itemId}
-            phases={phases.map(p => ({ id: p.id, title: p.title }))}
-            subItems={item.sub_items || []}
-            preselectedSubItemId={activeSubItemId}
-            onGoalAchievedCreatePhase={() => {
-              setShowGoalForm(false);
-              setEditingGoal(null);
-              setEditingPhase(null);
-              setShowPhaseForm(true);
-            }}
-            onClose={() => { setShowGoalForm(false); setEditingGoal(null); }}
-            onSaved={() => { setShowGoalForm(false); setEditingGoal(null); fetchItem(); }}
             onError={showError}
           />
         )}
@@ -1032,8 +1332,9 @@ export default function ItemDetailPage() {
           <HistoryImport
             itemId={itemId}
             itemTitle={item.title}
+            subItems={item.sub_items || []}
             onClose={() => setShowHistoryImport(false)}
-            onRecordsImported={fetchItem}
+            onRecordsImported={() => { setGoalRefreshKey(k => k + 1); fetchItem(); }}
             onPhaseImported={() => { setPhaseRefreshKey(k => k + 1); fetchItem(); }}
             onError={showError}
           />

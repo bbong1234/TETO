@@ -1,6 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
-import { getRecordById, updateRecord } from '@/lib/db/records';
+import { createClient } from '@/lib/supabase/server';
+import { cancelRecordSafely } from '@/lib/domain/record-service';
+import { handleApiError } from '@/lib/api/error-handler';
+import { withTrace, apiSuccess, apiDomainError } from '@/lib/api/handler-wrapper';
 
 /**
  * POST /api/v2/records/[id]/cancel
@@ -10,43 +13,26 @@ import { getRecordById, updateRecord } from '@/lib/db/records';
  * 3. 标记 lifecycle_status = 'cancelled'
  * 4. 不生成新记录，不创建关联
  * 5. 返回更新后的记录
- *
- * 与 complete（生成"发生"记录）和 postpone（生成新计划记录）不同，
- * cancel 只改状态，不产生任何新记录。
  */
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
 
-    // 获取原记录
-    const original = await getRecordById(userId, id);
-    if (!original) {
-      return NextResponse.json({ error: '记录不存在或不属于当前用户' }, { status: 404 });
+    const supabase = await createClient();
+
+    const result = await cancelRecordSafely({ userId, id, supabase });
+
+    if (!result.ok) {
+      return apiDomainError(result.errors, ctx.traceId);
     }
 
-    // 验证类型必须为"计划"
-    if (original.type !== '计划') {
-      return NextResponse.json({ error: '仅计划类型的记录可以执行"取消"操作' }, { status: 400 });
-    }
-
-    // 验证当前状态
-    if (original.lifecycle_status && original.lifecycle_status !== 'active') {
-      return NextResponse.json({ error: `该记录已处于 ${original.lifecycle_status} 状态，无法取消` }, { status: 400 });
-    }
-
-    // 标记原记录 lifecycle_status = cancelled
-    const updated = await updateRecord(userId, id, { lifecycle_status: 'cancelled' });
-
-    return NextResponse.json({ data: updated });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess(result.data, ctx.traceId, 200, result.warnings.length > 0 ? result.warnings : undefined);
+  } catch (error) {
+    return handleApiError(error);
   }
 }

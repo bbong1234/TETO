@@ -1,5 +1,9 @@
 import { createClient } from '@/lib/supabase/server';
+import { tryRpc } from '@/lib/domain/transaction-service';
+import { createComponentLogger } from '@/lib/observability/logger';
 import type { SubItem, CreateSubItemPayload, UpdateSubItemPayload } from '@/types/teto';
+
+const log = createComponentLogger('db-sub-items');
 
 /**
  * 获取某事项下的所有子项
@@ -108,6 +112,9 @@ export async function updateSubItem(
 
 /**
  * 删除子项
+ *
+ * P5: 优先使用 RPC 事务化操作（原子性保证）
+ * RPC 未部署时 fallback 到原有非事务逻辑，打印警告
  */
 export async function deleteSubItem(
   userId: string,
@@ -115,6 +122,45 @@ export async function deleteSubItem(
 ): Promise<void> {
   const supabase = await createClient();
 
+  // 优先使用 RPC 事务化操作（懒检测，自动缓存可用性）
+  const rpcResult = await tryRpc(supabase, 'rpc_delete_sub_item', {
+    p_user_id: userId,
+    p_sub_item_id: id,
+  });
+
+  if (rpcResult.ok) return;
+
+  // RPC 已部署但业务逻辑失败 → 抛出错误
+  if (rpcResult.rpcDeployed) {
+    throw new Error(`删除子项失败: ${rpcResult.error}`);
+  }
+
+  // Fallback: 非事务逻辑（RPC 未部署时）
+  log.warn('rpc_delete_sub_item 未部署，使用非事务 fallback');
+
+  // 1. 置空关联记录的 sub_item_id
+  const { error: recordsError } = await supabase
+    .from('records')
+    .update({ sub_item_id: null })
+    .eq('user_id', userId)
+    .eq('sub_item_id', id);
+
+  if (recordsError) {
+    throw new Error(`删除子项 - 置空关联记录失败: ${recordsError.message}`);
+  }
+
+  // 2. 置空关联目标的 sub_item_id
+  const { error: goalsError } = await supabase
+    .from('goals')
+    .update({ sub_item_id: null })
+    .eq('user_id', userId)
+    .eq('sub_item_id', id);
+
+  if (goalsError) {
+    throw new Error(`删除子项 - 置空关联目标失败: ${goalsError.message}`);
+  }
+
+  // 3. 物理删除子项
   const { error } = await supabase
     .from('sub_items')
     .delete()
@@ -129,14 +175,10 @@ export async function deleteSubItem(
 /**
  * 子项升格为独立事项
  *
- * 操作流程：
- * 1. 获取子项信息
- * 2. 基于子项创建新事项
- * 3. 迁移历史记录（默认迁移，用户可选不迁）
- * 4. 迁移关联目标
- * 5. 原子项保留在原事项下（它是历史的一部分）
+ * P5: 优先使用 RPC 事务化操作（原子性保证）
+ * RPC 未部署时 fallback 到原有非事务逻辑，打印警告
  *
- * @param migrateRecords 是否迁移历史记录，默认 true
+ * @param migrateRecords 是否迁移历史记录，默认 true（RPC 模式下始终迁移）
  */
 export async function promoteSubItemToItem(
   userId: string,
@@ -145,11 +187,30 @@ export async function promoteSubItemToItem(
 ): Promise<{ newItemId: string; subItem: SubItem }> {
   const supabase = await createClient();
 
-  // 1. 获取子项信息
+  // 1. 获取子项信息（RPC 和 fallback 都需要）
   const subItem = await getSubItemById(userId, subItemId);
   if (!subItem) {
     throw new Error('子项不存在');
   }
+
+  // 优先使用 RPC 事务化操作（懒检测，自动缓存可用性）
+  const rpcResult = await tryRpc(supabase, 'rpc_promote_sub_item', {
+    p_user_id: userId,
+    p_sub_item_id: subItemId,
+    p_new_title: subItem.title,
+  });
+
+  if (rpcResult.ok) {
+    return { newItemId: rpcResult.data!.new_item_id, subItem };
+  }
+
+  // RPC 已部署但业务逻辑失败 → 抛出错误
+  if (rpcResult.rpcDeployed) {
+    throw new Error(`子项升格失败: ${rpcResult.error}`);
+  }
+
+  // Fallback: 非事务逻辑（RPC 未部署时）
+  log.warn('rpc_promote_sub_item 未部署，使用非事务 fallback');
 
   // 2. 基于子项创建新事项
   const { data: newItem, error: createError } = await supabase

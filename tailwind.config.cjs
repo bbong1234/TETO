@@ -1,4 +1,55 @@
 /** @type {import('tailwindcss').Config} */
+const tokens = require('./src/design/tokens.json');
+
+const tetoColors = {
+  'teto-brand-primary': tokens.color.brand.primary,
+  'teto-brand-primaryLight': tokens.color.brand.primaryLight,
+  'teto-active': tokens.color.status.active,
+  'teto-progressing': tokens.color.status.progressing,
+  'teto-slowing': tokens.color.status.slowing,
+  'teto-stagnant': tokens.color.status.stagnant,
+  'teto-completed': tokens.color.status.completed,
+  'teto-shelved': tokens.color.status.shelved,
+  'teto-confidence-high': tokens.color.confidence.high,
+  'teto-confidence-medium': tokens.color.confidence.medium,
+  'teto-confidence-low': tokens.color.confidence.low,
+  'teto-trust-trusted': tokens.color.trust.trusted,
+  'teto-trust-reviewed': tokens.color.trust.reviewed,
+  'teto-trust-unchecked': tokens.color.trust.unchecked,
+  'teto-trust-disputed': tokens.color.trust.disputed,
+  'teto-semantic-success': tokens.color.semantic.success,
+  'teto-semantic-warning': tokens.color.semantic.warning,
+  'teto-semantic-error': tokens.color.semantic.error,
+  'teto-semantic-info': tokens.color.semantic.info,
+  'teto-neutral-50': tokens.color.neutral['50'],
+  'teto-neutral-100': tokens.color.neutral['100'],
+  'teto-neutral-200': tokens.color.neutral['200'],
+  'teto-neutral-300': tokens.color.neutral['300'],
+  'teto-neutral-400': tokens.color.neutral['400'],
+  'teto-neutral-500': tokens.color.neutral['500'],
+  'teto-neutral-600': tokens.color.neutral['600'],
+  'teto-neutral-700': tokens.color.neutral['700'],
+  'teto-neutral-800': tokens.color.neutral['800'],
+  'teto-neutral-900': tokens.color.neutral['900'],
+  'teto-surface-0': tokens.surface.gradient[0],
+  'teto-surface-1': tokens.surface.gradient[1],
+  'teto-surface-2': tokens.surface.gradient[2],
+  'teto-surface-3': tokens.surface.gradient[3],
+  'teto-glass': tokens.surface.glass,
+  'teto-glass-heavy': tokens.surface.glassHeavy,
+  'teto-glass-dark': tokens.surface.glassDark,
+};
+
+const tetoZIndex = {
+  'teto-base': tokens.zIndex.base,
+  'teto-dropdown': tokens.zIndex.dropdown,
+  'teto-sticky': tokens.zIndex.sticky,
+  'teto-overlay': tokens.zIndex.overlay,
+  'teto-modal': tokens.zIndex.modal,
+  'teto-toast': tokens.zIndex.toast,
+  'teto-tooltip': tokens.zIndex.tooltip,
+};
+
 module.exports = {
   content: [
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
@@ -8,6 +59,7 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        ...tetoColors,
         background: 'oklch(0.9816 0.0017 247.8577)',
         foreground: 'oklch(0.3351 0.0331 260.0310)',
         card: 'oklch(1.0000 0 0)',
@@ -45,10 +97,26 @@ module.exports = {
           ring: 'oklch(0.6081 0.1868 261.1930)',
         },
       },
+      zIndex: {
+        ...tetoZIndex,
+      },
       borderRadius: {
         lg: '0.75rem',
         md: 'calc(0.75rem - 2px)',
         sm: 'calc(0.75rem - 4px)',
+        'teto-sm': tokens.radius.sm,
+        'teto-md': tokens.radius.md,
+        'teto-lg': tokens.radius.lg,
+        'teto-xl': tokens.radius.xl,
+        'teto-full': tokens.radius.full,
+      },
+      boxShadow: {
+        'teto-sm': tokens.shadow.sm,
+        'teto-md': tokens.shadow.md,
+        'teto-lg': tokens.shadow.lg,
+        'teto-soft': '0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.06)',
+        'teto-soft-lg': '0 2px 8px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.08)',
+        'teto-soft-xl': '0 4px 12px rgba(0,0,0,0.05), 0 16px 48px rgba(0,0,0,0.1)',
       },
       fontFamily: {
         sans: ['var(--font-sans)', 'ui-sans-serif', 'sans-serif', 'system-ui'],

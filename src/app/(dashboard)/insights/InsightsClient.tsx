@@ -1,23 +1,22 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { BarChart3, Loader2, RefreshCw, Download, AlertTriangle } from 'lucide-react';
+import { BarChart3, Loader2, RefreshCw, Download } from 'lucide-react';
 import DateRangeSelector from './components/DateRangeSelector';
-import RecordStats from './components/RecordStats';
-import ItemPortrait from './components/ItemPortrait';
-import TimeDistribution from './components/TimeDistribution';
-import CrossItemComparison from './components/CrossItemComparison';
-import PhaseInsights from './components/PhaseInsights';
-import GoalInsights from './components/GoalInsights';
-import UnassignedStats from './components/UnassignedStats';
-import FourAxesInsight from './components/FourAxesInsight';
-import PeriodComparison from './components/PeriodComparison';
-import FactSummary from './components/FactSummary';
-import RulePanel from './components/RulePanel';
-import MetricsByItem from './components/MetricsByItem';
-import type { InsightsData } from '@/types/teto';
+import TodayTimelinePanel from './components/TodayTimelinePanel';
+import YesterdayTimelinePanel from './components/YesterdayTimelinePanel';
+import ActivityHeatmapPanel from './components/ActivityHeatmapPanel';
+import InsightSummaryPanel from './components/InsightSummaryPanel';
+import ItemActivityPanel from './components/ItemActivityPanel';
+import GoalProgressPanel from './components/GoalProgressPanel';
+import TimeDistributionPanel from './components/TimeDistributionPanel';
+import PeriodComparisonPanel from './components/PeriodComparisonPanel';
+import DataReviewPanel from './components/DataReviewPanel';
+import FactSourcePanel from './components/FactSourcePanel';
+import CorrectionsTrendsPanel from './components/CorrectionsTrendsPanel';
 import { useToast } from '@/components/ui/use-toast';
 import ToastContainer from '@/components/ui/use-toast';
+import { useInsights } from './useInsights';
 
 type DatePreset = '7d' | '30d' | 'month' | 'custom';
 
@@ -37,7 +36,6 @@ function getDateRange(preset: DatePreset): { date_from: string; date_to: string 
   } else if (preset === 'month') {
     date_from = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
   } else {
-    // custom - should not reach here
     date_from = date_to;
   }
 
@@ -48,10 +46,15 @@ export default function InsightsClient() {
   const [preset, setPreset] = useState<DatePreset>('7d');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const [insightsData, setInsightsData] = useState<InsightsData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const { toasts, showError, dismissToast } = useToast();
+
+  const onLoadError = useCallback(() => {
+    showError('加载洞察数据失败');
+  }, [showError]);
+
+  const { data: insightsData, loading, error, refetch } = useInsights(dateFrom, dateTo, {
+    onLoadError,
+  });
 
   // Initialize dates
   useEffect(() => {
@@ -59,33 +62,6 @@ export default function InsightsClient() {
     setDateFrom(range.date_from);
     setDateTo(range.date_to);
   }, []);
-
-  const fetchInsights = useCallback(async (from: string, to: string) => {
-    if (!from || !to) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/v2/insights?date_from=${from}&date_to=${to}`);
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || '请求失败');
-      }
-      const json = await res.json();
-      setInsightsData(json.data);
-    } catch (err: any) {
-      setError(err.message || '加载失败');
-      showError('加载洞察数据失败');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Fetch when date range changes
-  useEffect(() => {
-    if (dateFrom && dateTo) {
-      fetchInsights(dateFrom, dateTo);
-    }
-  }, [dateFrom, dateTo, fetchInsights]);
 
   const handlePresetChange = (newPreset: string) => {
     setPreset(newPreset as DatePreset);
@@ -105,18 +81,11 @@ export default function InsightsClient() {
   return (
     <div className="h-full flex flex-col overflow-hidden p-4 lg:p-6">
       {/* Header */}
-      <div className="flex-shrink-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
+      <div className="flex-shrink-0 flex items-center justify-between gap-3 mb-5">
         <div className="flex items-center gap-2">
           <BarChart3 className="h-5 w-5 text-blue-500" />
           <h1 className="text-xl font-bold text-slate-900">洞察</h1>
         </div>
-        <DateRangeSelector
-          preset={preset}
-          dateFrom={dateFrom}
-          dateTo={dateTo}
-          onPresetChange={handlePresetChange}
-          onCustomDateChange={handleCustomDateChange}
-        />
         <button
           onClick={() => {
             const params = new URLSearchParams();
@@ -144,7 +113,7 @@ export default function InsightsClient() {
           <div className="rounded-xl bg-red-50 border border-red-200 p-4">
             <p className="text-sm text-red-700">{error}</p>
             <button
-              onClick={() => fetchInsights(dateFrom, dateTo)}
+              onClick={() => void refetch()}
               className="mt-2 flex items-center gap-1 text-xs text-red-600 hover:text-red-700 font-medium"
             >
               <RefreshCw className="h-3 w-3" />
@@ -155,38 +124,51 @@ export default function InsightsClient() {
 
         {!loading && !error && insightsData && (
           <>
-            <RecordStats data={insightsData.record_overview} />
-            {insightsData.inferred_stats && insightsData.inferred_stats.inferred_count > 0 && (
-              <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200">
-                <AlertTriangle className="h-3.5 w-3.5 text-amber-500 flex-shrink-0" />
-                <p className="text-[11px] text-amber-700">
-                  含 {insightsData.inferred_stats.inferred_count} 条推断数据（占比 {insightsData.inferred_stats.inferred_ratio}%），统计口径默认仅基于事实记录
-                </p>
-              </div>
-            )}
-            <ItemPortrait data={insightsData.item_overview} />
-            <TimeDistribution data={insightsData.time_distribution} />
-            <CrossItemComparison data={insightsData.item_time_ranking} />
-            {insightsData.unassigned_stats && (
-              <UnassignedStats
-                unassigned_count={insightsData.unassigned_stats.unassigned_count}
-                unassigned_duration_minutes={insightsData.unassigned_stats.unassigned_duration_minutes}
-                unassigned_cost={insightsData.unassigned_stats.unassigned_cost}
-                total_count={insightsData.unassigned_stats.total_count}
-              />
-            )}
-            {insightsData.four_axes && <FourAxesInsight data={insightsData.four_axes} />}
-            {insightsData.metrics_by_item && <MetricsByItem metrics={insightsData.metrics_by_item} />}
-            {insightsData.period_comparison && <PeriodComparison {...insightsData.period_comparison} />}
-            {insightsData.four_axes && (
-              <FactSummary
-                four_axes={insightsData.four_axes}
-                period_comparison={insightsData.period_comparison || null}
-              />
-            )}
-            <PhaseInsights data={insightsData.phaseInsights} />
-            <GoalInsights data={insightsData.goalInsights} />
-            <RulePanel />
+            {/* 1. 今日时间线 */}
+            <TodayTimelinePanel data={insightsData.recent_timeline.today} />
+
+            {/* 2. 昨日时间线 */}
+            <YesterdayTimelinePanel data={insightsData.recent_timeline.yesterday} />
+
+            {/* 3. 活跃热力图 */}
+            <ActivityHeatmapPanel days={insightsData.activity_heatmap.days} />
+
+            {/* 4. 本期摘要 */}
+            <InsightSummaryPanel facts={insightsData.summary.headline_facts} />
+
+            {/* 5. 日期范围选择器 */}
+            <DateRangeSelector
+              preset={preset}
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              rangeLabel={insightsData.range.label}
+              onPresetChange={handlePresetChange}
+              onCustomDateChange={handleCustomDateChange}
+            />
+
+            {/* 6. 事项活动 */}
+            <ItemActivityPanel
+              active_items={insightsData.items.active_items}
+              time_ranking={insightsData.items.time_ranking}
+              stagnant_items={insightsData.items.stagnant_items}
+            />
+
+            {/* 7. 目标进度 */}
+            <GoalProgressPanel progress={insightsData.goals.progress} />
+
+            {/* 8. 时间分布 */}
+            <TimeDistributionPanel data={insightsData.time_distribution} />
+
+            {/* 9. 周期对比 */}
+            <PeriodComparisonPanel changes={insightsData.comparison.changes} />
+
+            {/* 10. 数据待整理 */}
+            <DataReviewPanel data={insightsData.data_review} />
+
+            {/* 11. 事实来源 & AI 润色 */}
+            <FactSourcePanel facts={insightsData.facts} />
+            {/* 12. 纠错趋势 */}
+            <CorrectionsTrendsPanel />
           </>
         )}
       </div>

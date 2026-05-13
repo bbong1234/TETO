@@ -13,6 +13,25 @@ export async function createRecordLink(
 ): Promise<RecordLink> {
   const supabase = await createClient();
 
+  // DDD 读写隔离：验证 source 和 target 记录都属于当前用户
+  const { data: bothRecords, error: fetchError } = await supabase
+    .from('records')
+    .select('id, user_id')
+    .eq('user_id', userId)
+    .in('id', [payload.source_id, payload.target_id]);
+
+  if (fetchError) {
+    throw new Error(`验证记录归属失败: ${fetchError.message}`);
+  }
+
+  const foundIds = new Set((bothRecords ?? []).map((r: { id: string }) => r.id));
+  if (!foundIds.has(payload.source_id)) {
+    throw new Error('源记录不存在或不属于当前用户');
+  }
+  if (!foundIds.has(payload.target_id)) {
+    throw new Error('目标记录不存在或不属于当前用户');
+  }
+
   const { data, error } = await supabase
     .from('record_links')
     .insert({

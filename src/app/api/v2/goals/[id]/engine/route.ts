@@ -1,15 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { computeGoalEngine } from '@/lib/db/goal-engine';
+import { handleApiError } from '@/lib/api/error-handler';
+import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
+import { ERROR_CODES } from '@/lib/observability/id-registry';
+import { COMPUTATION_VERSION } from '@/lib/computation';
 
 /**
  * GET /api/v2/goals/{id}/engine
- * 返回单个目标的量化引擎计算结果
+ * 返回单个目标的引擎计算结果
  */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const ctx = withTrace(request);
   try {
     const userId = await getCurrentUserId();
     const { id } = await params;
@@ -17,18 +22,16 @@ export async function GET(
     const result = await computeGoalEngine(userId, id);
 
     if (!result) {
-      return NextResponse.json(
-        { error: '目标不存在、非量化型或缺少必要配置（daily_target/start_date）' },
-        { status: 404 }
+      return apiError(
+        ERROR_CODES.GOAL_NO_DATA,
+        '目标不存在、非量化型或缺少必要配置',
+        ctx.traceId,
+        404
       );
     }
 
-    return NextResponse.json({ data: result });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess(result, ctx.traceId, 200, undefined, { computationVersion: COMPUTATION_VERSION });
+  } catch (error) {
+    return handleApiError(error);
   }
 }

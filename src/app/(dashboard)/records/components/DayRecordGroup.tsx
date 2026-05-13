@@ -15,6 +15,8 @@ interface DayRecordGroupProps {
   selectionMode?: boolean;
   selectedIds?: Set<string>;
   onToggleSelect?: (id: string) => void;
+  /** 全选指定日期（多天模式下点击日期头触发） */
+  onSelectAllForDate?: (date: string) => void;
   onRecordClick: (record: Record) => void;
   onStarToggle: (record: Record) => void;
   onComplete?: (record: Record) => void;
@@ -22,6 +24,8 @@ interface DayRecordGroupProps {
   onCancel?: (record: Record) => void;
   onConvertToPlan?: (record: Record) => void;
   onConvertToItem?: (record: Record) => void;
+  /** 记录转目标 */
+  onConvertToGoal?: (record: Record) => void;
   onError: (message: string) => void;
 }
 
@@ -49,6 +53,7 @@ export default function DayRecordGroup({
   selectionMode,
   selectedIds,
   onToggleSelect,
+  onSelectAllForDate,
   onRecordClick,
   onStarToggle,
   onComplete,
@@ -56,16 +61,27 @@ export default function DayRecordGroup({
   onCancel,
   onConvertToPlan,
   onConvertToItem,
+  onConvertToGoal,
   onError,
 }: DayRecordGroupProps) {
+  // 判断该日是否全选
+  const isDateAllSelected = selectionMode && selectedIds && records.length > 0 && records.every(r => selectedIds.has(r.id));
+
   // 列模式：固定头 + 可滚动记录区 + 底部总结
+
   if (layout === 'column') {
     return (
       <div className="w-[82vw] sm:w-[380px] h-full shrink-0 flex flex-col rounded-xl bg-white shadow-sm border border-slate-200 overflow-hidden">
         {/* 日期头 */}
         <div className="flex-shrink-0 px-3 py-2 border-b border-slate-100 bg-slate-50/60">
           <div className="flex items-center gap-2">
-            <h2 className="text-xs font-bold text-slate-900">{formatDisplayDate(date, true)}</h2>
+            <h2
+              className={`text-xs font-bold text-slate-900 ${selectionMode && onSelectAllForDate ? 'cursor-pointer hover:text-blue-600 transition-colors' : ''}`}
+              onClick={() => selectionMode && onSelectAllForDate?.(date)}
+              title={selectionMode ? (isDateAllSelected ? '点击取消全选该日记录' : '点击全选该日记录') : undefined}
+            >
+              {formatDisplayDate(date, true)}
+            </h2>
             <span className="rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
               {records.length}
             </span>
@@ -95,6 +111,7 @@ export default function DayRecordGroup({
               onCancel={onCancel}
               onConvertToPlan={onConvertToPlan}
               onConvertToItem={onConvertToItem}
+              onConvertToGoal={onConvertToGoal}
               compact
             />
           ) : (
@@ -108,11 +125,18 @@ export default function DayRecordGroup({
   }
 
   // 堆叠模式（默认）
+
   return (
     <div>
       {/* 日期分组头 */}
       <div className="flex items-center gap-2 mb-3">
-        <h2 className="text-sm font-bold text-slate-900">{formatDisplayDate(date)}</h2>
+        <h2
+          className={`text-sm font-bold text-slate-900 ${selectionMode && onSelectAllForDate ? 'cursor-pointer hover:text-blue-600 transition-colors' : ''}`}
+          onClick={() => selectionMode && onSelectAllForDate?.(date)}
+          title={selectionMode ? (isDateAllSelected ? '点击取消全选该日记录' : '点击全选该日记录') : undefined}
+        >
+          {formatDisplayDate(date)}
+        </h2>
         <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-medium text-slate-500">
           {records.length} 条
         </span>
@@ -133,6 +157,7 @@ export default function DayRecordGroup({
           onCancel={onCancel}
           onConvertToPlan={onConvertToPlan}
           onConvertToItem={onConvertToItem}
+          onConvertToGoal={onConvertToGoal}
         />
       ) : (
         <div className="rounded-xl bg-white/50 p-4 text-center border border-dashed border-slate-200">

@@ -2,3 +2,7 @@ node_modules
 .next
 .env.local
 *.tsbuildinfo
+
+# 临时构建/调试输出
+build_output*.txt
+__diff_output.txt

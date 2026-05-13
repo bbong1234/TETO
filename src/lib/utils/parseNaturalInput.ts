@@ -9,6 +9,7 @@
  */
 
 import type { ParsedSemantic, TimeAnchor } from '@/types/semantic';
+import { RULES } from '@/lib/rules';
 
 export type RecordType = '发生' | '计划' | '想法' | '总结';
 
@@ -23,8 +24,14 @@ export interface ParsedInput {
   metric_unit?: string;
   /** 识别出的统计对象描述 */
   metric_object?: string;
+  /** 身体状态推断 */
+  body_state_hint?: string;
   /** 识别出的时间（HH:mm 格式） */
   time_hint?: string;
+  /** 时间精度提示（本地规则推断） */
+  time_precision_hint?: 'exact' | 'approx' | 'fuzzy' | 'unknown';
+  /** 时间段名称（如"早上"、"下午"），仅当 time_precision_hint='fuzzy' 时有值 */
+  time_period_label?: string;
   /** 推断的记录类型 */
   type_hint?: RecordType;
   /** 推断的内容主题（简化版，供 content 字段候选） */
@@ -94,7 +101,7 @@ export function parseNaturalInput(input: string, items: MatchableItem[] = []): P
   // 2. 识别时长
   // ================================
   // 中文数字映射
-  const cnNumMap: Record<string, number> = { '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
+  const cnNumMap = RULES.parsing.cn_num_map;
   const parseCnNum = (s: string): number => {
     if (/^\d+/.test(s)) return parseFloat(s);
     return cnNumMap[s] ?? 1;
@@ -162,14 +169,9 @@ export function parseNaturalInput(input: string, items: MatchableItem[] = []): P
   // ================================
   // 4. 识别时间词
   // ================================
-  const timeMap: Array<{ keywords: string[]; time: string }> = [
-    { keywords: ['早上', '早晨', '清晨', '上午'], time: '08:00' },
-    { keywords: ['中午', '午饭', '午休'], time: '12:00' },
-    { keywords: ['下午'], time: '15:00' },
-    { keywords: ['傍晚', '黄昏'], time: '18:00' },
-    { keywords: ['晚上', '夜晚', '晚饭', '夜里'], time: '20:00' },
-    { keywords: ['深夜', '凌晨'], time: '23:00' },
-  ];
+  // 时间段关键词 → 仅用于排序的近似时间 + 显示用的时段名称
+  // 不应将"早上"映射为"08:00"显示，这是误导性的假精确时间
+  const timeMap = RULES.parsing.time_period_map;
   // 精确时间优先："14:30"、"2点半"、"14点"、"下午3点"
   const halfHourMatch = input.match(/(\d{1,2})\s*点半/);
   const exactTimeMatch = input.match(/(\d{1,2})[：:点](\d{1,2})/);
@@ -199,22 +201,36 @@ export function parseNaturalInput(input: string, items: MatchableItem[] = []): P
       }
     }
     result.time_hint = `${String(detectedHour).padStart(2, '0')}:${String(detectedMinute).padStart(2, '0')}`;
+    // "下午3点"有精确时间修饰，不是模糊时段
   } else {
-    for (const { keywords, time } of timeMap) {
-      if (keywords.some(kw => input.includes(kw))) {
-        result.time_hint = time;
-        break;
+    // "刚刚"/"刚才" → 用当前时间（精确到分钟）
+    if (/(?:刚刚|刚才|刚)/.test(input)) {
+      const now = new Date();
+      result.time_hint = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      result.time_precision_hint = 'approx'; // 模糊时间，非精确
+    } else {
+      // 匹配时间段词（早上/中午/晚上等）→ 标记为 fuzzy
+      // time_hint 仍设近似值（仅用于排序），但 time_precision_hint='fuzzy'
+      // 表示不应在UI上显示假精确时间，而应显示时段名称
+      for (const { keywords, time, label } of timeMap) {
+        if (keywords.some(kw => input.includes(kw))) {
+          result.time_hint = time; // 保留用于排序
+          result.time_precision_hint = 'fuzzy';
+          result.time_period_label = label; // 时段名称，供 UI 显示
+          break;
+        }
       }
+      // 不根据活动内容推断时间：用户没提到时间，occurred_at 应为空
     }
   }
 
   // ================================
   // 5. 推断记录类型（改进版：完成体标记优先 + 复合句按子句推断）
   // ================================
-  const planKeywords = ['打算', '计划', '准备', '想要', '要去', '明天', '下次', '待会', '等下', 'will ', 'gonna ', 'plan'];
-  const ideaKeywords = ['感觉', '觉得', '想到', '突然', '好像', '也许', '应该', '如果', 'maybe', 'think', 'guess'];
-  const summaryKeywords = ['总结', '回顾', '今天', '这周', '这个月', '复盘', '整体来说', 'summary', 'review'];
-  const completionKeywords = ['吃了', '去了', '做了', '看了', '到了', '完了', '过了', '搞定了', '写完了', '跑完了', '完成了'];
+  const planKeywords = RULES.parsing.type_keywords.plan;
+  const ideaKeywords = RULES.parsing.type_keywords.idea;
+  const summaryKeywords = RULES.parsing.type_keywords.summary;
+  const completionKeywords = RULES.parsing.type_keywords.completion;
 
   // 复合句连接词模式：匹配"A的时候B"、"A然后B"等结构
   const compoundPatterns: Array<{ pattern: RegExp; splitIdx: [number, number] }> = [
@@ -246,23 +262,14 @@ export function parseNaturalInput(input: string, items: MatchableItem[] = []): P
         return '发生'; // 默认发生
       };
 
-      const inferContent = (text: string): string | undefined => {
-        for (const { keywords, hint } of actionMap) {
-          if (keywords.some(kw => text.toLowerCase().includes(kw.toLowerCase()))) {
-            return hint;
-          }
-        }
-        return undefined;
-      };
-
       const part1Type = inferType(part1Text);
       const part2Type = inferType(part2Text);
 
       // 只有当两个子句推断出不同类型时，才生成拆分建议
       if (part1Type !== part2Type) {
         compoundParts = [
-          { text: part1Text, type_hint: part1Type, content_hint: inferContent(part1Text) },
-          { text: part2Text, type_hint: part2Type, content_hint: inferContent(part2Text) },
+          { text: part1Text, type_hint: part1Type },
+          { text: part2Text, type_hint: part2Type },
         ];
       }
 
@@ -294,37 +301,25 @@ export function parseNaturalInput(input: string, items: MatchableItem[] = []): P
   // ================================
   // 6. 推断内容主题（content_hint）
   // ================================
-  const actionMap: Array<{ keywords: string[]; hint: string }> = [
-    { keywords: ['吃', '午饭', '早饭', '晚饭', '吃饭', '宵夜', '午餐', '晚餐', '早餐'], hint: '吃饭' },
-    { keywords: ['跑步', '跑了', '慢跑', 'run', 'running'], hint: '跑步' },
-    { keywords: ['健身', '撸铁', '锻炼', '举铁', 'workout', 'gym'], hint: '健身' },
-    { keywords: ['看书', '读书', '阅读', 'read'], hint: '读书' },
-    { keywords: ['背单词', '背了', '单词', 'vocabulary'], hint: '背单词' },
-    { keywords: ['开会', '会议', '讨论', 'meeting'], hint: '开会' },
-    { keywords: ['学习', '上课', '听课', 'study'], hint: '学习' },
-    { keywords: ['买', '购买', '消费', 'shopping'], hint: '购物' },
-    { keywords: ['咖啡', '奶茶', '饮料', '喝茶', 'coffee', 'tea'], hint: '饮品' },
-    { keywords: ['睡觉', '睡了', '午休', '休息', 'sleep'], hint: '休息' },
-    { keywords: ['写代码', '编程', '开发', 'coding', 'code'], hint: '写代码' },
-    { keywords: ['写作', '写文章', '写了', 'writing'], hint: '写作' },
-    { keywords: ['游泳', '游泳了', 'swim'], hint: '游泳' },
-    { keywords: ['骑车', '骑行', '骑了', 'cycling', 'bike'], hint: '骑行' },
-    { keywords: ['瑜伽', '冥想', 'yoga', 'meditation'], hint: '瑜伽' },
-    { keywords: ['做饭', '煮饭', '下厨', 'cook'], hint: '做饭' },
-    { keywords: ['打扫', '收拾', '整理', 'clean'], hint: '打扫' },
-    { keywords: ['洗衣服', '洗了', 'laundry'], hint: '洗衣服' },
-    { keywords: ['看电影', '看了', '刷剧', 'movie', 'watch'], hint: '看剧' },
-    { keywords: ['打游戏', '游戏', 'game'], hint: '游戏' },
-    { keywords: ['面试', '笔试', 'interview'], hint: '面试' },
-    { keywords: ['加班', '赶工', 'overtime'], hint: '加班' },
-    { keywords: ['散步', '走了', '走路', 'walk'], hint: '散步' },
-    { keywords: ['地铁', '公交', '通勤', 'commute'], hint: '通勤' },
-    { keywords: ['打字', '码字', 'typing'], hint: '打字' },
-  ];
+  const actionMap = RULES.parsing.content_hint_map;
   for (const { keywords, hint } of actionMap) {
     if (keywords.some(kw => lower.includes(kw))) {
       result.content_hint = hint;
       break;
+    }
+  }
+
+  // 复合句拆分部分的 content_hint 补充
+  if (compoundParts) {
+    for (const part of compoundParts) {
+      if (!part.content_hint) {
+        for (const { keywords, hint } of actionMap) {
+          if (keywords.some(kw => part.text.toLowerCase().includes(kw.toLowerCase()))) {
+            part.content_hint = hint;
+            break;
+          }
+        }
+      }
     }
   }
 
@@ -344,8 +339,8 @@ export function parseNaturalInput(input: string, items: MatchableItem[] = []): P
       }
     }
 
-    // 子串命中(>=0.8)直接关联，模糊匹配需 >=0.5
-    if (bestItem && bestScore >= 0.5) {
+    // 仅强匹配（精确子串 >= 阈值）才自动关联，避免误归类
+    if (bestItem && bestScore >= RULES.classification.auto_classify_threshold) {
       result.suggested_item_id = bestItem.id;
       result.suggested_item_name = bestItem.title;
     }
@@ -375,27 +370,20 @@ export function parseNaturalInput(input: string, items: MatchableItem[] = []): P
   // ================================
   // 11. 识别心情 / 能量 / 状态
   // ================================
-  const moodMap: Array<{ keywords: string[]; value: string }> = [
-    { keywords: ['开心', '高兴', '快乐', '爽', '棒', '太好了', '兴奋', '激动'], value: '开心' },
-    { keywords: ['平静', '还行', '一般', '还好', '普通'], value: '平静' },
-    { keywords: ['烦', '郁闷', '烦死', '糟', '崩溃', '烦躁', '气死', '恼火'], value: '烦躁' },
-    { keywords: ['焦虑', '紧张', '担心', '不安', '着急', '焦虑'], value: '焦虑' },
-    { keywords: ['伤心', '难过', '哭', '失落', '失望', '沮丧'], value: '难过' },
-    { keywords: ['感动', '暖心', '温馨', '幸福'], value: '感动' },
-  ];
-  const energyMap: Array<{ keywords: string[]; value: string }> = [
-    { keywords: ['累', '疲惫', '困', '没劲', '精疲力尽', '好累', '太累了', '没力', '乏力'], value: '低' },
-    { keywords: ['精力充沛', '精神', '有劲', '活力', '充满干劲', '精神抖擞'], value: '高' },
-  ];
-  const statusMap: Array<{ keywords: string[]; value: string }> = [
-    { keywords: ['正在', '在进行', '在写', '在做', '在跑'], value: '进行中' },
-    { keywords: ['完成了', '完了', '搞定了', '结束', '已完', '做完了'], value: '已完成' },
-    { keywords: ['搁置', '暂停', '等一下', '先停'], value: '已暂停' },
-  ];
+  const moodMap = RULES.parsing.mood_map;
+  const bodyStateMap = RULES.parsing.body_state_map;
+  const energyMap = RULES.parsing.energy_map;
+  const statusMap = RULES.parsing.status_map;
 
   for (const { keywords, value } of moodMap) {
     if (keywords.some(kw => input.includes(kw))) {
       result.mood_hint = value;
+      break;
+    }
+  }
+  for (const { keywords, value } of bodyStateMap) {
+    if (keywords.some(kw => input.includes(kw))) {
+      result.body_state_hint = value;
       break;
     }
   }
@@ -436,18 +424,7 @@ function resolveTimeAnchor(input: string): TimeAnchor | null {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const anchors: Array<{ keywords: string[]; offsetDays: number; direction: TimeAnchor['direction'] }> = [
-    { keywords: ['前天'], offsetDays: -2, direction: 'past' },
-    { keywords: ['昨天', '昨日'], offsetDays: -1, direction: 'past' },
-    { keywords: ['今天', '今日', '当天'], offsetDays: 0, direction: 'present' },
-    { keywords: ['明天', '明日'], offsetDays: 1, direction: 'future' },
-    { keywords: ['后天'], offsetDays: 2, direction: 'future' },
-    { keywords: ['大后天'], offsetDays: 3, direction: 'future' },
-    { keywords: ['上周', '上礼拜'], offsetDays: -7, direction: 'past' },
-    { keywords: ['下周', '下礼拜'], offsetDays: 7, direction: 'future' },
-    { keywords: ['上个月'], offsetDays: -30, direction: 'past' },
-    { keywords: ['下个月'], offsetDays: 30, direction: 'future' },
-  ];
+  const anchors = RULES.parsing.time_anchor_map;
 
   for (const { keywords, offsetDays, direction } of anchors) {
     for (const kw of keywords) {
@@ -479,7 +456,7 @@ function resolveTimeAnchor(input: string): TimeAnchor | null {
   }
 
   // 匹配 "周X" 格式
-  const weekdayMap: Record<string, number> = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0 };
+  const weekdayMap = RULES.parsing.weekday_map;
   const weekdayMatch = input.match(/(?:这|本)\s*(?:周|礼拜)\s*([一二三四五六日天])/);
   if (weekdayMatch) {
     const targetDay = weekdayMap[weekdayMatch[1]];
@@ -506,12 +483,26 @@ function resolveTimeAnchor(input: string): TimeAnchor | null {
 function extractLocation(input: string): string | null {
   // 匹配 "在XX"、"到XX"、"去XX" 后面接2~6字的地点词
   const locPatterns = [
-    /在([\u4e00-\u9fa5]{2,6}?)(?:里|内|中|上|旁|边|门口|附近)?(?:[，。,\s]|$)/,
-    /到(?:了)?([\u4e00-\u9fa5]{2,6}?)(?:[，。,\s]|$)/,
-    /去(?:了)?([\u4e00-\u9fa5]{2,6}?)(?:[，。,\s]|$)/,
+    /在([一-龥]{2,6}?)(?:里|内|中|上|旁|边|门口|附近)?(?:[，。,\s]|$)/,
+    /到(?:了)?([一-龥]{2,6}?)(?:[，。,\s]|$)/,
+    /去(?:了)?([一-龥]{2,6}?)(?:[，。,\s]|$)/,
   ];
-  // 排除误匹配的常见动词短语
-  const excludeWords = ['在进行', '在做', '在写', '在跑', '在看', '在吃', '在想', '在说', '在听', '在玩', '在学', '在睡'];
+  // 排除误匹配的常见动词短语（在XX里的XX是动词+宾语，不是地点）
+  const excludePrefixes = [
+    '在进行', '在做', '在写', '在跑', '在看', '在吃', '在想', '在说', '在听',
+    '在玩', '在学', '在睡', '在练', '在考', '在聊', '在走', '在练', '在背',
+    '在整理', '在复习', '在准备', '在处理', '在讨论', '在加班', '在打扫',
+    '在休息', '在冥想', '在检查', '在搜索', '在研究', '在分析', '在计算',
+  ];
+  // 常见的非地点词汇（动词/形容词+名词组合，不是真实地点）
+  const nonLocationWords = new Set([
+    '工作', '学习', '考试', '健身', '锻炼', '跑步', '游泳', '瑜伽',
+    '上课', '开会', '加班', '值班', '出差', '旅行', '逛街', '散步',
+    '做饭', '打扫', '洗衣服', '洗浴', '洗澡', '午休', '休息',
+    '读书', '看书', '写代码', '编程', '开发', '背单词', '复习',
+    '吃早饭', '吃午饭', '吃晚饭', '吃夜宵', '吃早餐', '吃晚餐', '吃午餐',
+    '背书', '赶路', '通勤', '上班', '下班', '回家', '出门', '起床',
+  ]);
 
   for (const pattern of locPatterns) {
     const match = input.match(pattern);
@@ -519,7 +510,10 @@ function extractLocation(input: string): string | null {
       const loc = match[1].trim();
       // 检查是否是误匹配
       const fullMatch = match[0];
-      if (excludeWords.some(w => fullMatch.startsWith(w))) continue;
+      if (excludePrefixes.some(w => fullMatch.startsWith(w))) continue;
+      if (nonLocationWords.has(loc)) continue;
+      // 过滤掉纯动词性词汇（以"了/过/着"结尾的2字词）
+      if (/^[\u4e00-\u9fa5][了过着]$/.test(loc)) continue;
       if (loc.length >= 2) return loc;
     }
   }
@@ -585,13 +579,33 @@ function buildSemanticFallback(input: string, parsed: ParsedInput): ParsedSemant
     item_hint: parsed.suggested_item_name || null,
     sub_item_hint: null,
     shared_context: null,
+    // === 1.5 录入结构对齐新增 ===
+    main_text: input.slice(0, 30),
+    body_state: parsed.body_state_hint || null,
+    money_amount: parsed.cost ?? null,
+    money_currency: parsed.cost != null ? 'CNY' : null,
+    result_text: null,
+    place_text: parsed.location_hint || null,
+    state: parsed.status_hint || null,
+    // === 三层九组 Phase 1 新增（降级模式填充） ===
+    action_text: parsed.content_hint || null,
+    event_text: null,
+    object_text: null,
+    outcome_type: null,
+    outcome_direction: null,
+    cause_text: null,
+    time_text: parsed.time_anchor?.raw || null,
+    time_precision: null,
+    place_type: null,
+    money_direction: parsed.cost != null && parsed.cost > 0 ? 'expense' as const : null,
+    relation_roles: null,
   };
 }
 
 /**
  * 词典碰撞匹配：子串优先策略
  * - 精确子串（item名出现在输入中）→ 1.0
- * - 输入出现在item名中（反向包含）→ 0.85
+ * - 输入出现在item名中（反向包含）→ auto_classify_threshold
  * - 连续子序列匹配 → 按比例 0.5~0.8
  * - 散碎字符命中不再计分（避免误匹配）
  */
@@ -601,28 +615,14 @@ function substringMatchScore(input: string, itemName: string): number {
   const lowerInput = input.toLowerCase();
   const lowerName = itemName.toLowerCase();
 
-  // 优先级 1：item名是输入的子串（最强匹配）
+  // 优先级 1：item名完整出现在输入中（最强匹配）
   if (lowerInput.includes(lowerName)) return 1.0;
 
   // 优先级 2：输入是item名的子串（如输入"背单"匹配事项"背单词"）
-  if (lowerName.includes(lowerInput) && lowerInput.length >= 2) return 0.85;
+  if (lowerName.includes(lowerInput) && lowerInput.length >= 2) return RULES.classification.auto_classify_threshold;
 
-  // 优先级 3：连续子序列 — item名的连续片段出现在输入中
-  // 例如 item="英语阅读", input="今天阅读了英语" → "英语"和"阅读"都命中
-  let maxConsecutive = 0;
-  for (let start = 0; start < lowerName.length; start++) {
-    for (let end = start + 2; end <= lowerName.length; end++) {
-      const fragment = lowerName.slice(start, end);
-      if (lowerInput.includes(fragment) && fragment.length > maxConsecutive) {
-        maxConsecutive = fragment.length;
-      }
-    }
-  }
-  if (maxConsecutive >= 2) {
-    const ratio = maxConsecutive / lowerName.length;
-    // 仅当覆盖率 >= 50% 时才视为有效匹配
-    if (ratio >= 0.5) return 0.5 + ratio * 0.3;
-  }
+  // 不再使用连续子序列匹配——误匹配率过高
+  // （如"英语"的片段"语"可能偶然命中无关输入）
 
   return 0;
 }

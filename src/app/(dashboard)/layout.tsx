@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import AppSidebar from "@/components/layout/app-sidebar";
 import MobileTopbar from "@/components/layout/mobile-topbar";
 import { getCurrentUser, isDevMode } from '@/lib/auth/get-current-user-id';
+import { initClientErrorReporter } from '@/lib/observability/client-error-reporter';
 
 // 将 devMode 定义在组件外部，避免每次渲染都重新计算
 const devMode = isDevMode();
@@ -25,6 +26,10 @@ export default function AppLayout({
     }
     return false;
   });
+
+  useEffect(() => {
+    initClientErrorReporter();
+  }, []);
 
   useEffect(() => {
     const checkAuth = async () => {

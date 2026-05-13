@@ -1,12 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, X, Pencil, Check, Trash2, ArrowUpRight } from 'lucide-react';
+import { Plus, X, Pencil, Check, Trash2, ArrowUpRight, HelpCircle } from 'lucide-react';
 import type { SubItem } from '@/types/teto';
 
 interface SubItemTabBarProps {
   subItems: SubItem[];
-  activeSubItemId: string | null;  // null = 全部
+  activeSubItemId: string | null;  // null = 全部, '__orphan__' = 未归类
+  orphanCount?: number;  // 未归类记录数
   onTabChange: (subItemId: string | null) => void;
   onAdd: () => void;
   onEdit: (subItem: SubItem) => void;
@@ -16,6 +17,7 @@ interface SubItemTabBarProps {
 export default function SubItemTabBar({
   subItems,
   activeSubItemId,
+  orphanCount = 0,
   onTabChange,
   onAdd,
   onEdit,
@@ -69,6 +71,22 @@ export default function SubItemTabBar({
           </div>
         </div>
       ))}
+
+      {/* 未归类 Tab — 有游离记录时显示 */}
+      {orphanCount > 0 && (
+        <button
+          onClick={() => onTabChange('__orphan__')}
+          className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border border-dashed ${
+            activeSubItemId === '__orphan__'
+              ? 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700'
+              : 'text-amber-400 hover:text-amber-600 hover:bg-amber-50 border-amber-200 dark:text-amber-500 dark:hover:bg-amber-900/20 dark:border-amber-700'
+          }`}
+        >
+          <HelpCircle size={12} />
+          未归类
+          <span className="rounded-full bg-amber-200/60 dark:bg-amber-800/40 px-1.5 py-0.5 text-[10px] leading-none">{orphanCount}</span>
+        </button>
+      )}
 
       {/* 新建子项 */}
       <button

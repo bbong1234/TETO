@@ -1,5 +1,9 @@
 import { createClient } from '@/lib/supabase/server';
+import { tryRpc } from '@/lib/domain/transaction-service';
+import { createComponentLogger } from '@/lib/observability/logger';
 import type { Item, CreateItemPayload, UpdateItemPayload, ItemsQuery, Record as TetoRecord } from '@/types/teto';
+
+const log = createComponentLogger('db-items');
 
 /**
  * 创建事项
@@ -31,7 +35,7 @@ export async function createItem(
     .from('items')
     .insert({
       user_id: userId,
-      title: payload.title,
+      title: payload.title.trim(),
       description: payload.description ?? null,
       status: payload.status ?? '活跃',
       color: payload.color ?? null,
@@ -89,15 +93,27 @@ export async function updateItem(
 /**
  * 删除事项（软删除：置空关联记录的 item_id，禁止物理删除）
  *
- * 操作流程：
- * 1. 将关联记录的 item_id 置空
- * 2. 将关联记录的 phase_id 置空
- * 3. 将关联记录的 sub_item_id 置空
- * 4. 将关联目标的 sub_item_id 置空
- * 5. 将事项状态改为 '已搁置'（而非物理删除）
+ * P5: 优先使用 RPC 事务化操作（原子性保证）
+ * RPC 未部署时 fallback 到原有非事务逻辑，打印警告
  */
 export async function deleteItem(userId: string, id: string): Promise<void> {
   const supabase = await createClient();
+
+  // 优先使用 RPC 事务化操作（懒检测，自动缓存可用性）
+  const rpcResult = await tryRpc(supabase, 'rpc_delete_item', {
+    p_user_id: userId,
+    p_item_id: id,
+  });
+
+  if (rpcResult.ok) return;
+
+  // RPC 已部署但业务逻辑失败 → 抛出错误
+  if (rpcResult.rpcDeployed) {
+    throw new Error(`删除事项失败: ${rpcResult.error}`);
+  }
+
+  // Fallback: 非事务逻辑（RPC 未部署时）
+  log.warn('rpc_delete_item 未部署，使用非事务 fallback');
 
   // 1. 置空关联记录的 item_id、phase_id、sub_item_id
   const { error: recordsError } = await supabase
@@ -110,19 +126,40 @@ export async function deleteItem(userId: string, id: string): Promise<void> {
     throw new Error(`删除事项 - 置空关联记录失败: ${recordsError.message}`);
   }
 
-  // 2. 置空关联目标的 sub_item_id（子项级目标）
-  const { error: goalsSubItemError } = await supabase
+  // 2. 置空关联目标的 sub_item_id 和 item_id
+  const { error: goalsError } = await supabase
     .from('goals')
-    .update({ sub_item_id: null })
+    .update({ sub_item_id: null, item_id: null })
     .eq('user_id', userId)
-    .eq('item_id', id)
-    .not('sub_item_id', 'is', null);
+    .eq('item_id', id);
 
-  if (goalsSubItemError) {
-    throw new Error(`删除事项 - 置空关联目标子项失败: ${goalsSubItemError.message}`);
+  if (goalsError) {
+    throw new Error(`删除事项 - 置空关联目标失败: ${goalsError.message}`);
   }
 
-  // 3. 将事项状态改为 '已搁置'（软删除，不物理删除）
+  // 3. 置空关联阶段的 item_id
+  const { error: phasesError } = await supabase
+    .from('phases')
+    .update({ item_id: null })
+    .eq('user_id', userId)
+    .eq('item_id', id);
+
+  if (phasesError) {
+    throw new Error(`删除事项 - 置空关联阶段失败: ${phasesError.message}`);
+  }
+
+  // 4. 物理删除关联子项（子项依附于事项，事项搁置后子项无意义）
+  const { error: subItemsError } = await supabase
+    .from('sub_items')
+    .delete()
+    .eq('user_id', userId)
+    .eq('item_id', id);
+
+  if (subItemsError) {
+    throw new Error(`删除事项 - 删除关联子项失败: ${subItemsError.message}`);
+  }
+
+  // 5. 将事项状态改为 '已搁置'（软删除，不物理删除）
   const { error } = await supabase
     .from('items')
     .update({ status: '已搁置' })
@@ -159,7 +196,7 @@ export async function getItemById(
   // 附带该事项关联的所有记录（按时间倒序）
   const { data: records, error: recordsError } = await supabase
     .from('records')
-    .select('id, content, type, occurred_at, status, result, mood, energy, note, item_id, phase_id, goal_id, sub_item_id, sort_order, is_starred, created_at, updated_at, user_id, record_day_id, cost, metric_value, metric_unit, metric_name, duration_minutes')
+    .select('id, content, type, occurred_at, status, result, mood, energy, note, item_id, phase_id, sub_item_id, sort_order, is_starred, created_at, updated_at, user_id, record_day_id, cost, metric_value, metric_unit, metric_name, duration_minutes')
     .eq('item_id', id)
     .eq('user_id', userId)
     .order('occurred_at', { ascending: false, nullsFirst: false })
@@ -206,7 +243,11 @@ export async function listItems(
   }
 
   if (query.folder_id !== undefined) {
-    q = q.eq('folder_id', query.folder_id);
+    if (query.folder_id === null) {
+      q = q.is('folder_id', null);
+    } else {
+      q = q.eq('folder_id', query.folder_id);
+    }
   }
 
   const { data, error } = await q.order('created_at', { ascending: false });

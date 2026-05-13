@@ -1,0 +1,27 @@
+/**
+ * eval/test-cases/golden/tcase-golden-003.json
+ * Golden Test: 模糊输入低置信度标记
+ */
+{
+  "testCaseId": "TCASE-golden-003",
+  "source": "golden",
+  "status": "pending_verification",
+  "description": "模糊输入：'今天弄了一下那个' → 标记低置信度，不自动归类",
+  "input": {
+    "endpoint": "POST /api/v2/parse",
+    "body": {
+      "input": "今天弄了一下那个",
+      "date": "2026-05-05",
+      "items": [
+        { "id": "00000000-0000-0000-0000-000000000005", "title": "工作" }
+      ]
+    }
+  },
+  "expected": {
+    "status": 200,
+    "ok": true,
+    "recordCount": 1,
+    "lowConfidence": true,
+    "autoClassified": false
+  }
+}

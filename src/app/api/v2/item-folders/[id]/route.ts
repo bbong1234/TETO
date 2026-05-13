@@ -1,6 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { getItemFolderById, updateItemFolder, deleteItemFolder } from '@/lib/db/item-folders';
+import { handleApiError } from '@/lib/api/error-handler';
+import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
+import { ERROR_CODES } from '@/lib/observability/id-registry';
 import type { UpdateItemFolderPayload } from '@/types/teto';
 
 export async function GET(
@@ -8,21 +11,18 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
     const result = await getItemFolderById(userId, id);
-    
+
     if (!result) {
-      return NextResponse.json({ error: '文件夹不存在' }, { status: 404 });
+      return apiError(ERROR_CODES.ITEM_NOT_FOUND, '文件夹不存在', ctx.traceId, 404);
     }
-    
-    return NextResponse.json({ data: result });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+
+    return apiSuccess(result, ctx.traceId);
+  } catch (error) {
+    return handleApiError(error);
   }
 }
 
@@ -31,17 +31,14 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
     const body: UpdateItemFolderPayload = await request.json();
     const result = await updateItemFolder(userId, id, body);
-    return NextResponse.json({ data: result });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess(result, ctx.traceId);
+  } catch (error) {
+    return handleApiError(error);
   }
 }
 
@@ -50,15 +47,12 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
     await deleteItemFolder(userId, id);
-    return NextResponse.json({ data: { success: true } });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess({ id }, ctx.traceId);
+  } catch (error) {
+    return handleApiError(error);
   }
 }

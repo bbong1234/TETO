@@ -1,8 +1,19 @@
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { createComponentLogger } from '@/lib/observability/logger';
+
+const log = createComponentLogger('supabase-server');
 
 // 使用服务端环境变量（非 NEXT_PUBLIC_），避免在生产构建中泄露 service_role 密钥
-const DEV_MODE = process.env.DEV_MODE === 'true';
+let DEV_MODE = process.env.DEV_MODE === 'true';
+
+if (DEV_MODE && process.env.NODE_ENV === 'production') {
+  log.error('DEV_MODE 在生产环境已自动禁用，请从 .env 中移除 DEV_MODE=true');
+  DEV_MODE = false;
+}
+if (DEV_MODE) {
+  log.warn('服务端使用 SERVICE_ROLE_KEY，绕过 RLS，仅限本地开发');
+}
 
 export async function createClient() {
   const cookieStore = await cookies();

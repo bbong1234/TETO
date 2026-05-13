@@ -1,14 +1,18 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
-import { updateTag, deleteTag } from '@/lib/db/tags';
+import { updateTagSafely, deleteTagSafely } from '@/lib/domain/tag-service';
 import { createClient } from '@/lib/supabase/server';
+import { handleApiError } from '@/lib/api/error-handler';
+import { withTrace, apiSuccess, apiError, apiDomainError } from '@/lib/api/handler-wrapper';
+import { ERROR_CODES } from '@/lib/observability/id-registry';
 import type { UpdateTagPayload } from '@/types/teto';
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
 
@@ -25,54 +29,48 @@ export async function GET(
     }
 
     if (!data) {
-      return NextResponse.json({ error: '标签不存在或不属于当前用户' }, { status: 404 });
+      return apiError(ERROR_CODES.TAG_NOT_FOUND, '标签不存在或不属于当前用户', ctx.traceId, 404);
     }
 
-    return NextResponse.json({ data });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiSuccess(data, ctx.traceId);
+  } catch (error) {
+    return handleApiError(error);
   }
 }
 
-export async function PUT(
+export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
     const body: UpdateTagPayload = await request.json();
 
-    const tag = await updateTag(userId, id, body);
-    return NextResponse.json({ data: tag });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    const supabase = await createClient();
+    const result = await updateTagSafely({ userId, id, payload: body, supabase });
+    if (!result.ok) return apiDomainError(result.errors, ctx.traceId);
+    return apiSuccess(result.data, ctx.traceId, 200, result.warnings);
+  } catch (error) {
+    return handleApiError(error);
   }
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const { id } = await params;
 
-    await deleteTag(userId, id);
-    return NextResponse.json({ data: { id } });
-  } catch (error: any) {
-    const message = error.message || '服务器错误';
-    if (message === '请先登录' || message === '获取用户信息失败') {
-      return NextResponse.json({ error: message }, { status: 401 });
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    const supabase = await createClient();
+    const result = await deleteTagSafely({ userId, id, supabase });
+    if (!result.ok) return apiDomainError(result.errors, ctx.traceId);
+    return apiSuccess({ id }, ctx.traceId, 200, result.warnings);
+  } catch (error) {
+    return handleApiError(error);
   }
 }

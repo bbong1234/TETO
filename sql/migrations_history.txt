@@ -1,0 +1,25 @@
+# TETO Migration History
+# 格式：时间戳 | migration 文件名 | 说明
+
+## TETO 1.5（已归档至 sql/archive/1.5/）
+2026-04-29 | 001_drop_items_goal_id.sql | 移除旧 items.goal_id
+2026-04-29 | 002_create_user_rules.sql | 用户规则表
+2026-04-29 | 003_period_rule_and_data_nature.sql | 规律/推断字段
+2026-04-29 | 004_record_backbone_fields.sql | 三层九组字段
+2026-04-29 | 005_record_type_converge_to_four.sql | 类型收敛为4种
+2026-04-30 | 004b_record_alignment.sql | 对齐补充字段
+2026-05-02 | 006_goal_rule_refactor.sql | 目标引擎重构
+2026-05-03 | 007_add_performance_indexes.sql | 性能索引
+
+## TETO 1.6（待执行）
+2026-05-05 | 016_corrections.sql | 用户纠错记录表 — 每次修正 AI 推断字段生成一条记录
+2026-05-05 | 017_trace_summaries.sql | Trace 摘要表 — 存储每次 API 操作的 trace 摘要
+2026-05-05 | 018_decision_logs.sql | 决策日志表 — 存储每次关键判断的上下文
+2026-05-05 | 019_feature_flags.sql | 功能开关表 — TETO 1.6 首批 3 个开关
+2026-05-06 | 020_input_id.sql | input_id 体系 — 用户输入编号 + 复合句父子编号
+2026-05-06 | 021_corrections_input_id.sql | corrections 表追加 input_id 列 — 纠错可追溯至原始输入
+2026-05-06 | 022_corrections_rule_id.sql | corrections 表追加 rule_id + decision_type 列 — 错误聚类与规则追溯
+2026-05-08 | 023_inputs.sql | 输入层主表 inputs — 用户原始输入容器（pending/clarifying/completed/...）
+2026-05-08 | 024_input_units.sql | 输入单元表 input_units — input 拆分后的候选记录，承载澄清流程
+2026-05-08 | 025_schema_alignment.sql | TS/SQL 对齐：corrections.user_id、review_status('disputed')、time_precision('inherited')、records.input_unit_id、records.record_quality_tag
+2026-05-08 | 026_errors.sql | 错误聚合表 errors — 客户端/服务端运行时错误统一记录

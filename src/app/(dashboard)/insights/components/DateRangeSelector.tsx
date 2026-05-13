@@ -6,6 +6,7 @@ interface DateRangeSelectorProps {
   preset: DatePreset;
   dateFrom: string;
   dateTo: string;
+  rangeLabel?: string;
   onPresetChange: (preset: DatePreset) => void;
   onCustomDateChange: (from: string, to: string) => void;
 }
@@ -20,44 +21,52 @@ export default function DateRangeSelector({
   preset,
   dateFrom,
   dateTo,
+  rangeLabel,
   onPresetChange,
   onCustomDateChange,
 }: DateRangeSelectorProps) {
   return (
-    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-      {/* Preset buttons */}
-      <div className="flex gap-1">
-        {PRESETS.map((p) => (
-          <button
-            key={p.key}
-            onClick={() => onPresetChange(p.key)}
-            className={[
-              'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
-              preset === p.key
-                ? 'bg-blue-500 text-white shadow-sm'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
-            ].join(' ')}
-          >
-            {p.label}
-          </button>
-        ))}
+    <div className="rounded-2xl bg-white border border-slate-200 shadow-sm p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-sm font-bold text-slate-700">
+          {rangeLabel ? `本期：${rangeLabel}` : '选择范围'}
+        </span>
       </div>
+      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+        {/* Preset buttons */}
+        <div className="flex gap-1">
+          {PRESETS.map((p) => (
+            <button
+              key={p.key}
+              onClick={() => onPresetChange(p.key)}
+              className={[
+                'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                preset === p.key
+                  ? 'bg-blue-500 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+              ].join(' ')}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
 
-      {/* Custom date inputs */}
-      <div className="flex items-center gap-1.5">
-        <input
-          type="date"
-          value={dateFrom}
-          onChange={(e) => onCustomDateChange(e.target.value, dateTo)}
-          className="px-2 py-1 rounded-lg border border-slate-200 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-        <span className="text-xs text-slate-400">至</span>
-        <input
-          type="date"
-          value={dateTo}
-          onChange={(e) => onCustomDateChange(dateFrom, e.target.value)}
-          className="px-2 py-1 rounded-lg border border-slate-200 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
+        {/* Custom date inputs */}
+        <div className="flex items-center gap-1.5">
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => onCustomDateChange(e.target.value, dateTo)}
+            className="px-2 py-1 rounded-lg border border-slate-200 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <span className="text-xs text-slate-400">至</span>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => onCustomDateChange(dateFrom, e.target.value)}
+            className="px-2 py-1 rounded-lg border border-slate-200 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
       </div>
     </div>
   );

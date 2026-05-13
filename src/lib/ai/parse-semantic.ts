@@ -5,13 +5,64 @@
  */
 
 import type { ParsedSemantic, TimeAnchor, ParsedResult, ClauseRelation, RecordLinkHint } from '@/types/semantic';
+import { RULES } from '@/lib/rules';
+import { genDecisionId, genBehaviorId } from '@/lib/observability/id-registry';
+import { getBehaviorDescription } from '@/lib/observability/behavior-registry';
+import { logClassification } from '@/lib/observability/decision-logger';
 
 // ================================================================
 // System Prompt — 定义 LLM 的解析任务
+// 由 RULES 记录类型、解析规则动态生成
 // ================================================================
 
+const _types = (RULES.record_type.types as readonly string[]);
+const _legacyKeysStr = Object.keys(RULES.record_type.legacy_type_map).map(t => `"${t}"`).join('、');
+const _moodValues = RULES.parsing.mood_map.map(m => m.value).join('、');
+const _bodyStateValues = RULES.parsing.body_state_map.map(m => m.value).join('、');
+const _energyValues = RULES.parsing.energy_map.map(m => m.value).join('、');
+
 const SYSTEM_PROMPT = `你是 TETO 个人效率系统的语义解析引擎。
-你的任务是将用户输入的中文自然语言句子解析为结构化 JSON。
+你的任务是将用户输入的中文自然语言句子**先拆解、再填字段**。
+
+⚠️ 最常见错误：把整句话塞进 action_text。必须避免！
+action_text 只能是2-4个字的核心动词，如"开会"、"通勤"、"躺着"。
+
+## 解析顺序（必须严格按此顺序工作）
+
+第 1 步：判定主类型（只允许 ${_types.length} 种：${_types.join('、')}）
+- 发生：现实已发生的事情/状态/体验/经过/遭遇
+- 计划：未来准备做/打算做/待做的事
+- 想法：脑子里的疑问/念头/观点/感慨/怀疑
+- 总结：对一段时间/一组事情的回顾/归纳/总结性表达
+
+判断优先级：
+A. 明显未来意图、待做、打算、准备、明天/之后去做 → 计划
+B. 明显观点、怀疑、感慨、疑问、念头 → 想法
+C. 明显回顾、整体评价、归纳某段时间 → 总结
+D. 默认落到现实已发生或现实状态 → 发生
+
+**绝对禁止**使用${_legacyKeysStr}作为主类型。它们是附属属性，不是主类型。
+
+第 2 步：拆解句子成分（最重要的一步！）
+在 thinking 字段中，按以下格式逐一写出拆解结果：
+- 核心动词是什么？（只取2-4个字）→ action_text
+- 动作指向什么对象？→ object_text
+- 事件的情境/背景描述是什么？→ event_text
+- 原因是什么？（有"因为/由于/导致/所以"时必须提取）→ cause_text
+- 结果/后果是什么？→ result_text
+- 时间？地点？人物？心情？身体？状态？
+
+第 3 步：根据拆解结果填入各字段
+- 严格按照第2步的拆解结果填写，不要跳过任何已识别的成分
+
+第 4 步：自检（输出前必须检查）
+- action_text 超过4个字？→ 你错了，重新提炼核心动词
+- 原句有"因为/导致/所以"但 cause_text 为 null？→ 你漏了，必须提取
+- 原句描述了后果但 result_text 为 null？→ 你漏了，必须提取
+- 原句有情境描述但 event_text 为 null？→ 你漏了，必须提取
+
+第 5 步：不确定时留空
+- 原文没有就不猜，不明确就不硬填
 
 ## 输出格式
 严格返回以下 JSON（不要返回其他文字）：
@@ -20,7 +71,7 @@ const SYSTEM_PROMPT = `你是 TETO 个人效率系统的语义解析引擎。
   "units": [
     {
       "subject": null,
-      "action": "动词/行为",
+      "action": null,
       "object": null,
       "time_anchor": null,
       "location": null,
@@ -36,11 +87,26 @@ const SYSTEM_PROMPT = `你是 TETO 个人效率系统的语义解析引擎。
       "sub_item_hint": null,
       "shared_context": null,
       "type_hint": "发生",
-      "risk_level": "low",
-      "fuzzy_category": null,
-      "fuzzy_hint": null,
       "field_confidence": {},
-      "reasoning": "简要说明为什么这么归类，匹配了什么关键词/上下文"
+      "thinking": "拆解：核心动词=_, 对象=_, 情境=_, 原因=_, 结果=_, 时间=_, 地点=_, 人物=_, 心情=_, 身体=_, 状态=_",
+      "main_text": null,
+      "action_text": null,
+      "event_text": null,
+      "object_text": null,
+      "result_text": null,
+      "cause_text": null,
+      "time_text": null,
+      "time_precision": null,
+      "place_text": null,
+      "place_type": null,
+      "body_state": null,
+      "state": null,
+      "money_amount": null,
+      "money_direction": null,
+      "money_currency": null,
+      "relation_roles": [],
+      "outcome_type": null,
+      "outcome_direction": null
     }
   ],
   "relations": [],
@@ -48,196 +114,164 @@ const SYSTEM_PROMPT = `你是 TETO 个人效率系统的语义解析引擎。
 }
 
 ## 字段说明
-- subject: 主语，默认 null 表示"我"
-- action: 核心动作/谓语，尽量提取动词短语
-- object: 宾语
-- time_anchor: 如果句中有时间词（明天、昨天、上周三、3月15号等），返回 {"raw":"原文","direction":"past|present|future"}；注意 resolved_date 留空字符串，由后端计算
-- location: 提取地点（在哪里）
-- people: 提取相关人物，数组格式
-- mood: 情绪词（开心、烦躁、焦虑等），没有就 null
-- energy: 能量状态（累、精力充沛等），没有就 null
-- manner: 方式状语（匆忙地、认真地等），没有就 null
-- cost: 金额数字，单位元
-- duration_minutes: 时长分钟数。注意提取常见表达："半小时"=30，"一个小时"=60，"两个半小时"=150，"1.5h"=90，"练了一个小时"=60，"吃半小时饭"=30
-- metric: 量化数据 {"value":数字,"unit":"单位","name":"对象"}，没有就 null
-- record_link_hint: 如果你判断当前输入与「近期记忆」中的某条记录有语义关联，返回对象 {"target_id":"xxx","link_type":"completes","reason":"简短理由"};
-  link_type 可选值: completes(完成计划), related_to(相关事件), derived_from(派生);
-  如果无关联则返回 null。
-  **重要约束**：只有存在明确的因果或完成关系才返回 record_link_hint：
-  - completes: 当前输入明确完成了某条计划（如"考试考了90分"完成了"明天的考试"）
-  - derived_from: 当前输入明确派生自某条记录
-  - related_to: 仅当有明确的时间指代关系时才使用（如"昨天考试"中的"昨天"指向某条记录），同一天同一事项下的并发记录（如"背了50个单词"和"又背了60个"）不要关联
-  不要因为两条记录属于同一事项或同一天就建立关联，它们可能只是并发事件
-- item_hint: 推测关联的事项/项目名称。如果有「事项列表」上下文，请优先从列表中选择匹配的事项名称（完全一致）。如果列表中没有合适的，再自行推测。
-- sub_item_hint: 推测关联的子项名称。当同一事项下有多个子项（如"英语单词复习"和"英语单词新学"），根据 metric.name 和 action 判断应归属哪个子项。
-  匹配逻辑：metric.name 相同或相近时，根据 action 区分子项。例如：
-  - metric.name="单词" 且 action 包含"新学""新背""新" → sub_item_hint 指向新学类子项
-  - metric.name="单词" 且 action 包含"复习""温习""重背" → sub_item_hint 指向复习类子项
-  - 如果没有明显区分动作，直接用 metric.name 作为 sub_item_hint
-  **复合句中每个 unit 都必须独立判断 sub_item_hint，不要只匹配第一个。**
-- shared_context: 当一个复合句包含共享的时长/花费/地点等修饰语，且无法确定属于哪个子行动时，不要把共享修饰语强行分配给某个unit，也不要丢弃。在每个unit中放入 shared_context 数组，记录共享但无法分配的修饰语。
-  格式: [{"field":"duration_minutes","value":60,"raw":"花了一个小时"}]
-  例如:"新学了90个单词，复习了30个，花了一个小时"
-  -> 两个unit的duration_minutes都为null
-  -> 两个unit都有 shared_context: [{"field":"duration_minutes","value":60,"raw":"花了一个小时"}]
-  "在地铁上背了单词，然后看了会儿书" -> location='地铁'只属于第一个unit，第二个unit不继承
-  如果不能确定修饰语属于哪个行动，就不分配，放入shared_context
-- type_hint: 推断记录类型，取值 "发生"|"计划"|"想法"|"总结"
-  - 已完成的事用"发生"
-  - 将来打算做的用"计划"
-  - 感想/灵感用"想法"
-  - 回顾/总结性质用"总结"
-- reasoning: 简要说明你的归类理由，格式为："归到[事项名]因为[匹配原因]，类型[XX]因为[判断原因]"。示例："归到英语因为匹配事项列表中的'英语'，类型发生因为是已完成的行为"
-  这条理由会被展示给用户看，帮助他们理解AI为什么这样归类，也能帮助他们发现归类错误
-- fuzzy_category: 当输入模糊时，设为 "unintelligible"（无法理解）| "insufficient_info"（信息不足）| "unreasonable"（不合理）。信息充分的输入不设此字段。
-- fuzzy_hint: 当 fuzzy_category 不为 null 时，给出简洁具体的提示语，帮助用户补充信息或改写。
 
-## risk_level（风险等级）
-对每条 unit，判断自动处理的风险等级：
-- "low": 信息明确、归类无歧义（如"今天学了英语"）→ 可直接落地
-- "medium": 有一定模糊性但不严重（如"最近状态不太好"、"搞了会儿那个"）→ 建议用户确认
-- "high": 错误代价大、涉及历史概括/批量推断（如"去年基本都是8:30上班"、"那段时间每天7:40起床"）→ 必须用户确认
+### L1 原文与主表达
+- main_text: 从原句提炼的核心主表达/主句，不是原文备份
+  例："我在家躺着，整个人特别累" → main_text="在家躺着"
+  例："今天午饭花了32元，吃完心情好一点" → main_text="午饭花了32元"
+  例："我怀疑现在这个记录结构还是有问题" → main_text="怀疑记录结构有问题"
+- type_hint: 主类型，只允许 "发生"|"计划"|"想法"|"总结"
+
+### L2 主链区域
+- action: 【已废弃，留空即可】不再使用，用 action_text 替代
+- object: 【已废弃，留空即可】不再使用，用 object_text 替代
+- time_anchor: 时间锚点 {"raw":"原文","direction":"past|present|future"}，resolved_date 留空
+- time_text: 原文时间表达，如"昨晚"、"下班路上"、"下午"
+- time_precision: 时间精度 exact/approx/fuzzy/unknown
+- location (= place_text): 原文地点表达，如"家"、"公司"、"地铁上"。只写位置，不写情绪和状态
+- place_type: 地点类型 home/office/commuting/transport/shop/hospital/school/outdoor/online/other
+- action_text: 【核心字段】实际动作描述，只写核心动词/行为词。2-4个字。如"开会"、"通勤"、"背单词"、"吃饭"、"躺着"。绝不写时间、地点、人物、结果
+- event_text: 事件/情境描述。提取原句中对事件状态的描述。如"会议太长"、"地铁很挤"、"效率不错"、"客户临时改需求"
+- object_text: 动作/事件指向的对象。如"会议"、"咖啡"、"单词书"。不要和 metric.name 冲突
+- cause_text: 原因。写为什么发生，不是写感受。"焦虑"不属于原因，属于 mood。多个原因用中文分号"；"连接。如"因为客户临时改需求"、"没睡好；天气差"
+- result_text: 最后结果/后果/产出/推进情况。多个结果用中文分号"；"连接。如"拖延了进度"、"迟到了20分钟；被领导批评"。允许为空，不要强迫填写
+- outcome_type: 结果类型 done/progress/recovered/maintained/interrupted/stagnant/consumed/deviated/no_change（允许为空）
+- outcome_direction: 结果方向 positive/neutral/negative（允许为空）
+
+### L3 附属属性
+- mood: 主观情绪。如开心、烦、焦虑、烦躁、失落、平静。不是原因也不是身体状态
+- energy: 精力高低，只取：很高/高/中/低/很低。"累"不归 energy，归 body_state
+- body_state: 身体状态。如累、困、饿、头疼、没精神。"累"优先归 body_state
+- state (= DB status): 运转状态。如专注、低效、混乱、被打断、恢复中、拖延
+- cost (= money_amount): 金额数字，单位元
+- money_direction: 资金方向 expense/income/none
+- money_currency: 币种，默认 "CNY"
+- duration_minutes: 时长分钟数。"半小时"=30，"一个小时"=60
+- metric: 量化数据 {"value":数字,"unit":"单位","name":"指标名称"}，没有就 null
+- people: 具体人名，如["小明"]
+- relation_roles: 关系角色，如["同事","朋友"]。与 people 不同
+
+### L4 关联意图
+- record_link_hint: 与近期记录的语义关联。只有明确因果/完成关系才返回
+  {"target_id":"xxx","link_type":"completes|related_to|derived_from","reason":"简短理由"}
+- item_hint: 推测关联事项名称。**必须从事项列表中精确选择一个完整的事项标题**，不要返回片段、缩写或自己编造的名称。如果事项列表中没有任何匹配的事项，返回 null。宁可返回 null 也不要猜测
+- sub_item_hint: 推测关联子项名称
+- shared_context: 共享但无法分配的修饰语
+
+## 字段边界规则（必须遵守）
+
+规则1：main_text 不是原文备份。main_text 是提炼后的主句
+规则2：主类型只能有一个。情绪/花费/结果都不是主类型
+规则3：地点只写位置，不写状态。"家里很烦" → location="家", mood="烦"
+规则4：action_text 只写核心动作词（2-4个字），绝不写整个句子。"昨天下午在公司开会" → action_text="开会"，不是"昨天下午在公司开了"
+规则5：原因只写为什么，不写感受。"焦虑"归 mood，不归 cause_text
+规则6：mood/energy/body_state/state 必须分开：mood=烦躁, energy=低, body_state=累, state=混乱
+规则7：metric 的 name 叫"指标名称"，不用"对象"，避免和 object_text 冲突
+规则8：金额叫 money_amount，支出/收入叫 money_direction
+规则9：result_text 允许为空，不是所有记录都必须有结果。但有明确结果时必须填写
+规则10：原文没有的信息不允许生成，不允许脑补
+规则11：outcome_type/outcome_direction 允许为空，不要强迫分析
+规则12：action 和 object 字段已废弃，必须留空为 null。只使用 action_text 和 object_text
+规则13：event_text 不是可选字段，原句包含对事件状态/情境的描述时必须提取
+规则14：cause_text 不是可选字段，原句包含"因为""由于""导致""所以"等因果词时必须提取
+规则15：cause_text 和 result_text 可以包含多个原因/结果，用中文分号"；"连接。不要只取第一个
+规则16：所有文本字段（main_text/action_text/object_text/event_text/cause_text/result_text/time_text等）必须使用中文汉字，禁止使用拼音或英文音译。例如"西瓜"不能写成"xi gua"，"吃"不能写成"chi"
+
+## 关键例子（必须按此口径实现）
+
+例1："我在家躺着，整个人特别累"
+→ type_hint=发生, main_text="在家躺着", location="家", place_type="home", action_text="躺着", body_state="累", mood=null, energy=null, result_text=null, event_text=null, cause_text=null
+
+例2："明天去复查，想到这个我有点紧张"
+→ type_hint=计划, main_text="明天去复查", time_text="明天", action_text="去复查", mood="紧张", cause_text=null, result_text=null, event_text=null
+
+例3："今天午饭花了32元，吃完心情好一点"
+→ type_hint=发生, main_text="午饭花了32元", cost=32, money_direction="expense", mood="心情好一点", action_text="吃午饭", object_text="午饭", result_text=null, event_text=null, cause_text=null
+
+例4："我怀疑现在这个记录结构还是有问题"
+→ type_hint=想法, main_text="怀疑记录结构有问题", object_text="记录结构", result_text=null, mood=null, action_text=null, event_text=null
+
+例5："今天整体效率一般，主要是上午一直被打断"
+→ type_hint=总结, main_text="今天整体效率一般", state="被打断", cause_text="上午一直被打断", result_text="效率一般", action_text=null, event_text=null
+
+例6（复合句，多个独立动作必须拆分）："昨天下午在公司和同事小明开了2小时的会，因为客户临时改需求导致会议太长，拖延了进度，花了35元买咖啡，整个人又累又烦，状态很混乱"
+→ is_compound=true, units=[Unit0, Unit1], relations=[{"from":0,"to":1,"type":"parallel"}]
+
+Unit 0（主体事件：开会）：
+  type_hint=发生, main_text="在公司开会"
+  action_text="开会", event_text="客户临时改需求导致会议太长", object_text="会议"
+  cause_text="客户临时改需求", result_text="拖延了进度"
+  outcome_type="interrupted", outcome_direction="negative"
+  location="公司", place_type="office"
+  time_text="昨天下午", time_precision="approx"
+  people=["小明"], relation_roles=["同事"]
+  duration_minutes=120, metric={"value":3,"unit":"个","name":"问题"}
+  mood="烦躁", energy="低", body_state="累", state="混乱"
+
+Unit 1（独立行为：买咖啡）：
+  type_hint=发生, main_text="买咖啡"
+  action_text="买咖啡", object_text="咖啡"
+  cost=35, money_direction="expense", money_currency="CNY"
+  mood="烦躁", body_state="累"（整体状态描述，两个 unit 都携带）
+
+  ⚠️ 注意：action_text="开会"，绝不是"昨天下午在公司和同事小明开了"！
+
+例7（附属花费，不拆）："午饭吃了碗面花了15块"
+→ is_compound=false, 单条记录, action_text="吃午饭", cost=15, money_direction="expense"
+  花费是吃面这个动作的附属成本，不需要拆分。
+
+例8（独立消费行为，必须拆）："开了2小时会，花28块买了杯咖啡"
+→ is_compound=true
+  Unit 0: action_text="开会", duration_minutes=120
+  Unit 1: action_text="买咖啡", object_text="咖啡", cost=28, money_direction="expense"
+  "花了X元买Y"是独立消费行为（有独立动作"买"），必须拆为独立 unit。
+
+例9（多因多果）："因为没睡好加上天气太差，今天上班迟到了20分钟还被领导批评了"
+→ type_hint=发生, cause_text="没睡好；天气太差", result_text="迟到了20分钟；被领导批评"
 
 ## field_confidence（置信度分级）
 对以下字段，你必须在 field_confidence 中标注是 "certain" 还是 "guess"：
-- mood、energy、item_hint、record_link_hint、type_hint、location、people
+- mood、energy、body_state、state、item_hint、record_link_hint、type_hint、location、people
 
 规则：
-- "certain" = 文本中有明确词汇证据（如"开心"→mood:开心 是 certain）
-- "guess" = 你通过语境、语气推测得出（如从"又加班到凌晨"推断 energy:累 是 guess）
-- 只有你填写了的非 null 字段才需要标注，未填写的不要加入 field_confidence
+- "certain" = 文本中有明确词汇证据
+- "guess" = 通过语境、语气推测得出
+- 只有填写了的非 null 字段才需要标注
 
-## 复合句拆分原则（核心：按可独立统计的行为单元拆）
-
-> 拆分的目标是让每条记录可以独立统计。如果两个片段的量化数据（时长/数量/金额）需要分开统计，就必须拆开；如果拆开后某个片段失去了独立的统计意义，就不该拆。
-
-### 必须拆开的情况（满足任一即拆）
-1. **不同动作**：学了英语，还健身了 → 拆（两个独立行为，各自可统计时长）
-2. **不同事项**：处理工作，又复习英语 → 拆（归属不同事项）
-3. **不同时间段**：上午开会，晚上跑步 → 拆（时间不同，需分开统计）
-4. **不同统计对象**：学了2小时英语，花了100元买资料 → 拆（学习行为 vs 消费行为，统计维度不同）
-5. **不同记录类型**：今天学了英语，明天打算跑步 → 拆（发生 vs 计划）
-
-### 禁止拆开的情况（即使有逗号/连词也不拆）
-1. **同一行为的补充说明**：背了30个单词，感觉状态不错 → 不拆（"感觉状态不错"是对背单词的评价，不是独立行为）
-2. **情绪/评价附着主记录**：开了个会，挺烦 → 不拆（"挺烦"是情绪修饰，不独立统计）
-3. **效果说明附着主记录**：学了英语1小时，效率一般 → 不拆（"效率一般"是效果评价，附属于学英语）
-4. **量化数据是同一行为的细分**：新学了90个单词，复习了30个 → 不拆（都是"背单词"行为，可合并为 metric_value=120）
-   但如果明确区分了统计口径（如事项下有"新学"和"复习"两个子项），则拆为两条
-5. **共享修饰语**：在图书馆学了2小时英语和1小时数学 → 拆为两条，但 location="图书馆" 都保留
-
-### 拆分判断决策流程
-遇到含逗号/连词的句子，按以下顺序判断：
-1. 后半句是否是独立行为（有自己的动作动词）？ → 不是则不拆
-2. 后半句是否可独立统计（有独立时长/数量/金额）？ → 不能则不拆
-3. 后半句是否属于不同事项？ → 不是则不拆
-4. 后半句是否属于不同时间段？ → 不是则不拆
-5. 通过以上检查 → 拆分
-
-### 拆分示例
-✅ 拆："学了英语还健身了" → 2条（学英语 + 健身，不同动作不同事项）
-✅ 拆："上午开会，晚上跑步" → 2条（不同时间段）
-✅ 拆："学了2小时英语，花了100元买资料" → 2条（学习行为 vs 消费行为）
-✅ 拆："今天背了50个单词，明天要复习语法" → 2条（发生 vs 计划）
-
-❌ 不拆："背了30个单词，感觉状态不错" → 1条（感觉是评价，不是独立行为）
-❌ 不拆："学了英语1小时，效率一般" → 1条（效率是效果评价）
-❌ 不拆："开了个会，挺烦" → 1条（烦是情绪修饰）
-❌ 不拆："跑步5公里，出了很多汗" → 1条（出汗是跑步的附属效果）
-
-如果输入包含多个独立事件，必须设 is_compound=true，units 数组放多个对象。
-每个 unit 都应独立设置 type_hint（可能一个是"发生"、另一个是"计划"或"想法"）。
+## 复合句处理（强制拆分）
+如果输入包含多个独立事件（不同时空、不同动作、不同属性），必须设 is_compound=true，units 数组放多个对象。
+每个 unit 都应独立设置 type_hint。
 每个 unit 也应独立判断 record_link_hint。
-每个 unit 也应独立判断 risk_level。
-例如："上午开会，下午去医院" → 拆分为 2 个 units。
-"今天吃了火锅，明天要去跑步，突然想到一个好主意" → 3 个 units，分别是发生/计划/想法。
 relations 描述单元间关系：[{"from":0,"to":1,"type":"sequence|contrast|cause|parallel"}]
 
-### 拆分规则1：同事项不同统计口径必须拆
-同一事项下的不同量化指标，如果统计口径不同（时长 vs 数量 vs 金额），必须拆成独立 units。
-正例："背了50个单词，听了30分钟英语" → 2 个 units，一个是"背单词"（metric），一个是"听英语"（duration），属于同一事项但统计口径不同。
-正例："学了2小时英语，花了100元买资料" → 2 个 units，一个是学英语（duration），一个是买资料（cost），统计口径完全不同。
-反例："背了30个单词，感觉状态不错" → 不拆，1 个 unit。"感觉状态不错"是评价，没有独立统计口径。
+### 拆分规则1：同事项不同指标必须拆
+同一事项下的不同量化指标，必须拆成独立 units。
+正例："背了50个单词，听了30分钟英语" → 2 个 units，metric 各自独立。
 
-### 拆分规则2：同行为同口径不拆
-如果多个片段属于同一个行为、同一个统计口径，即使有多个数据点也不拆，合并为一条记录。
-正例："新学了90个单词，复习了30个" → 如果事项下没有"新学"和"复习"的区分子项，则不拆，合并为1条记录。
-正例："早上跑了3公里，下午又跑了2公里" → 1条记录，metric_value=5，备注中说明分段。
-例外：如果事项下有"新学"和"复习"的区分子项，则拆为2条分别归属不同子项。
+### 拆分规则2：花费 vs 指标 vs 时长的区分
+- 指标（metric）是主体动作的直接产出
+- 花费（cost）是做这件事附带的金钱成本
+- 时长（duration_minutes）是做这件事花费的时间
+**关键区分**："花了X分钟/小时"是 duration_minutes，"花了X块/元/钱"才是 cost。
 
-### 拆分规则3：花费 vs 指标 vs 时长的区分
-指标（metric）是主体动作的直接产出。花费（cost）是做这件事附带的金钱成本。时长（duration_minutes）是做这件事花费的时间。
-判断标准：看主体动作是什么。
-- "背单词100个，花了30块" → metric={name:"单词",value:100,unit:"个"}, cost=30
-- "买了一杯咖啡30块" → cost=30, 不需要 metric（消费行为的产出不是量化指标）
-- 如果主体动作是"消费/购买"，花费就是事件本身；如果主体主体是"学习/运动"，花费只是附带成本。
-反例："单词书花了30块" → cost=30, metric=空。不要把"单词书"误解析为 metric_name。
-**关键区分**："花了X分钟/小时"是 duration_minutes，不是 cost！"花了X块/元/钱"才是 cost。
-- "花了100分钟" → duration_minutes=100, cost=null
-- "花了100块" → cost=100, duration_minutes=null
-- "新学了39个单词，复习了23个，花了100分钟" → 两个unit，duration_minutes 都为 null（共享时长无法分配），shared_context: [{"field":"duration_minutes","value":100,"raw":"花了100分钟"}]
+### 拆分规则3：属性归属与共享
+- 专属属性（cost、duration_minutes、metric、location）只归属产生它的那个 unit
+- 整体状态描述（mood、energy、body_state、state）如果是对整段经历的概括，每个 unit 都应携带
+- 判断标准：问"这个属性是因为哪个具体动作产生的？"
+  - 如果答案明确指向某 unit，只归该 unit
+  - 如果是整体感受，所有 unit 共享
+- ⚠️ "花了X元买Y"是独立消费行为，必须拆为独立 unit；"午饭花了X元"是动作附属成本，不拆
+- ⚠️ 同一句里先写会议/工作/学习（可含时长），再写「花了X买咖啡/水/东西」的，**必须** is_compound=true 拆成多 unit，不可合并成一条。
 
 ## 注意事项
 - 只返回 JSON，不要加 markdown 代码块标记
 - 所有字段如果识别不出就填 null 或空数组
-- confidence 表示你对解析结果的置信度（0~1）
-- 关于 record_link_hint: 只有当「近期记忆」上下文被提供时才能返回 target_id 对象；如果没有近期记忆上下文，可以返回关键词字符串供后端搜索
-
-## 概括性历史识别规则
-判断输入是否为"概括性历史"——用户用一句话描述了一段时期的重复规律，而非某天某次的精确事实。
-
-### 必须识别为规律的条件
-输入同时满足以下条件：
-1. 描述的是一个**重复性**行为/状态（"基本每天"、"大多"、"一般都"、"通常"、"一直"、"经常"）
-2. 指向**一段过去时间**而非某一天（"那段时间"、"去年"、"之前那段"、"那阵子"、"一段时间里"）
-3. 无法精确定位到具体某天某次
-
-如果识别为规律记录，设置：
-- is_period_rule = true
-- period_frequency = "daily" / "weekly" / "monthly" / "irregular"
-- period_start_date / period_end_date = 如果能推断出时间范围则填，否则 null
-- data_nature = "fact"（规律记录本身是事实描述，不是推断）
-- risk_level = "high"（规律记录的错误代价高，必须用户确认）
-
-### 不算规律的例子
-- "昨天晚上跑了步" → 普通补录（用户能逐条明确表达）
-- "上周三去办了签证" → 普通补录（精确到某天）
-- "前天开了个会" → 普通补录
-
-### 算规律的例子
-- "那段时间基本每天7:40起床" → is_period_rule=true, period_frequency=daily
-- "去年大多8:30上班" → is_period_rule=true, period_frequency=daily
-- "之前基本每周跑3次步" → is_period_rule=true, period_frequency=weekly
-- "那阵子经常学到半夜" → is_period_rule=true, period_frequency=irregular
-
-## 模糊输入3类区分规则
-判断输入是否属于"模糊"，并区分为3种不同类型。不是所有模糊都该同样处理。
-
-### A. 无法理解（unintelligible）
-条件：表达太碎、缩写太多、缺主语缺动作、语义冲突，你完全无法确定用户在说什么。
-示例："那个"、"搞了"、"嗯"、"算了"
-处理：设 fuzzy_category="unintelligible"，risk_level="high"，fuzzy_hint 给出澄清提示（如"请补充你做了什么"）
-
-### B. 信息不足（insufficient_info）
-条件：你能理解大概在做什么，但缺少关键归类信息（事项、类型、量化数据等）。
-示例："搞了会儿那个"、"处理了一些工作"、"学了一会儿"、"今天状态一般"
-处理：设 fuzzy_category="insufficient_info"，risk_level="medium"，fuzzy_hint 给出补信息提示（如"请补充是哪个事项"）
-允许低精度落地，但标记为需要后续补充。
-
-### C. 不合理（unreasonable）
-条件：一条输入里塞了太多不相关内容，或时间明显冲突，或计划和结果混成一条。
-示例："今天学英语明天健身后天开会还买了杯咖啡花了30块"（太多不相关内容塞成一条）
-处理：设 fuzzy_category="unreasonable"，risk_level="medium"，fuzzy_hint 给出拆分/改写提示（如"建议拆分为多条记录"）
-
-### 不算模糊的例子
-- "背了30个单词" → 信息充分，不算模糊
-- "明天去跑步" → 信息充分，不算模糊
-- "最近状态不太好" → 算B类（信息不足），但可以先收为低精度
-
-### 重要规则
-1. 只有确实模糊时才设 fuzzy_category，信息充分的输入不设
-2. fuzzy_hint 是给用户看的提示，应简洁具体
-3. 模糊输入仍然要尽量填充你能确定的字段（如 type_hint、action），不要全部留空
+- confidence 表示解析置信度（0~1）
+- record_link_hint: 只有「近期记忆」上下文被提供时才能返回 target_id 对象
+- type_hint 只允许：${_types.join('、')}
+- mood 只允许：${_moodValues}
+- body_state 只允许：${_bodyStateValues}
+- energy 只允许：${_energyValues}
 `;
 
 // ================================================================
@@ -260,6 +294,7 @@ interface DeepSeekResponse {
 }
 
 async function callDeepSeek(messages: DeepSeekMessage[]): Promise<string> {
+  genBehaviorId('B-002'); // callDeepSeek LLM 调用追踪
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) {
     throw new Error('DEEPSEEK_API_KEY 未配置');
@@ -275,7 +310,7 @@ async function callDeepSeek(messages: DeepSeekMessage[]): Promise<string> {
       model: 'deepseek-chat',
       messages,
       temperature: 0.1, // 低温度保证稳定输出
-      max_tokens: 1024,
+      max_tokens: 2048,
       response_format: { type: 'json_object' }, // 强制 JSON 输出
     }),
   });
@@ -309,12 +344,14 @@ function validateAndFixSemantic(raw: Record<string, unknown>, overallConfidence?
           direction: ((raw.time_anchor as Record<string, unknown>).direction as TimeAnchor['direction']) || 'present',
         }
       : null,
-    location: typeof raw.location === 'string' ? raw.location : null,
+    location: typeof raw.location === 'string' ? raw.location
+      : typeof raw.place_text === 'string' ? raw.place_text : null,
     people: Array.isArray(raw.people) ? raw.people.filter((p): p is string => typeof p === 'string') : [],
     mood: typeof raw.mood === 'string' ? raw.mood : null,
     energy: typeof raw.energy === 'string' ? raw.energy : null,
     manner: typeof raw.manner === 'string' ? raw.manner : null,
-    cost: typeof raw.cost === 'number' ? raw.cost : null,
+    cost: typeof raw.cost === 'number' ? raw.cost
+      : typeof raw.money_amount === 'number' ? raw.money_amount : null,
     duration_minutes: typeof raw.duration_minutes === 'number' ? raw.duration_minutes : null,
     metric: raw.metric && typeof raw.metric === 'object'
       ? (() => {
@@ -353,28 +390,129 @@ function validateAndFixSemantic(raw: Record<string, unknown>, overallConfidence?
             .map(([k, v]) => [k, v as 'certain' | 'guess'])
         )
       : undefined,
-    type_hint: typeof raw.type_hint === 'string' ? raw.type_hint : undefined,
+    type_hint: typeof raw.type_hint === 'string'
+      ? (['发生', '计划', '想法', '总结'].includes(raw.type_hint) ? raw.type_hint
+        : ['情绪', '花费', '结果'].includes(raw.type_hint) ? '发生' : '发生')
+      : undefined,
     confidence: overallConfidence,
-    reasoning: typeof raw.reasoning === 'string' ? raw.reasoning : undefined,
-    risk_level: (['low', 'medium', 'high'].includes(raw.risk_level as string)
-      ? raw.risk_level as 'low' | 'medium' | 'high'
-      : undefined),
-    // 规律/历史字段
-    is_period_rule: raw.is_period_rule === true ? true : undefined,
-    period_start_date: typeof raw.period_start_date === 'string' ? raw.period_start_date : undefined,
-    period_end_date: typeof raw.period_end_date === 'string' ? raw.period_end_date : undefined,
-    period_frequency: (['daily', 'weekly', 'monthly', 'irregular'].includes(raw.period_frequency as string)
-      ? raw.period_frequency as 'daily' | 'weekly' | 'monthly' | 'irregular'
-      : undefined),
-    data_nature: (['fact', 'inferred'].includes(raw.data_nature as string)
-      ? raw.data_nature as 'fact' | 'inferred'
-      : undefined),
-    // 模糊输入分类
-    fuzzy_category: (['unintelligible', 'insufficient_info', 'unreasonable'].includes(raw.fuzzy_category as string)
-      ? raw.fuzzy_category as 'unintelligible' | 'insufficient_info' | 'unreasonable'
-      : undefined),
-    fuzzy_hint: typeof raw.fuzzy_hint === 'string' ? raw.fuzzy_hint : undefined,
+    // === 1.5 录入结构对齐新增 ===
+    main_text: typeof raw.main_text === 'string' ? raw.main_text : null,
+    result_text: typeof raw.result_text === 'string' ? raw.result_text : null,
+    place_text: typeof raw.place_text === 'string' ? raw.place_text : null,
+    state: typeof raw.state === 'string' ? raw.state : null,
+    body_state: typeof raw.body_state === 'string' ? raw.body_state : null,
+    money_amount: typeof raw.money_amount === 'number' ? raw.money_amount : null,
+    money_currency: typeof raw.money_currency === 'string' ? raw.money_currency : null,
+    // === 三层九组结构化字段 ===
+    action_text: typeof raw.action_text === 'string' ? raw.action_text : null,
+    event_text: typeof raw.event_text === 'string' ? raw.event_text : null,
+    object_text: typeof raw.object_text === 'string' ? raw.object_text : null,
+    outcome_type: typeof raw.outcome_type === 'string' && ['done', 'progress', 'recovered', 'maintained', 'interrupted', 'stagnant', 'consumed', 'deviated', 'no_change'].includes(raw.outcome_type) ? raw.outcome_type : null,
+    outcome_direction: typeof raw.outcome_direction === 'string' && ['positive', 'neutral', 'negative'].includes(raw.outcome_direction) ? raw.outcome_direction : null,
+    cause_text: typeof raw.cause_text === 'string' ? raw.cause_text : null,
+    time_text: typeof raw.time_text === 'string' ? raw.time_text : null,
+    time_precision: typeof raw.time_precision === 'string' && ['exact', 'approx', 'fuzzy', 'unknown'].includes(raw.time_precision) ? raw.time_precision : null,
+    place_type: typeof raw.place_type === 'string' && ['home', 'office', 'commuting', 'transport', 'shop', 'hospital', 'school', 'outdoor', 'online', 'other'].includes(raw.place_type) ? raw.place_type : null,
+    money_direction: typeof raw.money_direction === 'string' && ['expense', 'income', 'none'].includes(raw.money_direction) ? raw.money_direction : null,
+    relation_roles: Array.isArray(raw.relation_roles) ? raw.relation_roles.filter((r): r is string => typeof r === 'string') : null,
   };
+}
+
+// ================================================================
+// 4.4 LLM 输出 vs 规则中心校验对比
+// ================================================================
+
+/** LLM 输出违背规则中心的单条违规记录 */
+export interface RuleViolation {
+  /** 违规字段名 */
+  field: string;
+  /** LLM 输出的原始值 */
+  llmValue: unknown;
+  /** 规则中心的合法值范围 */
+  allowedSet: string;
+  /** 违规严重程度 */
+  severity: 'error' | 'warning';
+  /** 执行的修正动作描述 */
+  action: string;
+}
+
+/** 对单个 unit 的 LLM 输出做规则中心受控词汇校验 */
+function validateAgainstRules(
+  rawUnit: Record<string, unknown>,
+  fixedTypeHint: string | undefined,
+): RuleViolation[] {
+  const violations: RuleViolation[] = [];
+
+  // ── 1. type_hint 受控词汇校验 ──
+  const allowedTypes = (RULES.record_type.types as readonly string[]);
+  const legacyTypes = Object.keys(RULES.record_type.legacy_type_map);
+  const rawTypeHint = rawUnit.type_hint;
+  if (typeof rawTypeHint === 'string') {
+    if (legacyTypes.includes(rawTypeHint)) {
+      violations.push({
+        field: 'type_hint',
+        llmValue: rawTypeHint,
+        allowedSet: allowedTypes.join('、'),
+        severity: 'error',
+        action: `LLM 输出了已废弃类型"${rawTypeHint}"，已自动修正为"${fixedTypeHint ?? '发生'}"`,
+      });
+    } else if (!allowedTypes.includes(rawTypeHint)) {
+      violations.push({
+        field: 'type_hint',
+        llmValue: rawTypeHint,
+        allowedSet: allowedTypes.join('、'),
+        severity: 'error',
+        action: `LLM 输出了非法类型"${rawTypeHint}"，已降级为"${fixedTypeHint ?? '发生'}"`,
+      });
+    }
+  }
+
+  // ── 2. mood 受控词汇校验 ──
+  const rawMood = rawUnit.mood;
+  if (typeof rawMood === 'string' && rawMood.trim()) {
+    const allowedMoods = RULES.parsing.mood_map.map(m => m.value);
+    if (!allowedMoods.includes(rawMood)) {
+      violations.push({
+        field: 'mood',
+        llmValue: rawMood,
+        allowedSet: allowedMoods.join('、'),
+        severity: 'warning',
+        action: `LLM 输出了非标准心情值"${rawMood}"，结果已保留但建议确认`,
+      });
+    }
+  }
+
+  // ── 3. body_state 受控词汇校验 ──
+  const rawBodyState = rawUnit.body_state;
+  if (typeof rawBodyState === 'string' && rawBodyState.trim()) {
+    const allowedBodyStates = RULES.parsing.body_state_map.map(m => m.value);
+    if (!allowedBodyStates.includes(rawBodyState)) {
+      violations.push({
+        field: 'body_state',
+        llmValue: rawBodyState,
+        allowedSet: allowedBodyStates.join('、'),
+        severity: 'warning',
+        action: `LLM 输出了非标准身体状态"${rawBodyState}"，结果已保留但建议确认`,
+      });
+    }
+  }
+
+  // ── 4. energy 受控词汇校验 ──
+  const rawEnergy = rawUnit.energy;
+  if (typeof rawEnergy === 'string' && rawEnergy.trim()) {
+    const allowedEnergies = RULES.parsing.energy_map.map(m => m.value);
+    if (!allowedEnergies.includes(rawEnergy)) {
+      violations.push({
+        field: 'energy',
+        llmValue: rawEnergy,
+        allowedSet: allowedEnergies.join('、'),
+        severity: 'warning',
+        action: `LLM 输出了非标准精力值"${rawEnergy}"，结果已保留但建议确认`,
+      });
+    }
+  }
+
+  return violations;
 }
 
 // ================================================================
@@ -385,6 +523,12 @@ export interface ParseSemanticResult {
   parsed: ParsedResult;
   /** 每个 unit 对应的 type_hint */
   type_hints: string[];
+  /** 每个 unit 的 LLM thinking（推理过程），未提供时为空字符串 */
+  thinking: string[];
+  /** 规则中心校验违规记录（空数组表示完全合规） */
+  violations: RuleViolation[];
+  /** 是否存在任何 error 级别的违规（标记为降级） */
+  degraded: boolean;
 }
 
 /**
@@ -400,6 +544,7 @@ export async function parseSemantic(
   items?: Array<{ id: string; title: string }>,
   subItems?: Array<{ id: string; title: string; item_id: string }>
 ): Promise<ParseSemanticResult> {
+  genBehaviorId('B-001'); // parseSemantic 入口追踪
   const dateCtx = todayDate || new Date().toISOString().split('T')[0];
 
   // 构建用户消息：基本输入 + 可选近期记忆上下文
@@ -433,8 +578,11 @@ export async function parseSemantic(
   try {
     rawJson = JSON.parse(content);
   } catch {
+    genDecisionId('AI_FALLBACK');
     throw new Error(`LLM 返回的内容不是有效 JSON: ${content.slice(0, 200)}`);
   }
+
+  genDecisionId('PARSE');
 
   const isCompound = rawJson.is_compound === true;
   const rawUnits = Array.isArray(rawJson.units) ? rawJson.units : [rawJson];
@@ -442,12 +590,29 @@ export async function parseSemantic(
 
   const units: ParsedSemantic[] = [];
   const typeHints: string[] = [];
+  const thinking: string[] = [];
+  const violations: RuleViolation[] = [];
 
   for (const rawUnit of rawUnits) {
+    // 4.1: 在 validateAndFixSemantic 前提取 thinking，防止丢失
+    const rawThinking = (rawUnit as Record<string, unknown>).thinking;
+    thinking.push(typeof rawThinking === 'string' ? rawThinking : '');
+
     const fixed = validateAndFixSemantic(rawUnit as Record<string, unknown>, confidence);
     const { type_hint, ...semantic } = fixed;
     units.push(semantic);
     typeHints.push(type_hint || '发生');
+
+    // 4.4: LLM 输出 vs 规则中心约束对比校验
+    const unitViolations = validateAgainstRules(rawUnit as Record<string, unknown>, type_hint);
+    for (const v of unitViolations) {
+      violations.push(v);
+      genDecisionId('LLM_RULE_VIOLATION');
+    }
+
+    // 5.4: 分类原因日志 — 记录 LLM 为什么判定此 type_hint
+    logClassification(undefined, units.length - 1, type_hint || '发生',
+      thinking[thinking.length - 1]?.slice(0, 200) || '(无 thinking)');
   }
 
   // 解析 relations
@@ -462,136 +627,18 @@ export async function parseSemantic(
         : 'sequence'),
     }));
 
-  // === 拆分结果后处理校验 ===
-  // 防止 AI 违反拆分规则，对不合理的拆分进行合龙
-  const validatedUnits = validateSplitResult(input, units, typeHints, relations);
+  const hasErrors = violations.some(v => v.severity === 'error');
 
   return {
     parsed: {
-      is_compound: validatedUnits.units.length > 1,
-      units: validatedUnits.units,
-      relations: validatedUnits.relations,
-      confidence,
+      is_compound: isCompound,
+      units,
+      relations,
+      confidence: hasErrors ? Math.max(confidence - 0.15, 0.1) : confidence,
     },
-    type_hints: validatedUnits.typeHints,
-  };
-}
-
-// ================================================================
-// 拆分结果后处理校验
-// ================================================================
-
-/** 情绪/评价美键词 — 如果后半句只含这些词，不应独立拆分 */
-const MOOD_EVALUATION_PATTERNS = [
-  /感觉.{0,4}(不错|还好|一般|挺好|挺好|可以|还行|舒服|爽)/,
-  /挺?(烦|累|开心|高兴|焦虑|郁闷|不爽|烦躁|爽|好|不错|还行|一般|可以)/,
-  /效率?(一般|不高|低|高|还行|不错)/,
-  /状态?(不错|还好|一般|挺好|不行|差)/,
-  /出了?很多?汗/,
-  /心情?(好|不好|一般|还行|不错)/,
-  /比较?(轻松|开心|累|烦|焦虑|充实)/,
-  /很?(充实|满足|开心|累|烦|焦虑|爽|舒服|难)/,
-  /不怎么?\s*(样|好|行)/,
-  /还?可以/,
-  /收获.{0,4}(很大|不少|挺多)/,
-];
-
-/**
- * 拆分结果后处理校验
- * 检查 AI 的拆分结果是否符合"按可独立统计的行为单元拆"的原则
- * 对不合理的拆分进行合龙
- */
-function validateSplitResult(
-  input: string,
-  units: ParsedSemantic[],
-  typeHints: string[],
-  relations: ParsedResult['relations']
-): { units: ParsedSemantic[]; typeHints: string[]; relations: ParsedResult['relations'] } {
-  // 如果只有1条 unit，无需校验
-  if (units.length <= 1) {
-    return { units, typeHints, relations };
-  }
-
-  // 检查每个 unit 是否有独立的统计价值
-  const shouldKeep: boolean[] = units.map((unit, _idx) => {
-    const action = unit.action?.trim() || '';
-    const obj = unit.object?.trim() || '';
-    const hasAction = action.length > 0;
-
-    // 检查是否只是情绪/评价（没有独立行为动词）
-    const unitText = `${action} ${obj} ${unit.mood || ''} ${unit.energy || ''}`.trim();
-    const isOnlyMoodEval = MOOD_EVALUATION_PATTERNS.some(p => p.test(unitText));
-
-    // 如果只有情绪/评价，没有独立行为 → 不应独立拆分
-    if (isOnlyMoodEval && !unit.metric && !unit.duration_minutes && !unit.cost && !unit.time_anchor) {
-      return false;
-    }
-
-    // 如果 unit 没有 action 且没有任何量化数据 → 不应独立拆分
-    if (!hasAction && !unit.metric && !unit.duration_minutes && !unit.cost) {
-      return false;
-    }
-
-    return true;
-  });
-
-  // 如果所有 unit 都应保留，直接返回
-  if (shouldKeep.every(Boolean)) {
-    return { units, typeHints, relations };
-  }
-
-  // 合并不应独立拆分的 unit 到前一个有效 unit
-  const mergedUnits: ParsedSemantic[] = [];
-  const mergedTypeHints: string[] = [];
-  const indexMap = new Map<number, number>(); // oldIdx -> newIdx
-  let newIdx = 0;
-
-  for (let i = 0; i < units.length; i++) {
-    if (shouldKeep[i]) {
-      indexMap.set(i, newIdx);
-      mergedUnits.push(units[i]);
-      mergedTypeHints.push(typeHints[i]);
-      newIdx++;
-    } else {
-      // 将此 unit 的修饰信息合并到前一个有效 unit
-      const prevUnit = mergedUnits[mergedUnits.length - 1];
-      if (prevUnit) {
-        // 合并情绪/能量
-        if (units[i].mood && !prevUnit.mood) prevUnit.mood = units[i].mood;
-        if (units[i].energy && !prevUnit.energy) prevUnit.energy = units[i].energy;
-        // 合并 field_confidence
-        if (units[i].field_confidence) {
-          prevUnit.field_confidence = { ...prevUnit.field_confidence, ...units[i].field_confidence };
-        }
-        // 在 reasoning 中追加分拆原因
-        if (units[i].action || units[i].mood || units[i].energy) {
-          const extra = [units[i].action, units[i].mood, units[i].energy].filter(Boolean).join('，');
-          if (extra) {
-            prevUnit.reasoning = (prevUnit.reasoning || '') + `；附: ${extra}`;
-          }
-        }
-      }
-      // 映射到前一个有效 unit 的索引
-      const prevValidIdx = mergedUnits.length - 1;
-      if (prevValidIdx >= 0) {
-        indexMap.set(i, prevValidIdx);
-      }
-    }
-  }
-
-  // 重建 relations（更新索引）
-  const mergedRelations: ParsedResult['relations'] = [];
-  for (const rel of relations) {
-    const newFrom = indexMap.get(rel.from);
-    const newTo = indexMap.get(rel.to);
-    if (newFrom !== undefined && newTo !== undefined && newFrom !== newTo) {
-      mergedRelations.push({ from: newFrom, to: newTo, type: rel.type });
-    }
-  }
-
-  return {
-    units: mergedUnits,
-    typeHints: mergedTypeHints,
-    relations: mergedRelations,
+    type_hints: typeHints,
+    thinking,
+    violations,
+    degraded: hasErrors,
   };
 }
