@@ -17,6 +17,8 @@ export type IngestClarifyState = {
   unitId: string;
   question: PendingQuestion;
   rawContext: string;
+  /** 当前澄清针对的子句/单元片段 */
+  unitText?: string;
   /** 与时间轴会话卡同一 stable id */
   client_session_id?: string;
   splitPreview?: Array<{
@@ -78,6 +80,8 @@ export default function QuickInput({
   const [rawText, setRawText] = useState('');
   const [parsed, setParsed] = useState<ParsedInput>({});
   const [type, setType] = useState<RecordType>('发生');
+  /** 仅用户手动点击类型芯片时为 true，避免本地预览类型写入 seed 覆盖 AI */
+  const [typePinned, setTypePinned] = useState(false);
   const [content, setContent] = useState('');
   const [selectedItemId, setSelectedItemId] = useState('');
   const [selectedSubItemId, setSelectedSubItemId] = useState<string>('');
@@ -175,8 +179,7 @@ export default function QuickInput({
       const matchItems = items.map(i => ({ id: i.id, title: i.title }));
       const result = parseNaturalInput(text, matchItems);
       setParsed(result);
-      if (result.type_hint) setType(result.type_hint);
-      // 不再自动 setSelectedItemId — 推荐的事项只作为 UI 提示展示
+      // 不再自动 setType / setSelectedItemId — 预览仅展示在芯片与详情，入库由服务端清分
       // 用户必须手动选择才会生效，避免"开会"被错误归类到"英语"等误匹配
     }, 300);
   }, [items]);
@@ -347,6 +350,7 @@ export default function QuickInput({
       // 单行时设置类型
       if (lines.length === 1 && lines[0].type_hint) {
         setType(lines[0].type_hint);
+        setTypePinned(false);
       }
 
       // 显示简短提示
@@ -372,6 +376,7 @@ export default function QuickInput({
     setRawText('');
     setParsed({});
     setType('发生');
+    setTypePinned(false);
     setContent('');
     setSelectedItemId('');
     setSelectedSubItemId('');
@@ -387,6 +392,7 @@ export default function QuickInput({
     setRawText('');
     setParsed({});
     setType('发生');
+    setTypePinned(false);
     setContent('');
     setSelectedItemId('');
     setSelectedSubItemId('');
@@ -480,19 +486,26 @@ export default function QuickInput({
               }
             : null
         );
-      } else {
-        if ((d?.promoted_record_ids && d.promoted_record_ids.length > 0) || d?.promoted_record_id) {
-          onRecordCreated();
-          if (ingestClarify.client_session_id) onPendingResolved?.(ingestClarify.client_session_id);
-          onDeferResolved?.(inputId);
-        } else if (d?.input_status === 'cancelled' && ingestClarify.client_session_id) {
-          onPendingResolved?.(ingestClarify.client_session_id);
-          onDeferResolved?.(inputId);
-        }
+      } else if (
+        (d?.promoted_record_ids && d.promoted_record_ids.length > 0) ||
+        d?.promoted_record_id
+      ) {
+        onRecordCreated();
+        if (ingestClarify.client_session_id) onPendingResolved?.(ingestClarify.client_session_id);
+        onDeferResolved?.(inputId);
         const nextPanel = closeCurrentClarifyOrShowNext();
-        if (d?.input_status !== 'cancelled' && !nextPanel) {
-          resetState();
-        }
+        if (!nextPanel) resetState();
+      } else if (d?.input_status === 'cancelled') {
+        if (ingestClarify.client_session_id) onPendingResolved?.(ingestClarify.client_session_id);
+        onDeferResolved?.(inputId);
+        setIngestClarify(null);
+        ingestClarifyQueueRef.current = [];
+        bumpQueueSig();
+        closeCurrentClarifyOrShowNext();
+      } else if (d?.input_status === 'clarifying') {
+        onError('仍需补充信息才能完成入库，请继续回答或取消本次录入');
+      } else {
+        closeCurrentClarifyOrShowNext();
       }
     } finally {
       setIngestBusy(false);
@@ -559,6 +572,7 @@ export default function QuickInput({
     input: { id: string; status: string };
     pending: { unit_id: string; question: PendingQuestion } | null;
     units?: Array<{
+      id?: string;
       unit_index?: number;
       unit_text?: string | null;
       classifier_decision?: {
@@ -606,11 +620,21 @@ export default function QuickInput({
             }))
             .filter((u) => u.text.length > 0)
         : undefined;
+    const pendingUnit = Array.isArray(d.units)
+      ? d.units.find((u) => u.id === d.pending!.unit_id)
+      : undefined;
+    const unitText = (
+      pendingUnit?.unit_text ||
+      pendingUnit?.classifier_decision?.content_summary ||
+      ''
+    ).trim();
+
     return {
       inputId: d.input.id,
       unitId: d.pending!.unit_id,
       question: d.pending!.question,
       rawContext: line,
+      unitText: unitText || undefined,
       client_session_id: clientSessionId,
       splitPreview,
     };
@@ -622,6 +646,7 @@ export default function QuickInput({
     pendingTokens: Array<{ sessionId: string; line: string }>;
     capturedDate: string;
     capturedType: RecordType;
+    capturedTypePinned: boolean;
     capturedItemId: string;
     capturedSubItemId: string;
     capturedTagIds: string[];
@@ -633,6 +658,7 @@ export default function QuickInput({
       pendingTokens,
       capturedDate,
       capturedType,
+      capturedTypePinned,
       capturedItemId,
       capturedSubItemId,
       capturedTagIds,
@@ -656,7 +682,7 @@ export default function QuickInput({
               date: capturedDate,
               client_time: new Date().toISOString(),
               seed_fields: {
-                type: capturedType,
+                ...(capturedTypePinned ? { type: capturedType } : {}),
                 ...(capturedItemId ? { item_id: capturedItemId } : {}),
                 ...(capturedSubItemId ? { sub_item_id: capturedSubItemId } : {}),
                 ...(capturedTagIds.length > 0 ? { tag_ids: capturedTagIds } : {}),
@@ -765,6 +791,7 @@ export default function QuickInput({
     const capturedRaw = trimmedInput;
     const submitTraceId = genTraceId();
     const capturedType = type;
+    const capturedTypePinned = typePinned;
     const capturedItemId = selectedItemId;
     const capturedSubItemId = selectedSubItemId;
     const capturedTagIds = [...selectedTagIds];
@@ -790,6 +817,7 @@ export default function QuickInput({
       pendingTokens,
       capturedDate,
       capturedType,
+      capturedTypePinned,
       capturedItemId,
       capturedSubItemId,
       capturedTagIds,
@@ -862,6 +890,12 @@ export default function QuickInput({
             <span className="text-xs font-semibold text-emerald-800">{clarifyPanelTitle}</span>
             {ingestBusy && <span className="text-[10px] text-emerald-600">处理中…</span>}
           </div>
+          {ingestClarify.unitText && ingestClarify.unitText !== ingestClarify.rawContext.trim() && (
+            <div className="text-[11px] text-slate-800 whitespace-pre-wrap break-words rounded-md bg-white/70 border border-emerald-100 px-2 py-1">
+              <span className="font-medium text-emerald-700">当前片段：</span>
+              {ingestClarify.unitText}
+            </div>
+          )}
           <div className="text-[11px] text-slate-600 whitespace-pre-wrap break-words">
             <span className="font-medium text-emerald-700">原文：</span>
             {ingestClarify.rawContext}
@@ -1192,7 +1226,10 @@ export default function QuickInput({
             {RECORD_TYPES.map((t) => (
               <button
                 key={t}
-                onClick={() => setType(t)}
+                onClick={() => {
+                  setType(t);
+                  setTypePinned(true);
+                }}
                 className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
                   type === t
                     ? 'bg-slate-800 text-white'

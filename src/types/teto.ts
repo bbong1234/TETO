@@ -85,6 +85,8 @@ export interface Record {
   energy: string | null;
   result: string | null;
   note: string | null;
+  category?: string | null;
+  subcategory?: string | null;
   item_id: string | null;
   phase_id: string | null;
   sub_item_id: string | null;
@@ -245,6 +247,8 @@ export interface CreateRecordPayload {
   energy?: string;
   result?: string;
   note?: string;
+  category?: string;
+  subcategory?: string;
   item_id?: string;
   phase_id?: string | null;
   sub_item_id?: string | null;
@@ -303,6 +307,8 @@ export type UpdateRecordPayload = Omit<CreateRecordPayload, 'content' | 'date' |
   content?: string;
   occurred_at?: string | null;
   item_id?: string | null;
+  category?: string | null;
+  subcategory?: string | null;
 };
 
 export interface CreateItemPayload {
@@ -351,6 +357,7 @@ export interface RecordsQuery {
   item_id?: string;
   sub_item_id?: string;
   type?: RecordType;
+  category?: string;
   tag_id?: string;
   is_starred?: boolean;
   search?: string;
@@ -410,6 +417,23 @@ export interface TimelineEntry {
   start_time?: string;   // "HH:MM" 格式，来自 occurred_at
   end_time?: string;     // "HH:MM" 格式，来自 occurred_at_end
   text: string;          // 优先 action_text + event_text 合并，否则 content
+  is_current?: boolean;  // 进行中记录
+  is_gap?: boolean;      // 空白时间段
+  duration_minutes?: number;
+  item_title?: string;
+  category?: string;
+  subcategory?: string;
+  tag_names?: string[];
+}
+
+/** 今日活动统计（记录页轻量统计） */
+export interface TodayActivityStats {
+  date: string;
+  recorded_minutes: number;
+  gap_minutes: number;
+  current_elapsed_minutes: number;
+  by_category: { category: string; minutes: number }[];
+  by_item: { item_id: string; item_title: string; minutes: number }[];
 }
 
 export interface DayTimeline {

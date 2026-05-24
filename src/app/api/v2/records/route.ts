@@ -92,6 +92,8 @@ export async function GET(request: NextRequest) {
     if (item_id) query.item_id = item_id;
     if (sub_item_id) query.sub_item_id = sub_item_id;
     if (type) query.type = type as RecordsQuery['type'];
+    const category = searchParams.get('category');
+    if (category) query.category = category;
     if (tag_id) query.tag_id = tag_id;
     if (is_starred !== null) query.is_starred = is_starred === 'true';
     if (search) query.search = search;

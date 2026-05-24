@@ -113,6 +113,8 @@ export async function updateRecord(
   if (recordData.energy !== undefined) updateData.energy = recordData.energy;
   if (recordData.result !== undefined) updateData.result = recordData.result;
   if (recordData.note !== undefined) updateData.note = recordData.note;
+  if (recordData.category !== undefined) updateData.category = recordData.category;
+  if (recordData.subcategory !== undefined) updateData.subcategory = recordData.subcategory;
   if (recordData.item_id !== undefined) updateData.item_id = recordData.item_id;
   if (recordData.phase_id !== undefined) updateData.phase_id = recordData.phase_id;
   if (recordData.sub_item_id !== undefined) updateData.sub_item_id = recordData.sub_item_id;
@@ -332,6 +334,9 @@ export async function listRecords(
   }
   if (query.type) {
     q = q.eq('type', query.type);
+  }
+  if (query.category) {
+    q = q.eq('category', query.category);
   }
   if (query.is_starred !== undefined) {
     q = q.eq('is_starred', query.is_starred);

@@ -2,13 +2,18 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, CheckSquare, X, Trash2, CalendarClock, CheckCircle2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, CheckSquare, X, Trash2, CalendarClock, CheckCircle2, ChevronDown, ChevronUp, PenLine } from 'lucide-react';
 import type { Record, Tag, Item, RecordType } from '@/types/teto';
 import QuickInput, { type IngestClarifyState } from './components/QuickInput';
 import FilterBar from './components/FilterBar';
 import RecordList from './components/RecordList';
 import DayRecordGroup from './components/DayRecordGroup';
 import RecordEditDrawer from './components/RecordEditDrawer';
+import CurrentActivityCard from './components/CurrentActivityCard';
+import QuickSwitchPanel from './components/QuickSwitchPanel';
+import TodayActivityTimeline from './components/TodayActivityTimeline';
+import TodayActivityStats from './components/TodayActivityStats';
+import StartActivityPanel, { type StartActivitySubmitPayload } from './components/StartActivityPanel';
 import { useToast } from '@/components/ui/use-toast';
 import ToastContainer from '@/components/ui/use-toast';
 
@@ -220,12 +225,17 @@ export default function RecordsClient() {
   const [filterItemId, setFilterItemId] = useState(() => searchParams.get('item_id') || '');
   const [refreshKey, setRefreshKey] = useState(0);
   const [editingRecord, setEditingRecord] = useState<Record | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [recordsLoading, setRecordsLoading] = useState(false);
   const [pendingInputs, setPendingInputs] = useState<PendingInputDraft[]>([]);
   const [resumeClarify, setResumeClarify] = useState<{
     nonce: number;
     snapshot: IngestClarifyState;
   } | null>(null);
+  // 1.7：QuickInput 折叠状态 & 补记面板
+  const [quickInputOpen, setQuickInputOpen] = useState(false);
+  const [backfillPanel, setBackfillPanel] = useState<{ startIso?: string; endIso?: string } | null>(null);
+  const [currentActivity, setCurrentActivity] = useState<Record | null>(null);
+  const [recentRecordsForSwitch, setRecentRecordsForSwitch] = useState<Record[]>([]);
 
   useEffect(() => {
     setPendingInputs(loadPendingDraftsFromStorage());
@@ -432,7 +442,7 @@ export default function RecordsClient() {
 
   // loading 从 true → false 时执行滚动
   useEffect(() => {
-    if (!loading && needScrollToTodayRef.current && isMultiDay) {
+    if (!recordsLoading && needScrollToTodayRef.current && isMultiDay) {
       needScrollToTodayRef.current = false;
       requestAnimationFrame(() => {
         todayColRef.current?.scrollIntoView({
@@ -442,7 +452,7 @@ export default function RecordsClient() {
         });
       });
     }
-  }, [loading, isMultiDay]);
+  }, [recordsLoading, isMultiDay]);
 
   // 加载更早后恢复滚动位置（往左追加列时，scrollLeft 需要补偿新列的宽度）
   useLayoutEffect(() => {
@@ -496,7 +506,7 @@ export default function RecordsClient() {
     // 多天模式下，日期列表未初始化时跳过（等 initMultiDayDates 填充后再请求）
     if (isMultiDay && multiDayDates.length === 0) return;
 
-    setLoading(true);
+    setRecordsLoading(true);
     try {
       const params = new URLSearchParams();
       if (isMultiDay) {
@@ -513,18 +523,48 @@ export default function RecordsClient() {
       const data = await res.json();
       if (data.data) {
         setRecords(sortRecords(data.data));
+      } else if (data.error) {
+        showError(data.error.message ?? '加载记录失败');
       }
     } catch (err) {
       console.error('加载记录失败:', err);
       showError('加载记录失败，请刷新重试');
     } finally {
-      setLoading(false);
+      setRecordsLoading(false);
     }
   }, [isMultiDay, multiDayDates, singleDayDate, filterType, filterTagId, filterItemId]);
 
   useEffect(() => {
     fetchRecords();
   }, [fetchRecords, refreshKey]);
+
+  // 近 7 天记录（快速切换面板，延后加载不阻塞首屏）
+  useEffect(() => {
+    if (!isOnToday || isMultiDay) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const end = formatDate(new Date());
+        const start = new Date();
+        start.setDate(start.getDate() - 6);
+        const params = new URLSearchParams({
+          date_from: formatDate(start),
+          date_to: end,
+          type: '发生',
+          limit: '150',
+        });
+        const res = await fetch(`/api/v2/records?${params.toString()}`);
+        const data = await res.json();
+        if (!cancelled && data.data) setRecentRecordsForSwitch(data.data);
+      } catch {
+        if (!cancelled) setRecentRecordsForSwitch([]);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [isOnToday, isMultiDay, refreshKey]);
 
   const handleRecordCreated = () => {
     // 新记录已从录入框入库：关掉右侧编辑抽屉，避免误以为还要「改原文」
@@ -1073,19 +1113,41 @@ export default function RecordsClient() {
                 </div>
               </div>
             )}
-            <QuickInput
-              selectedDate={quickInputDate}
-              tags={tags}
-              items={items}
-              onRecordCreated={handleRecordCreated}
-              onPendingCreated={handlePendingCreated}
-              onPendingResolved={handlePendingResolved}
-              onPendingSessionPatch={handlePendingSessionPatch}
-              onDeferResolved={handleDeferResolved}
-              resumeClarify={resumeClarify}
-              onResumeClarifyApplied={() => setResumeClarify(null)}
-              onError={showError}
-            />
+            {/* 1.7：QuickInput 折叠为"补记/自然语言录入"入口 */}
+            <div className="mb-2">
+              <button
+                type="button"
+                onClick={() => setQuickInputOpen((v) => !v)}
+                className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-500 hover:bg-slate-50 transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <PenLine className="h-4 w-4 text-slate-400" />
+                  补记 / 自然语言录入
+                </span>
+                {quickInputOpen ? (
+                  <ChevronUp className="h-4 w-4 text-slate-400" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-slate-400" />
+                )}
+              </button>
+              {quickInputOpen && (
+                <div className="mt-1 rounded-xl border border-slate-200 bg-white p-2">
+                  <QuickInput
+                    selectedDate={quickInputDate}
+                    tags={tags}
+                    items={items}
+                    onRecordCreated={handleRecordCreated}
+                    onPendingCreated={handlePendingCreated}
+                    onPendingResolved={handlePendingResolved}
+                    onPendingSessionPatch={handlePendingSessionPatch}
+                    onDeferResolved={handleDeferResolved}
+                    resumeClarify={resumeClarify}
+                    onResumeClarifyApplied={() => setResumeClarify(null)}
+                    onError={showError}
+                  />
+                </div>
+              )}
+            </div>
             <div className="mt-2">
               <FilterBar
                 filterType={filterType}
@@ -1140,17 +1202,46 @@ export default function RecordsClient() {
 
       {/* 内容区（填满剩余高度） */}
       <div className="flex-1 min-h-0">
-        {loading ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
-          </div>
-        ) : !isMultiDay ? (
+        {!isMultiDay ? (
           <div className="h-full overflow-y-auto">
             <div className="mx-auto max-w-2xl px-4 py-4">
-              {singleDayRecords.length === 0 ? (
+              {/* 1.7：主流程不等待列表加载 */}
+              {isOnToday && (
+                <div className="space-y-4 mb-6">
+                  <CurrentActivityCard
+                    items={items}
+                    onChanged={() => setRefreshKey((k) => k + 1)}
+                    onActivityChange={setCurrentActivity}
+                  />
+                  <QuickSwitchPanel
+                    records={recentRecordsForSwitch}
+                    onSwitched={() => setRefreshKey((k) => k + 1)}
+                    onError={showError}
+                  />
+                  <TodayActivityTimeline
+                    records={singleDayRecords}
+                    date={singleDayDate}
+                    onGapClick={(startIso, endIso) =>
+                      setBackfillPanel({ startIso, endIso })
+                    }
+                    onRecordClick={handleRecordClick}
+                  />
+                  <TodayActivityStats
+                    records={singleDayRecords}
+                    date={singleDayDate}
+                    currentActivity={currentActivity}
+                  />
+                </div>
+              )}
+              {recordsLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
+                  <span className="ml-2 text-sm text-slate-400">加载记录列表…</span>
+                </div>
+              ) : singleDayRecords.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-slate-400">
                   <p className="text-sm">暂无记录</p>
-                  <p className="mt-1 text-xs">在上方输入框中快速记录</p>
+                  <p className="mt-1 text-xs">点击上方"开始"开始记录，或展开"补记"入口</p>
                 </div>
               ) : (
                 <RecordList
@@ -1170,6 +1261,10 @@ export default function RecordsClient() {
                 />
               )}
             </div>
+          </div>
+        ) : recordsLoading ? (
+          <div className="flex items-center justify-center h-full">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
           </div>
         ) : (
           <div
@@ -1258,6 +1353,60 @@ export default function RecordsClient() {
           onSaved={handleRecordUpdated}
           onDeleted={handleRecordUpdated}
           onError={showError}
+        />
+      )}
+
+      {/* 1.7：补记面板（点击时间线空白区域触发） */}
+      {backfillPanel !== null && (
+        <StartActivityPanel
+          open
+          mode="backfill"
+          items={items}
+          initialStart={backfillPanel.startIso}
+          initialEnd={backfillPanel.endIso}
+          onClose={() => setBackfillPanel(null)}
+          onSubmit={async (payload) => {
+            const startDate = payload.occurred_at
+              ? new Date(payload.occurred_at).toISOString().slice(0, 10)
+              : singleDayDate;
+            const duration =
+              payload.occurred_at && payload.occurred_at_end
+                ? Math.max(
+                    0,
+                    Math.round(
+                      (Date.parse(payload.occurred_at_end) - Date.parse(payload.occurred_at)) /
+                        60000
+                    )
+                  )
+                : undefined;
+            const res = await fetch('/api/v2/records', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                date: startDate,
+                content:
+                  payload.content ||
+                  payload.subcategory ||
+                  payload.category ||
+                  '补记',
+                type: '发生',
+                lifecycle_status: 'completed',
+                occurred_at: payload.occurred_at,
+                occurred_at_end: payload.occurred_at_end,
+                duration_minutes: duration,
+                category: payload.category,
+                subcategory: payload.subcategory,
+                item_id: payload.item_id,
+                input_source: 'manual',
+                review_status: 'confirmed',
+              }),
+            });
+            if (!res.ok) {
+              const d = await res.json();
+              throw new Error(d.error?.message ?? '补记失败');
+            }
+            setRefreshKey((k) => k + 1);
+          }}
         />
       )}
 
