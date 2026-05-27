@@ -1,195 +1,343 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { isDevMode } from '@/lib/auth/get-current-user-id';
 
-export default function LoginPage() {
-  const [email, setEmail] = useState('');
-  const [otp, setOtp] = useState('');
-  const [step, setStep] = useState<'email' | 'otp'>('email');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+type Mode = 'login' | 'register' | 'forgot';
 
+function mapAuthError(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes('invalid login credentials')) return '邮箱或密码错误';
+  if (lower.includes('email not confirmed')) return '账号尚未验证，请先到邮箱点击确认链接';
+  if (lower.includes('user already registered')) return '该邮箱已注册，请直接登录';
+  if (lower.includes('password should be at least')) return '密码至少 6 位';
+  if (lower.includes('unable to validate email')) return '邮箱格式无效';
+  if (lower.includes('signup is disabled')) return '注册已关闭，请联系管理员';
+  if (lower.includes('rate limit')) return '操作太频繁，请稍后再试';
+  return message;
+}
+
+function authCallbackUrl(path: string): string {
+  if (typeof window === 'undefined') return path;
+  return `${window.location.origin}/auth/callback?next=${encodeURIComponent(path)}`;
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="flex min-h-[100dvh] items-center justify-center bg-slate-950">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-700 border-t-blue-500" />
+        </main>
+      }
+    >
+      <LoginPageContent />
+    </Suspense>
+  );
+}
+
+function LoginPageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const devMode = isDevMode();
 
-  const handleSendOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
+  const initialMode = useMemo<Mode>(() => {
+    const mode = searchParams.get('mode');
+    return mode === 'register' || mode === 'forgot' ? mode : 'login';
+  }, [searchParams]);
+
+  const [mode, setMode] = useState<Mode>(initialMode);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(() => {
+    const authError = searchParams.get('error');
+    if (authError === 'auth_callback') return '登录链接已失效，请重新操作';
+    if (authError === 'missing_code') return '登录验证失败，请重试';
+    return null;
+  });
+  const [message, setMessage] = useState<string | null>(null);
+
+  const resetFeedback = () => {
     setError(null);
     setMessage(null);
+  };
+
+  const switchMode = (next: Mode) => {
+    setMode(next);
+    resetFeedback();
+    setPassword('');
+    setConfirmPassword('');
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    resetFeedback();
+    setLoading(true);
 
     const supabase = createClient();
-    
-    console.log('[login] 发送 OTP 到:', email);
-    
-    const { error } = await supabase.auth.signInWithOtp({
+    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+
+    if (signInError) {
+      setError(mapAuthError(signInError.message));
+      setLoading(false);
+      return;
+    }
+
+    router.replace('/records');
+    router.refresh();
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    resetFeedback();
+
+    if (password.length < 6) {
+      setError('密码至少 6 位');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('两次输入的密码不一致');
+      return;
+    }
+
+    setLoading(true);
+    const supabase = createClient();
+    const { data, error: signUpError } = await supabase.auth.signUp({
       email,
+      password,
       options: {
-        shouldCreateUser: true,
+        emailRedirectTo: authCallbackUrl('/records'),
       },
     });
 
-    if (error) {
-      console.error('[login] 发送 OTP 失败:', {
-        message: error.message,
-        code: error.code,
-        status: error.status,
-      });
-      setError(error.message);
-    } else {
-      console.log('[login] OTP 发送成功');
-      setMessage('验证码已发送到您的邮箱，请查收');
-      setStep('otp');
+    if (signUpError) {
+      setError(mapAuthError(signUpError.message));
+      setLoading(false);
+      return;
     }
 
+    if (data.session) {
+      router.replace('/records');
+      router.refresh();
+      return;
+    }
+
+    setMessage('注册成功。若 Supabase 开启了邮箱确认，请先到邮箱点击确认链接；否则可直接登录。');
+    switchMode('login');
     setLoading(false);
   };
 
-  const handleVerifyOtp = async (e: React.FormEvent) => {
+  const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
+    resetFeedback();
     setLoading(true);
-    setError(null);
-    setMessage(null);
 
     const supabase = createClient();
-    
-    console.log('[login] 验证 OTP:', { email, otp });
-    
-    const { data, error } = await supabase.auth.verifyOtp({
-      email,
-      token: otp,
-      type: 'email',
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: authCallbackUrl('/login/reset-password'),
     });
 
-    if (error) {
-      console.error('[login] 验证 OTP 失败:', {
-        message: error.message,
-        code: error.code,
-        status: error.status,
-      });
-      setError(error.message);
-    } else {
-      console.log('[login] 登录成功, user:', data.user?.id);
-      console.log('[login] session:', data.session ? '存在' : '不存在');
-      
-      // 验证 session 是否正确设置
-      const { data: sessionData } = await supabase.auth.getSession();
-      console.log('[login] 验证 session:', sessionData.session ? '已设置' : '未设置');
-      
-      // 跳转到今日记录
-      window.location.href = '/records';
+    if (resetError) {
+      setError(mapAuthError(resetError.message));
+      setLoading(false);
+      return;
     }
 
+    setMessage('重置密码邮件已发送，请查收邮箱并点击链接设置新密码。');
     setLoading(false);
   };
 
   if (devMode) {
     return (
-      <main className="flex min-h-screen items-center justify-center p-6">
-        <div className="w-full max-w-md rounded-lg border p-6 shadow-sm">
-          <h1 className="mb-2 text-2xl font-bold">TETO 开发模式</h1>
-          <p className="mb-4 text-sm text-gray-600">
-            当前为开发模式，无需登录即可直接使用系统。
-          </p>
-          <div className="mb-4 rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-700">
-            <p className="font-medium">开发模式说明：</p>
-            <ul className="mt-2 list-disc pl-4 space-y-1">
-              <li>使用测试用户 ID 进行数据操作</li>
-              <li>无需邮箱验证</li>
-              <li>所有页面可直接访问</li>
-            </ul>
-          </div>
-          <a
+      <main className="flex min-h-[100dvh] items-center justify-center bg-slate-950 px-4 py-8">
+        <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-xl">
+          <h1 className="mb-2 text-2xl font-bold text-white">TETO 开发模式</h1>
+          <p className="mb-4 text-sm text-slate-400">当前为开发模式，无需登录即可直接使用。</p>
+          <Link
             href="/records"
-            className="block w-full rounded bg-black px-4 py-2 text-center text-white hover:bg-gray-800"
+            className="block w-full rounded-xl bg-gradient-to-r from-blue-500 to-indigo-500 px-4 py-2.5 text-center text-sm font-semibold text-white"
           >
             进入记录
-          </a>
+          </Link>
         </div>
       </main>
     );
   }
 
+  const title =
+    mode === 'login' ? '登录 TETO' : mode === 'register' ? '创建账号' : '找回密码';
+  const subtitle =
+    mode === 'login'
+      ? '使用邮箱和密码登录，无需每次收验证码'
+      : mode === 'register'
+        ? '注册后可长期使用，登录时不再发邮件'
+        : '输入注册邮箱，我们会发送重置密码链接';
+
   return (
-    <main className="flex min-h-screen items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-lg border p-6 shadow-sm">
-        <h1 className="mb-2 text-2xl font-bold">TETO 登录</h1>
-        <p className="mb-4 text-sm text-gray-600">
-          {step === 'email' 
-            ? '输入邮箱接收验证码' 
-            : '输入邮箱中的 6 位验证码'}
-        </p>
-
-        {error && (
-          <div className="mb-4 rounded bg-red-50 p-3 text-sm text-red-600">
-            {error}
+    <main className="flex min-h-[100dvh] items-center justify-center bg-slate-950 px-4 py-8">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 text-center">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-500 text-xl font-bold text-white shadow-lg shadow-blue-500/30">
+            T
           </div>
-        )}
+          <h1 className="text-2xl font-bold text-white">{title}</h1>
+          <p className="mt-2 text-sm text-slate-400">{subtitle}</p>
+        </div>
 
-        {message && (
-          <div className="mb-4 rounded bg-green-50 p-3 text-sm text-green-600">
-            {message}
-          </div>
-        )}
-
-        {step === 'email' ? (
-          <form onSubmit={handleSendOtp} className="space-y-4">
-            <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">
-                邮箱地址
-              </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="your@email.com"
-                required
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-              />
-            </div>
+        {mode !== 'forgot' && (
+          <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl bg-slate-900/60 p-1">
             <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded bg-black px-4 py-2 text-center text-white disabled:opacity-50"
+              type="button"
+              onClick={() => switchMode('login')}
+              className={[
+                'rounded-lg px-3 py-2 text-sm font-medium transition',
+                mode === 'login' ? 'bg-slate-800 text-white shadow' : 'text-slate-400 hover:text-white',
+              ].join(' ')}
             >
-              {loading ? '发送中...' : '发送验证码'}
-            </button>
-          </form>
-        ) : (
-          <form onSubmit={handleVerifyOtp} className="space-y-4">
-            <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">
-                验证码
-              </label>
-              <input
-                type="text"
-                value={otp}
-                onChange={(e) => setOtp(e.target.value)}
-                placeholder="123456"
-                maxLength={6}
-                required
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded bg-black px-4 py-2 text-center text-white disabled:opacity-50"
-            >
-              {loading ? '验证中...' : '登录'}
+              登录
             </button>
             <button
               type="button"
-              onClick={() => setStep('email')}
-              className="w-full rounded border border-gray-300 px-4 py-2 text-center text-sm text-gray-600"
+              onClick={() => switchMode('register')}
+              className={[
+                'rounded-lg px-3 py-2 text-sm font-medium transition',
+                mode === 'register' ? 'bg-slate-800 text-white shadow' : 'text-slate-400 hover:text-white',
+              ].join(' ')}
             >
-              返回重新输入邮箱
+              注册
             </button>
-          </form>
+          </div>
         )}
+
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-xl backdrop-blur">
+          {error && (
+            <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              {error}
+            </div>
+          )}
+          {message && (
+            <div className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+              {message}
+            </div>
+          )}
+
+          {mode === 'login' && (
+            <form onSubmit={handleLogin} className="space-y-4">
+              <Field label="邮箱" type="email" value={email} onChange={setEmail} autoComplete="email" />
+              <Field
+                label="密码"
+                type="password"
+                value={password}
+                onChange={setPassword}
+                autoComplete="current-password"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full rounded-xl bg-gradient-to-r from-blue-500 to-indigo-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 disabled:opacity-50"
+              >
+                {loading ? '登录中…' : '登录'}
+              </button>
+              <button
+                type="button"
+                onClick={() => switchMode('forgot')}
+                className="w-full text-sm text-slate-400 transition hover:text-blue-300"
+              >
+                忘记密码？
+              </button>
+            </form>
+          )}
+
+          {mode === 'register' && (
+            <form onSubmit={handleRegister} className="space-y-4">
+              <Field label="邮箱" type="email" value={email} onChange={setEmail} autoComplete="email" />
+              <Field
+                label="密码"
+                type="password"
+                value={password}
+                onChange={setPassword}
+                autoComplete="new-password"
+                placeholder="至少 6 位"
+              />
+              <Field
+                label="确认密码"
+                type="password"
+                value={confirmPassword}
+                onChange={setConfirmPassword}
+                autoComplete="new-password"
+                placeholder="再次输入密码"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full rounded-xl bg-gradient-to-r from-blue-500 to-indigo-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 disabled:opacity-50"
+              >
+                {loading ? '注册中…' : '注册'}
+              </button>
+            </form>
+          )}
+
+          {mode === 'forgot' && (
+            <form onSubmit={handleForgotPassword} className="space-y-4">
+              <Field label="注册邮箱" type="email" value={email} onChange={setEmail} autoComplete="email" />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full rounded-xl bg-gradient-to-r from-blue-500 to-indigo-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 disabled:opacity-50"
+              >
+                {loading ? '发送中…' : '发送重置链接'}
+              </button>
+              <button
+                type="button"
+                onClick={() => switchMode('login')}
+                className="w-full text-sm text-slate-400 transition hover:text-blue-300"
+              >
+                返回登录
+              </button>
+            </form>
+          )}
+        </div>
+
+        <p className="mt-6 text-center text-xs leading-relaxed text-slate-500">
+          账号仍使用邮箱作为唯一标识；改为密码登录后，日常打开 App 不再需要收验证码邮件。
+        </p>
       </div>
     </main>
+  );
+}
+
+function Field({
+  label,
+  type,
+  value,
+  onChange,
+  autoComplete,
+  placeholder,
+}: {
+  label: string;
+  type: 'email' | 'password';
+  value: string;
+  onChange: (value: string) => void;
+  autoComplete?: string;
+  placeholder?: string;
+}) {
+  return (
+    <div>
+      <label className="mb-1.5 block text-sm font-medium text-slate-300">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete={autoComplete}
+        required
+        placeholder={placeholder}
+        className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
+      />
+    </div>
   );
 }
