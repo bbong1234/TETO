@@ -1,10 +1,11 @@
 'use client';
 
-import { Suspense, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { isDevMode } from '@/lib/auth/get-current-user-id';
+import type { Session } from '@supabase/supabase-js';
 
 type Mode = 'login' | 'register' | 'forgot';
 type AuthMethod = 'password' | 'otp';
@@ -28,11 +29,22 @@ function authCallbackUrl(path: string): string {
   return `${window.location.origin}/auth/callback?next=${encodeURIComponent(path)}`;
 }
 
-function redirectAfterAuth() {
-  window.location.href = '/records';
+async function redirectAfterAuth() {
+  const supabase = createClient();
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      window.location.assign('/records');
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  window.location.assign('/records');
 }
 
-const AUTH_UI_VERSION = 'password-v3';
+const AUTH_UI_VERSION = 'password-v4';
 const BUILD_SHA = process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? 'local';
 
 export default function LoginPage() {
@@ -52,6 +64,26 @@ export default function LoginPage() {
 function LoginPageContent() {
   const searchParams = useSearchParams();
   const devMode = isDevMode();
+  const [configError, setConfigError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (devMode) return;
+
+    try {
+      createClient();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Supabase 配置错误';
+      setConfigError(message);
+      return;
+    }
+
+    const supabase = createClient();
+    void supabase.auth.getSession().then(({ data: { session } }: { data: { session: Session | null } }) => {
+      if (session) {
+        window.location.replace('/records');
+      }
+    });
+  }, [devMode]);
 
   const initialMode = useMemo<Mode>(() => {
     const mode = searchParams.get('mode');
@@ -109,7 +141,7 @@ function LoginPageContent() {
       return;
     }
 
-    redirectAfterAuth();
+    await redirectAfterAuth();
   };
 
   const handleSendOtp = async (e: React.FormEvent) => {
@@ -158,7 +190,7 @@ function LoginPageContent() {
       return;
     }
 
-    redirectAfterAuth();
+    await redirectAfterAuth();
   };
 
   const handleRegister = async (e: React.FormEvent) => {
@@ -191,7 +223,7 @@ function LoginPageContent() {
     }
 
     if (data.session) {
-      redirectAfterAuth();
+      await redirectAfterAuth();
       return;
     }
 
@@ -320,6 +352,11 @@ function LoginPageContent() {
         )}
 
         <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-xl backdrop-blur">
+          {configError && (
+            <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+              {configError}
+            </div>
+          )}
           {error && (
             <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
               {error}

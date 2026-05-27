@@ -2,10 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import AppSidebar from "@/components/layout/app-sidebar";
 import MobileBottomNav from "@/components/layout/mobile-bottom-nav";
 import MobileTopbar from "@/components/layout/mobile-topbar";
-import { getCurrentUser, isDevMode } from '@/lib/auth/get-current-user-id';
+import { isDevMode } from '@/lib/auth/get-current-user-id';
+import { createClient } from '@/lib/supabase/client';
 import { initClientErrorReporter } from '@/lib/observability/client-error-reporter';
 
 // 将 devMode 定义在组件外部，避免每次渲染都重新计算
@@ -33,27 +35,42 @@ export default function AppLayout({
   }, []);
 
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        if (devMode) {
-          // 开发模式下直接通过
-          setUser({ isDevMode: true });
-          setLoading(false);
-          return;
-        }
+    if (devMode) {
+      setUser({ isDevMode: true });
+      setLoading(false);
+      return;
+    }
 
-        const currentUser = await getCurrentUser();
-        setUser(currentUser);
+    const supabase = createClient();
+
+    const applySession = (session: Session | null) => {
+      if (!session?.user) {
+        router.replace('/login');
         setLoading(false);
-      } catch (error) {
-        console.error('认证检查失败:', error);
-        // 未登录，重定向到登录页
-        router.push('/login');
+        return;
       }
+
+      setUser({
+        id: session.user.id,
+        email: session.user.email,
+        isDevMode: false,
+      });
+      setLoading(false);
     };
 
-    checkAuth();
-  }, []); // 移除 router 依赖，避免不必要的重新渲染
+    const checkAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      applySession(session);
+    };
+
+    void checkAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
+      applySession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, [router]);
 
   // 保存侧边栏状态到 localStorage
   useEffect(() => {
