@@ -2,23 +2,25 @@
 
 import { useMemo } from 'react';
 import { BarChart2 } from 'lucide-react';
-import type { Record } from '@/types/teto';
+import type { Record as TetoRecord, Item } from '@/types/teto';
 import { computeTodayActivityStats, formatDurationMinutes } from '@/lib/activity/stats-utils';
 
 interface TodayActivityStatsProps {
-  records: Record[];
+  records: TetoRecord[];
   date: string;
-  currentActivity: Record | null;
+  currentActivity: TetoRecord | null;
+  items?: Item[];
 }
 
 export default function TodayActivityStats({
   records,
   date,
   currentActivity,
+  items = [],
 }: TodayActivityStatsProps) {
   const stats = useMemo(
-    () => computeTodayActivityStats(records, date, currentActivity),
-    [records, date, currentActivity]
+    () => computeTodayActivityStats(records, date, currentActivity, items),
+    [records, date, currentActivity, items]
   );
 
   if (stats.recorded_minutes === 0 && stats.current_elapsed_minutes === 0) {
@@ -60,7 +62,7 @@ export default function TodayActivityStats({
         {stats.by_category.length > 0 && (
           <div>
             <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
-              按分类
+              按大类
             </p>
             <div className="space-y-1">
               {stats.by_category.map((row) => (
@@ -79,7 +81,7 @@ export default function TodayActivityStats({
         {stats.by_item.length > 0 && (
           <div>
             <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
-              按项目
+              按事项
             </p>
             <div className="space-y-1">
               {stats.by_item.map((row) => (

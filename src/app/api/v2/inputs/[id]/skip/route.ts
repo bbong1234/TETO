@@ -9,7 +9,18 @@ import { persistTraceSummary } from '@/lib/observability/trace';
 import { getInputById, listInputUnits, updateInput, updateInputUnit } from '@/lib/db/inputs';
 import type { SkipInputPayload } from '@/types/inputs';
 import type { CreateRecordPayload } from '@/types/teto';
+import type { ClarificationIssue } from '@/types/semantic';
+import { sanitizeProposedForRecord } from '@/lib/ingest/admission';
+import {
+  applyInteractionToProposed,
+  ensureNextQuestion,
+  evaluateAdmission,
+  isCompoundGated,
+  mergeProposedFields,
+  resolveIssuesAfterInteraction,
+} from '@/lib/ingest/clarify-flow';
 import { resolveRecordContentSummary, resolveTemporalFields } from '@/lib/utils/record-unit-mapper';
+import type { Input } from '@/types/inputs';
 
 function normalizeType(value: unknown): CreateRecordPayload['type'] {
   if (value === '发生' || value === '计划' || value === '想法' || value === '总结') return value;
@@ -21,6 +32,11 @@ function toRecordInputSource(
 ): CreateRecordPayload['input_source'] {
   if (source === 'quick' || source === 'edit' || source === 'import') return source;
   return 'manual';
+}
+
+function readClarificationIssues(input: Input): ClarificationIssue[] {
+  const raw = (input.metadata as Record<string, unknown> | undefined)?.clarification_issues;
+  return Array.isArray(raw) ? (raw as ClarificationIssue[]) : [];
 }
 
 export async function POST(
@@ -50,20 +66,92 @@ export async function POST(
     }
 
     const decision = (target.classifier_decision ?? {}) as Record<string, unknown>;
-    const proposedFields = { ...((decision.proposed_fields ?? {}) as Record<string, unknown>) };
-    const seedFields = { ...((decision.seed_fields ?? {}) as Record<string, unknown>) };
-    delete proposedFields[body.field];
+    const mergedProposed = applyInteractionToProposed(
+      mergeProposedFields(decision, {}),
+      body.field,
+      'skip'
+    );
 
     const answered = [
       ...(target.answered_questions ?? []),
       { field: body.field, answer: null, at: new Date().toISOString(), via: 'skip' as const },
     ];
 
+    const issueList = resolveIssuesAfterInteraction(
+      readClarificationIssues(input),
+      target.unit_index,
+      body.field,
+      'skip'
+    );
+    const compoundGated = isCompoundGated(units);
+
+    await updateInput(userId, input.id, {
+      metadata: {
+        ...(input.metadata as Record<string, unknown>),
+        clarification_issues: issueList,
+      },
+    });
+
+    const admission = evaluateAdmission({
+      unitIndex: target.unit_index,
+      issues: issueList,
+      proposedFields: mergedProposed,
+      parsedSemantic: target.parsed_semantic,
+      compoundGated,
+    });
+
+    if (!admission.allowed) {
+      const nextQ = ensureNextQuestion(
+        issueList,
+        target.unit_index,
+        compoundGated,
+        admission
+      );
+      if (!nextQ) {
+        return apiError(
+          ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED,
+          admission.reason ?? '跳过本项后仍无法入库，请补充信息或取消录入',
+          ctx.traceId,
+          400
+        );
+      }
+      const updatedUnit = await updateInputUnit(userId, target.id, {
+        answered_questions: answered,
+        status: 'pending_clarify',
+        pending_question: nextQ,
+        clarify_round: (target.clarify_round ?? 0) + 1,
+        classifier_decision: { ...decision, proposed_fields: mergedProposed },
+      });
+      await updateInput(userId, input.id, { status: 'clarifying' });
+
+      await persistTraceSummary({
+        supabase,
+        userId,
+        traceId: ctx.traceId,
+        operation: 'inputs_skip',
+        status: 'partial',
+        inputSummary: input.raw_input.slice(0, 200),
+        outputSummary: `skip_continue_clarify field=${body.field}`,
+      });
+
+      return apiSuccess(
+        {
+          input_status: 'clarifying',
+          unit: updatedUnit,
+          next: { unit_id: target.id, question: nextQ },
+          promoted_record_id: null,
+        },
+        ctx.traceId
+      );
+    }
+
     const date = (input.metadata?.date as string | undefined) ?? new Date().toISOString().slice(0, 10);
-    const normalizedType = normalizeType(proposedFields.type);
-    const temporal = resolveTemporalFields(date, normalizedType, proposedFields);
+    const recordFields = sanitizeProposedForRecord(mergedProposed);
+    const normalizedType = normalizeType(recordFields.type);
+    const temporal = resolveTemporalFields(date, normalizedType, recordFields);
+    const seedFields = { ...((decision.seed_fields ?? {}) as Record<string, unknown>) };
     const payload: CreateRecordPayload = {
-      content: resolveRecordContentSummary(proposedFields, target.parsed_semantic, [
+      content: resolveRecordContentSummary(recordFields, target.parsed_semantic, [
         decision.content_summary as string | undefined,
         target.unit_text,
         input.raw_input,
@@ -75,18 +163,18 @@ export async function POST(
       parent_input_id: target.unit_index === 0 ? null : input.id,
       input_unit_id: target.id,
       input_source: toRecordInputSource(input.source),
-      review_status: 'unchecked',
-      confidence_level: 'low',
-      record_quality_tag: 'partial',
-      ...(proposedFields as Partial<CreateRecordPayload>),
+      review_status: 'confirmed',
+      confidence_level: 'medium',
+      record_quality_tag: 'clarified',
+      ...(recordFields as Partial<CreateRecordPayload>),
       ...(seedFields as Partial<CreateRecordPayload>),
-      ...(temporal.anchorDate && !proposedFields.time_anchor_date
+      ...(temporal.anchorDate && !recordFields.time_anchor_date
         ? { time_anchor_date: temporal.anchorDate }
         : {}),
-      ...(temporal.occurredAt && !proposedFields.occurred_at
+      ...(temporal.occurredAt && !recordFields.occurred_at
         ? { occurred_at: temporal.occurredAt }
         : {}),
-      ...(temporal.occurredAtEnd && !proposedFields.occurred_at_end
+      ...(temporal.occurredAtEnd && !recordFields.occurred_at_end
         ? { occurred_at_end: temporal.occurredAtEnd }
         : {}),
     };
@@ -103,19 +191,19 @@ export async function POST(
 
     const updatedUnit = await updateInputUnit(userId, target.id, {
       answered_questions: answered,
-      status: 'partial',
+      status: 'promoted',
       promoted_record_id: result.data.id,
       pending_question: null,
       clarify_round: (target.clarify_round ?? 0) + 1,
-      classifier_decision: { ...decision, proposed_fields: proposedFields },
+      classifier_decision: { ...decision, proposed_fields: mergedProposed },
     });
 
     const latestUnits = await listInputUnits(userId, id);
-    const promotedCount = latestUnits.filter((u) => u.promoted_record_id).length;
+    const promotedCount = latestUnits.filter((u) => u.status === 'promoted').length;
     const hasPending = latestUnits.some((u) => u.status === 'pending_clarify');
     await updateInput(userId, input.id, {
       promoted_record_count: promotedCount,
-      status: hasPending ? 'clarifying' : 'partial',
+      status: hasPending ? 'clarifying' : 'completed',
     });
 
     await persistTraceSummary({
@@ -123,9 +211,9 @@ export async function POST(
       userId,
       traceId: ctx.traceId,
       operation: 'inputs_skip',
-      status: 'partial',
+      status: 'ok',
       inputSummary: input.raw_input.slice(0, 200),
-      outputSummary: `partial_record_id=${result.data.id}`,
+      outputSummary: `promoted_record_id=${result.data.id}`,
     });
 
     const nextUnit = latestUnits.find((u) => u.status === 'pending_clarify' && u.pending_question) ?? null;
@@ -135,7 +223,7 @@ export async function POST(
 
     return apiSuccess(
       {
-        input_status: hasPending ? 'clarifying' : 'partial',
+        input_status: hasPending ? 'clarifying' : 'completed',
         unit: updatedUnit,
         next,
         promoted_record_id: result.data.id,
@@ -146,4 +234,3 @@ export async function POST(
     return handleApiError(error);
   }
 }
-

@@ -120,6 +120,7 @@ export type ClarificationType =
   | 'low_confidence'
   | 'item_missing'
   | 'item_ambiguous'
+  | 'action_vague'
   | 'parse_uncertain'
   | 'compound_uncertain'
   | 'boundary_blur';

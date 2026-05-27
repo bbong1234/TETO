@@ -11,8 +11,6 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 
 interface SwitchActivityBody {
   content?: string;
-  category?: string;
-  subcategory?: string;
   item_id?: string | null;
   sub_item_id?: string | null;
   tag_ids?: string[];
@@ -45,8 +43,6 @@ export async function POST(request: NextRequest) {
     const result = await switchActivity({
       userId,
       content: body.content,
-      category: body.category,
-      subcategory: body.subcategory,
       item_id: body.item_id,
       sub_item_id: body.sub_item_id,
       tag_ids: body.tag_ids,

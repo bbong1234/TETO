@@ -8,6 +8,7 @@ import DayTimelinePanel from '@/components/timeline/DayTimelinePanel';
 interface TodayActivityTimelineProps {
   records: Record[];
   date: string;
+  items?: Item[];
   onGapClick?: (startIso: string, endIso: string) => void;
   onRecordClick?: (record: Record) => void;
 }
@@ -15,12 +16,13 @@ interface TodayActivityTimelineProps {
 export default function TodayActivityTimeline({
   records,
   date,
+  items = [],
   onGapClick,
   onRecordClick,
 }: TodayActivityTimelineProps) {
   const timeline = useMemo(
-    () => buildDayTimelineFromRecords(records, date, '今日时间线'),
-    [records, date]
+    () => buildDayTimelineFromRecords(records, date, '今日时间线', items),
+    [records, date, items]
   );
 
   const handleGapClick = onGapClick

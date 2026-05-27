@@ -15,8 +15,6 @@ type SupabaseClient = Awaited<ReturnType<typeof import('@/lib/supabase/server')[
 export interface StartActivityParams {
   userId: string;
   content?: string;
-  category?: string;
-  subcategory?: string;
   item_id?: string | null;
   sub_item_id?: string | null;
   tag_ids?: string[];
@@ -42,18 +40,8 @@ function makeIssue(code: string, message: string): InvariantIssue {
   return { code, severity: 'blocking', message, entity: 'record' };
 }
 
-function resolveRecordContent(params: {
-  content?: string;
-  category?: string;
-  subcategory?: string;
-}): string {
-  const action = params.content?.trim();
-  if (action) return action;
-  const sub = params.subcategory?.trim();
-  if (sub) return sub;
-  const cat = params.category?.trim();
-  if (cat) return cat;
-  return '';
+function resolveRecordContent(params: { content?: string }): string {
+  return params.content?.trim() ?? '';
 }
 
 /**
@@ -104,15 +92,13 @@ export async function startActivity(
   params: StartActivityParams
 ): Promise<DomainResult<{ record: TetoRecord; stopped: TetoRecord[] }>> {
   const { userId, item_id, sub_item_id, tag_ids, supabase, traceId } = params;
-  const category = params.category?.trim() || undefined;
-  const subcategory = params.subcategory?.trim() || undefined;
   const recordContent = resolveRecordContent(params);
 
-  if (!recordContent && !category) {
+  if (!recordContent && !item_id) {
     return {
       ok: false,
       data: undefined,
-      errors: [makeIssue('ACTIVITY_CONTENT_REQUIRED', '请选择分类或填写事项描述')],
+      errors: [makeIssue('ACTIVITY_CONTENT_REQUIRED', '请选择事项或填写描述')],
       warnings: [],
     };
   }
@@ -125,15 +111,13 @@ export async function startActivity(
   const now = new Date().toISOString();
   const payload: CreateRecordPayload = {
     date: todayDateStr(),
-    content: recordContent || category!,
+    content: recordContent || '进行中',
     type: '发生',
     lifecycle_status: 'active',
     occurred_at: now,
     occurred_at_end: null,
     input_source: 'manual',
     review_status: 'confirmed',
-    category,
-    subcategory,
     item_id: item_id ?? undefined,
     sub_item_id: sub_item_id ?? undefined,
     tag_ids,
@@ -159,8 +143,7 @@ export async function switchActivity(
   params: SwitchActivityParams
 ): Promise<DomainResult<{ record: TetoRecord | null; stopped: TetoRecord[] }>> {
   const hasNew =
-    !!params.category?.trim() ||
-    !!params.subcategory?.trim() ||
+    !!params.item_id ||
     !!params.content?.trim();
 
   if (!hasNew) {

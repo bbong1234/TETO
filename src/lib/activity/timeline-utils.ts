@@ -1,4 +1,5 @@
-import type { Record, DayTimeline, TimelineEntry } from '@/types/teto';
+import type { Record, DayTimeline, TimelineEntry, Item } from '@/types/teto';
+import { buildRecordDisplayLabel } from './item-tree';
 
 function formatTimeHHMM(iso: string | null | undefined): string | undefined {
   if (!iso) return undefined;
@@ -9,11 +10,9 @@ function formatTimeHHMM(iso: string | null | undefined): string | undefined {
   return `${h}:${m}`;
 }
 
-function buildEntryText(record: Record): string {
-  const parts = [record.category, record.subcategory, record.item?.title, record.content].filter(
-    Boolean
-  );
-  if (parts.length > 0) return parts.join(' / ');
+function buildEntryText(record: Record, items?: Item[]): string {
+  const label = buildRecordDisplayLabel(record, items);
+  if (label) return label;
   const semantic = [record.action_text, record.event_text].filter(Boolean);
   if (semantic.length > 0) return semantic.join('、');
   return record.content;
@@ -33,7 +32,8 @@ function calcMinutesBetween(startIso: string, endIso: string): number {
 export function buildDayTimelineFromRecords(
   records: Record[],
   date: string,
-  label = '今天'
+  label = '今天',
+  items: Item[] = []
 ): DayTimeline {
   const timed = records
     .filter(isTimedActivityRecord)
@@ -74,12 +74,11 @@ export function buildDayTimelineFromRecords(
       id: record.id,
       start_time: formatTimeHHMM(startIso),
       end_time: isCurrent ? undefined : formatTimeHHMM(endIso),
-      text: buildEntryText(record),
+      text: buildEntryText(record, items),
       is_current: isCurrent,
+      occurred_at: isCurrent ? startIso : undefined,
       duration_minutes: duration,
       item_title: record.item?.title,
-      category: record.category ?? undefined,
-      subcategory: record.subcategory ?? undefined,
     });
 
     if (record.occurred_at_end) {

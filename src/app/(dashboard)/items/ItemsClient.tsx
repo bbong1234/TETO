@@ -21,6 +21,15 @@ import type { Item, ItemStatus, CreateItemPayload, ItemFolder as ItemFolderType 
 import { useToast } from '@/components/ui/use-toast';
 import ToastContainer from '@/components/ui/use-toast';
 import ItemFolderComponent from './components/ItemFolder';
+import { formatDurationMinutes } from '@/lib/activity/stats-utils';
+import {
+  getCategoryItems,
+  getChildItems,
+  getOrphanItems,
+  isCategoryItem,
+  seedTopLevelCategories,
+} from '@/lib/activity/item-tree';
+import ParentCategorySelect from './components/ParentCategorySelect';
 
 // ============================================================
 // 常量 & 类型
@@ -118,6 +127,7 @@ export default function ItemsClient() {
   const [showCreate, setShowCreate] = useState(false);
   const [showCreateFolder, setShowCreateFolder] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+  const [newParentCategoryId, setNewParentCategoryId] = useState('');
   const [newFolderName, setNewFolderName] = useState('');
   const [creating, setCreating] = useState(false);
   const [editingFolder, setEditingFolder] = useState<ItemFolderType | null>(null);
@@ -143,13 +153,28 @@ export default function ItemsClient() {
       const res = await fetch('/api/v2/items');
       const data = await res.json();
       if (data.data) {
-        setItems(data.data.map((item: any) => ({
+        let list = data.data.map((item: any) => ({
           ...item,
           phase_count: item.phase_count ?? 0,
           record_count: item.record_count ?? 0,
           last_active_at: item.last_active_at ?? item.updated_at,
           active_phase_title: item.active_phase_title ?? null,
-        })));
+        }));
+        if (getCategoryItems(list).length === 0) {
+          await seedTopLevelCategories();
+          const retry = await fetch('/api/v2/items');
+          const retryData = await retry.json();
+          if (retryData.data) {
+            list = retryData.data.map((item: any) => ({
+              ...item,
+              phase_count: item.phase_count ?? 0,
+              record_count: item.record_count ?? 0,
+              last_active_at: item.last_active_at ?? item.updated_at,
+              active_phase_title: item.active_phase_title ?? null,
+            }));
+          }
+        }
+        setItems(list);
       }
     } catch (err) {
       console.error('加载事项失败:', err);
@@ -182,7 +207,48 @@ export default function ItemsClient() {
     [filteredItems]
   );
   const pinnedItems = useMemo(() => boardItems.filter(i => i.is_pinned), [boardItems]);
-  const activeUnpinned = useMemo(() => boardItems.filter(i => !i.is_pinned), [boardItems]);
+
+  const categoryItems = useMemo(() => getCategoryItems(items), [items]);
+
+  /** 按大类分组：不含置顶、不含文件夹内 */
+  const categoryGroups = useMemo(() => {
+    return getCategoryItems(items).map((cat) => {
+      const children = getChildItems(items, cat.id).filter(
+        (i) =>
+          !i.is_pinned &&
+          !i.folder_id &&
+          !ARCHIVED_STATUSES.includes(i.status) &&
+          (!searchQuery || i.title.toLowerCase().includes(searchQuery.toLowerCase()))
+      );
+      const totalMinutes = children.reduce((s, c) => s + (c.total_duration_minutes ?? 0), 0);
+      return { category: cat, children, totalMinutes };
+    }).filter((g) => g.children.length > 0 || !searchQuery);
+  }, [items, searchQuery]);
+
+  const orphanBoardItems = useMemo(
+    () =>
+      getOrphanItems(items).filter(
+        (i) =>
+          !i.is_pinned &&
+          !i.folder_id &&
+          !ARCHIVED_STATUSES.includes(i.status) &&
+          (!searchQuery || i.title.toLowerCase().includes(searchQuery.toLowerCase()))
+      ),
+    [items, searchQuery]
+  );
+
+  /** Bento 网格：仅置顶 + 文件夹（子事项在大类分组区展示） */
+  const activeUnpinned = useMemo(
+    () =>
+      boardItems.filter(
+        (i) =>
+          !i.is_pinned &&
+          !isCategoryItem(i, items) &&
+          !i.parent_item_id &&
+          getOrphanItems(items).every((o) => o.id !== i.id)
+      ),
+    [boardItems, items]
+  );
   const archivedItems = useMemo(() => filteredItems.filter(i => ARCHIVED_STATUSES.includes(i.status) && !i.folder_id), [filteredItems]);
   const getFolderItems = (folderId: string) => filteredItems.filter(i => i.folder_id === folderId);
 
@@ -233,9 +299,17 @@ export default function ItemsClient() {
     if (!newTitle.trim()) return;
     setCreating(true);
     try {
-      const payload: CreateItemPayload = { title: newTitle.trim() };
+      const payload: CreateItemPayload = {
+        title: newTitle.trim(),
+        ...(newParentCategoryId ? { parent_item_id: newParentCategoryId } : {}),
+      };
       const res = await fetch('/api/v2/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      if (res.ok) { setNewTitle(''); setShowCreate(false); fetchItems(); }
+      if (res.ok) {
+        setNewTitle('');
+        setNewParentCategoryId('');
+        setShowCreate(false);
+        fetchItems();
+      }
       else if (res.status === 409) {
         const { conflict } = await res.json();
         if (conflict?.type === 'duplicate_name') {
@@ -332,6 +406,23 @@ export default function ItemsClient() {
       if (res.ok) { setEditingFolder(null); setEditFolderName(''); fetchFolders(); }
     } catch { showError('重命名失败'); }
   };
+  const assignParentCategory = async (itemId: string, parentItemId: string | null) => {
+    try {
+      const res = await fetch(`/api/v2/items/${itemId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_item_id: parentItemId }),
+      });
+      if (res.ok) fetchItems();
+      else {
+        const e = await res.json();
+        showError(e.error?.message ?? e.error ?? '移动失败');
+      }
+    } catch {
+      showError('移动失败，请重试');
+    }
+  };
+
   const moveItemToFolder = async (itemId: string, folderId: string | null) => {
     try {
       const res = await fetch(`/api/v2/items/${itemId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_id: folderId }) });
@@ -429,9 +520,17 @@ export default function ItemsClient() {
           <div className="mb-5 glass rounded-2xl p-4 shadow-soft-lg inline-block min-w-[320px]">
             <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
               placeholder="新事项名称…" className="w-full bg-white/50 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/50 placeholder:text-slate-300 border-0" autoFocus />
+            <div className="mt-2">
+              <label className="mb-1 block text-[10px] font-medium text-slate-400">所属大类</label>
+              <ParentCategorySelect
+                items={items}
+                value={newParentCategoryId}
+                onChange={setNewParentCategoryId}
+              />
+            </div>
             <div className="mt-3 flex gap-2">
               <button onClick={handleCreate} disabled={creating || !newTitle.trim()} className="rounded-xl bg-indigo-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:opacity-50 transition-colors">{creating ? '创建中…' : '创建'}</button>
-              <button onClick={() => { setShowCreate(false); setNewTitle(''); }} className="text-xs text-slate-400 hover:text-slate-600 px-2">取消</button>
+              <button onClick={() => { setShowCreate(false); setNewTitle(''); setNewParentCategoryId(''); }} className="text-xs text-slate-400 hover:text-slate-600 px-2">取消</button>
             </div>
           </div>
         )}
@@ -446,7 +545,75 @@ export default function ItemsClient() {
           </div>
         )}
 
-        {/* ===== Bento Grid 桌面 ===== */}
+        {/* ===== 按大类分组 ===== */}
+        {!loading && (categoryGroups.some((g) => g.children.length > 0) || orphanBoardItems.length > 0) && (
+          <div className="space-y-5 mb-8">
+            {categoryGroups.map(({ category, children, totalMinutes }) =>
+              children.length === 0 ? null : (
+                <section key={category.id} className="glass rounded-2xl p-4 md:p-5 shadow-soft">
+                  <div className="flex items-center justify-between mb-4">
+                    <Link
+                      href={`/items/${category.id}`}
+                      className="flex items-center gap-2 group"
+                    >
+                      <h2 className="text-sm font-bold text-slate-800 group-hover:text-indigo-600 transition-colors">
+                        {category.title}
+                      </h2>
+                      {totalMinutes > 0 && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-medium text-teal-600">
+                          <Clock className="h-3 w-3" />
+                          {formatDurationMinutes(totalMinutes)}
+                        </span>
+                      )}
+                    </Link>
+                    <span className="text-[10px] text-slate-400">{children.length} 个事项</span>
+                  </div>
+                  <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4 auto-rows-[120px]">
+                    {children.map((child) => (
+                      <div key={child.id} className={SIZE_CLASSES['1x1']}>
+                        <WidgetCard
+                          item={child}
+                          size="1x1"
+                          folders={folders}
+                          onPin={togglePin}
+                          onCycleSize={handleCycleSize}
+                          onMoveToFolder={moveItemToFolder}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )
+            )}
+            {orphanBoardItems.length > 0 && (
+              <section className="glass rounded-2xl p-4 md:p-5 shadow-soft border border-dashed border-slate-200/80">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-bold text-slate-600">未归类</h2>
+                  <span className="text-[10px] text-slate-400">{orphanBoardItems.length} 个事项</span>
+                </div>
+                <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4 auto-rows-[120px]">
+                  {orphanBoardItems.map((child) => (
+                    <div key={child.id} className={SIZE_CLASSES['1x1']}>
+                      <WidgetCard
+                        item={child}
+                        size="1x1"
+                        folders={folders}
+                        categoryItems={categoryItems}
+                        onPin={togglePin}
+                        onCycleSize={handleCycleSize}
+                        onMoveToFolder={moveItemToFolder}
+                        onAssignParent={assignParentCategory}
+                        showCategoryMenu
+                      />
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+          </div>
+        )}
+
+        {/* ===== Bento Grid 桌面（置顶 + 分组文件夹） ===== */}
         {loading ? (
           <div className="flex items-center justify-center py-24"><Loader2 className="h-7 w-7 animate-spin text-indigo-400" /></div>
         ) : orderIds.length > 0 ? (
@@ -558,14 +725,18 @@ export default function ItemsClient() {
 // WidgetCard — Bento 事项卡片（三档内容）
 // ============================================================
 function WidgetCard({
-  item, size, folders, onPin, onCycleSize, onMoveToFolder,
+  item, size, folders, categoryItems = [], onPin, onCycleSize, onMoveToFolder,
+  onAssignParent, showCategoryMenu = false,
 }: {
   item: ItemWithStats;
   size: WidgetSize;
   folders: ItemFolderType[];
+  categoryItems?: Item[];
   onPin: (id: string, pinned: boolean) => void;
   onCycleSize: (id: string) => void;
   onMoveToFolder: (itemId: string, folderId: string | null) => void;
+  onAssignParent?: (itemId: string, parentId: string | null) => void;
+  showCategoryMenu?: boolean;
 }) {
   const IconComp = item.icon ? null : pickIcon(item.title);
 
@@ -590,7 +761,7 @@ function WidgetCard({
         </div>
         <span className="text-[11px] font-semibold text-slate-700 text-center leading-tight line-clamp-2 w-full">{item.title}</span>
         <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full ${STATUS_COLORS[item.status]}`}>{item.status}</span>
-        <HoverActions item={item} folders={folders} onPin={onPin} onCycleSize={onCycleSize} onMoveToFolder={onMoveToFolder} />
+        <HoverActions item={item} folders={folders} categoryItems={categoryItems} onPin={onPin} onCycleSize={onCycleSize} onMoveToFolder={onMoveToFolder} onAssignParent={onAssignParent} showCategoryMenu={showCategoryMenu} />
       </Link>
     );
   }
@@ -618,11 +789,17 @@ function WidgetCard({
             <div className="flex items-center gap-3 text-[10px] text-slate-400">
               <span className="flex items-center gap-0.5"><Layers className="h-2.5 w-2.5" />{item.phase_count || 0} 阶段</span>
               <span className="flex items-center gap-0.5"><FileText className="h-2.5 w-2.5" />{item.record_count || 0} 记录</span>
+              {(item.total_duration_minutes ?? 0) > 0 && (
+                <span className="flex items-center gap-0.5 text-teal-600">
+                  <Clock className="h-2.5 w-2.5" />
+                  {formatDurationMinutes(item.total_duration_minutes!)}
+                </span>
+              )}
             </div>
           )}
         </div>
         {item.last_active_at && <span className="text-[9px] text-slate-300 shrink-0">{formatRelativeTime(item.last_active_at)}</span>}
-        <HoverActions item={item} folders={folders} onPin={onPin} onCycleSize={onCycleSize} onMoveToFolder={onMoveToFolder} />
+        <HoverActions item={item} folders={folders} categoryItems={categoryItems} onPin={onPin} onCycleSize={onCycleSize} onMoveToFolder={onMoveToFolder} onAssignParent={onAssignParent} showCategoryMenu={showCategoryMenu} />
       </Link>
     );
   }
@@ -662,10 +839,15 @@ function WidgetCard({
         <div className="flex items-center gap-3 text-[10px] text-slate-400">
           <span className="flex items-center gap-0.5"><Layers className="h-2.5 w-2.5" />{item.phase_count || 0}</span>
           <span className="flex items-center gap-0.5"><FileText className="h-2.5 w-2.5" />{item.record_count || 0}</span>
+          {(item.total_duration_minutes ?? 0) > 0 && (
+            <span className="flex items-center gap-0.5 text-teal-600">
+              {formatDurationMinutes(item.total_duration_minutes!)}
+            </span>
+          )}
         </div>
         {item.last_active_at && <span className="flex items-center gap-0.5 text-[10px] text-slate-300"><Clock className="h-2.5 w-2.5" />{formatRelativeTime(item.last_active_at)}</span>}
       </div>
-      <HoverActions item={item} folders={folders} onPin={onPin} onCycleSize={onCycleSize} onMoveToFolder={onMoveToFolder} />
+      <HoverActions item={item} folders={folders} categoryItems={categoryItems} onPin={onPin} onCycleSize={onCycleSize} onMoveToFolder={onMoveToFolder} onAssignParent={onAssignParent} showCategoryMenu={showCategoryMenu} />
     </Link>
   );
 }
@@ -674,13 +856,16 @@ function WidgetCard({
 // HoverActions — 悬浮操作按钮
 // ============================================================
 function HoverActions({
-  item, folders, onPin, onCycleSize, onMoveToFolder,
+  item, folders, categoryItems = [], onPin, onCycleSize, onMoveToFolder, onAssignParent, showCategoryMenu = false,
 }: {
   item: ItemWithStats;
   folders: ItemFolderType[];
+  categoryItems?: Item[];
   onPin: (id: string, pinned: boolean) => void;
   onCycleSize: (id: string) => void;
   onMoveToFolder: (itemId: string, folderId: string | null) => void;
+  onAssignParent?: (itemId: string, parentId: string | null) => void;
+  showCategoryMenu?: boolean;
 }) {
   return (
     <>
@@ -693,12 +878,51 @@ function HoverActions({
         title="切换尺寸">
         <Maximize2 className="h-3 w-3 text-slate-400" />
       </button>
+      {showCategoryMenu && categoryItems.length > 0 && onAssignParent && (
+        <div className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition-all z-10">
+          <CategoryMenu
+            categories={categoryItems}
+            onSelect={(catId) => onAssignParent(item.id, catId)}
+          />
+        </div>
+      )}
       {folders.length > 0 && (
         <div className="absolute bottom-2 left-2 opacity-0 group-hover:opacity-100 transition-all z-10">
           <FolderMenu folders={folders} onSelect={(fId) => onMoveToFolder(item.id, fId)} />
         </div>
       )}
     </>
+  );
+}
+
+// ============================================================
+// CategoryMenu — 移入大类下拉
+// ============================================================
+function CategoryMenu({ categories, onSelect }: { categories: Item[]; onSelect: (categoryId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(!open); }}
+        className="p-1.5 rounded-xl bg-white/60 backdrop-blur-sm shadow-sm hover:scale-110 transition-all"
+        title="移入大类"
+      >
+        <Briefcase className="h-3 w-3 text-indigo-500" />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 glass-heavy rounded-xl shadow-soft-lg p-1.5 min-w-[100px] max-h-40 overflow-y-auto z-50">
+          {categories.map((cat) => (
+            <button
+              key={cat.id}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onSelect(cat.id); setOpen(false); }}
+              className="block w-full text-left px-2.5 py-1.5 text-[11px] text-slate-700 hover:bg-indigo-50 rounded-lg transition-colors truncate"
+            >
+              {cat.title}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

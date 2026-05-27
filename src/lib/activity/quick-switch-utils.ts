@@ -1,23 +1,27 @@
-import type { Record } from '@/types/teto';
+import type { Record as TetoRecord, Item } from '@/types/teto';
+import { buildRecordDisplayLabel } from '@/lib/activity/item-tree';
 
 export interface QuickSwitchEntry {
   key: string;
-  category?: string;
-  subcategory?: string;
   item_id?: string | null;
+  sub_item_id?: string | null;
   content?: string;
   label: string;
 }
 
 /**
- * 从记录列表提取最近使用的分类/项目组合（去重，最多 limit 条）
+ * 从记录列表提取最近使用的 item 组合（去重，最多 limit 条）
  */
-export function buildRecentSwitchEntries(records: Record[], limit = 10): QuickSwitchEntry[] {
+export function buildRecentSwitchEntries(
+  records: TetoRecord[],
+  items: Item[] = [],
+  limit = 10
+): QuickSwitchEntry[] {
   const seen = new Set<string>();
   const entries: QuickSwitchEntry[] = [];
 
   const sorted = [...records]
-    .filter((r) => r.type === '发生' && (r.category || r.item_id || r.content))
+    .filter((r) => r.type === '发生' && (r.item_id || r.content))
     .sort((a, b) => {
       const ta = a.occurred_at || a.created_at;
       const tb = b.occurred_at || b.created_at;
@@ -25,18 +29,16 @@ export function buildRecentSwitchEntries(records: Record[], limit = 10): QuickSw
     });
 
   for (const r of sorted) {
-    const key = `${r.category ?? ''}|${r.subcategory ?? ''}|${r.item_id ?? ''}`;
+    const key = `${r.item_id ?? ''}|${r.sub_item_id ?? ''}|${r.content ?? ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const parts = [r.category, r.subcategory, r.item?.title, r.content].filter(Boolean);
     entries.push({
       key,
-      category: r.category ?? undefined,
-      subcategory: r.subcategory ?? undefined,
       item_id: r.item_id,
+      sub_item_id: r.sub_item_id,
       content: r.content,
-      label: parts.join(' / ') || r.content,
+      label: buildRecordDisplayLabel(r, items) || r.content,
     });
     if (entries.length >= limit) break;
   }

@@ -2,9 +2,9 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, CheckSquare, X, Trash2, CalendarClock, CheckCircle2, ChevronDown, ChevronUp, PenLine } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, CheckSquare, Trash2, CalendarClock, CheckCircle2, Funnel } from 'lucide-react';
 import type { Record, Tag, Item, RecordType } from '@/types/teto';
-import QuickInput, { type IngestClarifyState } from './components/QuickInput';
+import { type IngestClarifyState } from './components/QuickInput';
 import FilterBar from './components/FilterBar';
 import RecordList from './components/RecordList';
 import DayRecordGroup from './components/DayRecordGroup';
@@ -231,11 +231,13 @@ export default function RecordsClient() {
     nonce: number;
     snapshot: IngestClarifyState;
   } | null>(null);
-  // 1.7：QuickInput 折叠状态 & 补记面板
-  const [quickInputOpen, setQuickInputOpen] = useState(false);
+  // 1.7：补记面板
   const [backfillPanel, setBackfillPanel] = useState<{ startIso?: string; endIso?: string } | null>(null);
   const [currentActivity, setCurrentActivity] = useState<Record | null>(null);
   const [recentRecordsForSwitch, setRecentRecordsForSwitch] = useState<Record[]>([]);
+  const [showFilterBar, setShowFilterBar] = useState(false);
+
+  const hasActiveFilters = Boolean(filterType || filterItemId);
 
   useEffect(() => {
     setPendingInputs(loadPendingDraftsFromStorage());
@@ -482,6 +484,16 @@ export default function RecordsClient() {
   }, [multiDayDates]);
 
   // 加载 tags 和 items
+  const reloadItems = useCallback(async () => {
+    try {
+      const res = await fetch('/api/v2/items');
+      const data = await res.json();
+      if (data.data) setItems(data.data);
+    } catch (err) {
+      console.error('加载事项失败:', err);
+    }
+  }, []);
+
   useEffect(() => {
     async function loadMeta() {
       try {
@@ -1072,96 +1084,41 @@ export default function RecordsClient() {
               <LayoutGrid className="h-3.5 w-3.5" />
               {isMultiDay ? '单日' : '多天'}
             </button>
+            <button
+              type="button"
+              onClick={() => setShowFilterBar((v) => !v)}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                showFilterBar || hasActiveFilters
+                  ? 'bg-blue-500 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+              aria-expanded={showFilterBar}
+              aria-label="筛选"
+            >
+              <Funnel className="h-3.5 w-3.5" />
+              筛选
+            </button>
             <span className="rounded-full bg-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600">
               {totalRecords} 条
             </span>
           </div>
         </div>
 
-        {/* 单日模式：快速输入 + 筛选 */}
-        {!isMultiDay && (
+        {/* 单日模式：筛选 */}
+        {!isMultiDay && showFilterBar && (
           <div className="mx-auto max-w-2xl mt-3">
-            {/* 今日到期计划提醒 */}
-            {dueTodayPlans.length > 0 && isOnToday && (
-              <div className="mb-3 rounded-xl bg-blue-50 border border-blue-200 px-3 py-2.5">
-                <div className="flex items-center gap-2 mb-1.5">
-                  <CalendarClock className="h-4 w-4 text-blue-500 shrink-0" />
-                  <span className="text-xs font-semibold text-blue-700">
-                    今日到期计划（{dueTodayPlans.length}）
-                  </span>
-                </div>
-                <div className="space-y-1">
-                  {dueTodayPlans.map(plan => (
-                    <div
-                      key={plan.id}
-                      className="flex items-center justify-between rounded-lg bg-white border border-blue-100 px-2.5 py-1.5 cursor-pointer hover:bg-blue-50 transition-colors"
-                      onClick={() => setEditingRecord(plan)}
-                    >
-                      <span className="text-xs text-slate-700 truncate">{plan.content}</span>
-                      <div className="flex items-center gap-1 shrink-0 ml-2">
-                        {plan.item && (
-                          <span className="text-[10px] text-slate-400">{plan.item.title}</span>
-                        )}
-                        <CheckCircle2
-                          className="h-3.5 w-3.5 text-green-500 hover:text-green-700 transition-colors"
-                          onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleComplete(plan); }}
-                          aria-label="完成计划"
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {/* 1.7：QuickInput 折叠为"补记/自然语言录入"入口 */}
-            <div className="mb-2">
-              <button
-                type="button"
-                onClick={() => setQuickInputOpen((v) => !v)}
-                className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-500 hover:bg-slate-50 transition-colors"
-              >
-                <span className="flex items-center gap-2">
-                  <PenLine className="h-4 w-4 text-slate-400" />
-                  补记 / 自然语言录入
-                </span>
-                {quickInputOpen ? (
-                  <ChevronUp className="h-4 w-4 text-slate-400" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 text-slate-400" />
-                )}
-              </button>
-              {quickInputOpen && (
-                <div className="mt-1 rounded-xl border border-slate-200 bg-white p-2">
-                  <QuickInput
-                    selectedDate={quickInputDate}
-                    tags={tags}
-                    items={items}
-                    onRecordCreated={handleRecordCreated}
-                    onPendingCreated={handlePendingCreated}
-                    onPendingResolved={handlePendingResolved}
-                    onPendingSessionPatch={handlePendingSessionPatch}
-                    onDeferResolved={handleDeferResolved}
-                    resumeClarify={resumeClarify}
-                    onResumeClarifyApplied={() => setResumeClarify(null)}
-                    onError={showError}
-                  />
-                </div>
-              )}
-            </div>
-            <div className="mt-2">
-              <FilterBar
-                filterType={filterType}
-                filterItemId={filterItemId}
-                items={items}
-                onFilterTypeChange={setFilterType}
-                onFilterItemChange={setFilterItemId}
-              />
-            </div>
+            <FilterBar
+              filterType={filterType}
+              filterItemId={filterItemId}
+              items={items}
+              onFilterTypeChange={setFilterType}
+              onFilterItemChange={setFilterItemId}
+            />
           </div>
         )}
 
-        {/* 多日模式：仅筛选 */}
-        {isMultiDay && (
+        {/* 多日模式：筛选（折叠） */}
+        {isMultiDay && showFilterBar && (
           <div className="mx-auto max-w-7xl mt-2">
             <FilterBar
               filterType={filterType}
@@ -1205,22 +1162,61 @@ export default function RecordsClient() {
         {!isMultiDay ? (
           <div className="h-full overflow-y-auto">
             <div className="mx-auto max-w-2xl px-4 py-4">
-              {/* 1.7：主流程不等待列表加载 */}
-              {isOnToday && (
-                <div className="space-y-4 mb-6">
+              {isOnToday ? (
+                <div className="space-y-4">
+                  {dueTodayPlans.length > 0 && (
+                    <div className="rounded-xl bg-blue-50 border border-blue-200 px-3 py-2.5">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <CalendarClock className="h-4 w-4 text-blue-500 shrink-0" />
+                        <span className="text-xs font-semibold text-blue-700">
+                          今日到期计划（{dueTodayPlans.length}）
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        {dueTodayPlans.map((plan) => (
+                          <div
+                            key={plan.id}
+                            className="flex items-center justify-between rounded-lg bg-white border border-blue-100 px-2.5 py-1.5 cursor-pointer hover:bg-blue-50 transition-colors"
+                            onClick={() => setEditingRecord(plan)}
+                          >
+                            <span className="text-xs text-slate-700 truncate">{plan.content}</span>
+                            <div className="flex items-center gap-1 shrink-0 ml-2">
+                              {plan.item && (
+                                <span className="text-[10px] text-slate-400">{plan.item.title}</span>
+                              )}
+                              <CheckCircle2
+                                className="h-3.5 w-3.5 text-green-500 hover:text-green-700 transition-colors"
+                                onClick={(e: React.MouseEvent) => {
+                                  e.stopPropagation();
+                                  handleComplete(plan);
+                                }}
+                                aria-label="完成计划"
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <CurrentActivityCard
                     items={items}
+                    refreshKey={refreshKey}
                     onChanged={() => setRefreshKey((k) => k + 1)}
+                    onItemsChanged={reloadItems}
                     onActivityChange={setCurrentActivity}
+                    onError={showError}
                   />
                   <QuickSwitchPanel
+                    items={items}
                     records={recentRecordsForSwitch}
+                    currentActivity={currentActivity}
                     onSwitched={() => setRefreshKey((k) => k + 1)}
                     onError={showError}
                   />
                   <TodayActivityTimeline
                     records={singleDayRecords}
                     date={singleDayDate}
+                    items={items}
                     onGapClick={(startIso, endIso) =>
                       setBackfillPanel({ startIso, endIso })
                     }
@@ -1230,10 +1226,10 @@ export default function RecordsClient() {
                     records={singleDayRecords}
                     date={singleDayDate}
                     currentActivity={currentActivity}
+                    items={items}
                   />
                 </div>
-              )}
-              {recordsLoading ? (
+              ) : recordsLoading ? (
                 <div className="flex items-center justify-center py-12">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
                   <span className="ml-2 text-sm text-slate-400">加载记录列表…</span>
@@ -1241,7 +1237,6 @@ export default function RecordsClient() {
               ) : singleDayRecords.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-slate-400">
                   <p className="text-sm">暂无记录</p>
-                  <p className="mt-1 text-xs">点击上方"开始"开始记录，或展开"补记"入口</p>
                 </div>
               ) : (
                 <RecordList
@@ -1323,27 +1318,6 @@ export default function RecordsClient() {
         )}
       </div>
 
-      {/* 多天模式：全局底部悬浮命令栏 */}
-      {isMultiDay && (
-        <div className="flex-shrink-0 border-t border-slate-200 bg-white/95 backdrop-blur-sm px-4 py-3 shadow-[0_-2px_8px_rgba(0,0,0,0.06)]">
-          <div className="mx-auto max-w-2xl">
-            <QuickInput
-              selectedDate={quickInputDate}
-              tags={tags}
-              items={items}
-              onRecordCreated={handleRecordCreated}
-              onPendingCreated={handlePendingCreated}
-              onPendingResolved={handlePendingResolved}
-              onPendingSessionPatch={handlePendingSessionPatch}
-              onDeferResolved={handleDeferResolved}
-              resumeClarify={resumeClarify}
-              onResumeClarifyApplied={() => setResumeClarify(null)}
-              onError={showError}
-            />
-          </div>
-        </div>
-      )}
-
       {editingRecord && (
         <RecordEditDrawer
           record={editingRecord}
@@ -1362,6 +1336,7 @@ export default function RecordsClient() {
           open
           mode="backfill"
           items={items}
+          onItemsChange={reloadItems}
           initialStart={backfillPanel.startIso}
           initialEnd={backfillPanel.endIso}
           onClose={() => setBackfillPanel(null)}
@@ -1384,19 +1359,14 @@ export default function RecordsClient() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 date: startDate,
-                content:
-                  payload.content ||
-                  payload.subcategory ||
-                  payload.category ||
-                  '补记',
+                content: payload.content || '补记',
                 type: '发生',
                 lifecycle_status: 'completed',
                 occurred_at: payload.occurred_at,
                 occurred_at_end: payload.occurred_at_end,
                 duration_minutes: duration,
-                category: payload.category,
-                subcategory: payload.subcategory,
                 item_id: payload.item_id,
+                sub_item_id: payload.sub_item_id,
                 input_source: 'manual',
                 review_status: 'confirmed',
               }),

@@ -8,6 +8,8 @@ import { persistTraceSummary } from '@/lib/observability/trace';
 import { createRecordSafely } from '@/lib/domain/record-service';
 import { ingestFull } from '@/lib/ingest/pipeline';
 import { buildPrimaryQuestion } from '@/lib/ingest/clarification-planner';
+import { evaluateAdmission } from '@/lib/ingest/clarify-flow';
+import { issuesForUnit } from '@/lib/ingest/admission';
 import {
   createInput,
   createInputUnits,
@@ -86,6 +88,7 @@ export async function POST(request: NextRequest) {
       rawInput,
       date,
       traceId: ctx.traceId,
+      seedFields: seedFields as Record<string, unknown>,
     });
 
     const input = await createInput(userId, {
@@ -98,6 +101,7 @@ export async function POST(request: NextRequest) {
       metadata: {
         date,
         is_compound: classification.isCompound,
+        clarification_issues: classification.clarification?.issues ?? [],
         ...metadata,
       },
     });
@@ -119,9 +123,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const clarificationIssues = classification.clarification?.issues ?? [];
     const unitRows = classification.unitProposals.map((proposal, idx) => {
       const question: PendingQuestion | null = classification.clarification
-        ? buildPrimaryQuestion(classification.clarification.issues, idx)
+        ? buildPrimaryQuestion(clarificationIssues, idx)
         : null;
       const unitStatus: 'pending_clarify' | 'ready' = question ? 'pending_clarify' : 'ready';
       return {
@@ -176,6 +181,23 @@ export async function POST(request: NextRequest) {
           : null;
       for (let i = 0; i < classification.unitProposals.length; i++) {
         const unit = units[i];
+        const unitFields = (classification.unitProposals[i].fields ?? {}) as Record<string, unknown>;
+        const admission = evaluateAdmission({
+          unitIndex: i,
+          issues: issuesForUnit(clarificationIssues, i, false),
+          proposedFields: unitFields,
+          parsedSemantic: classification.rawParsed,
+          compoundGated: false,
+        });
+        if (!admission.allowed) {
+          const fallbackQ = buildPrimaryQuestion(clarificationIssues, i);
+          await updateInputUnit(userId, unit.id, {
+            status: 'pending_clarify',
+            pending_question: fallbackQ,
+          });
+          await updateInput(userId, input.id, { status: 'clarifying' });
+          continue;
+        }
         const proposalPayload = proposals[i]?.payload;
         const {
           content: _content,

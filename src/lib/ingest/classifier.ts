@@ -6,6 +6,7 @@ export interface IngestClassifyInput {
   content: string;
   date: string;
   traceId?: string;
+  seedFields?: Record<string, unknown>;
 }
 
 /**
@@ -13,7 +14,7 @@ export interface IngestClassifyInput {
  * 当前先复用 classifyInput，后续可替换为新的 pipeline-runner。
  */
 export async function classifyForIngest(params: IngestClassifyInput): Promise<ClassificationResult> {
-  const { userId, content, date, traceId } = params;
-  return classifyInput(userId, content, date, traceId);
+  const { userId, content, date, traceId, seedFields } = params;
+  return classifyInput(userId, content, date, traceId, { seedFields });
 }
 

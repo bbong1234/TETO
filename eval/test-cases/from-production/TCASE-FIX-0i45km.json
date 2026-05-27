@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-0i45km",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260524-6onrmz",
+  "sourceDecisionId": "DEC-CORR-86782555",
+  "description": "用户将 \"duration_minutes\" 从 \"3\" 修正为 \"3\"",
+  "input": {
+    "recordId": "86782555-a37b-4509-88c4-464ece47bd35",
+    "userInput": null
+  },
+  "expected": {
+    "duration_minutes": "3"
+  },
+  "actualProduction": {
+    "duration_minutes": "3"
+  },
+  "generatedAt": "2026-05-24T12:13:17.587Z"
+}

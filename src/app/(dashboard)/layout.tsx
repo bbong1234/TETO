@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import AppSidebar from "@/components/layout/app-sidebar";
+import MobileBottomNav from "@/components/layout/mobile-bottom-nav";
 import MobileTopbar from "@/components/layout/mobile-topbar";
 import { getCurrentUser, isDevMode } from '@/lib/auth/get-current-user-id';
 import { initClientErrorReporter } from '@/lib/observability/client-error-reporter';
@@ -85,9 +86,10 @@ export default function AppLayout({
         sidebarCollapsed ? "lg:ml-20" : "lg:ml-72"
       ].join(" ")}>
         <MobileTopbar user={user} />
-        <main className="flex-1 flex flex-col overflow-hidden bg-slate-100">
+        <main className="flex-1 flex flex-col overflow-hidden bg-slate-100 pb-[calc(3.5rem+env(safe-area-inset-bottom,0px))] lg:pb-0">
             {children}
         </main>
+        <MobileBottomNav />
       </div>
     </div>
   );

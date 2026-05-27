@@ -191,6 +191,10 @@ D. 默认落到现实已发生或现实状态 → 发生
 例4："我怀疑现在这个记录结构还是有问题"
 → type_hint=想法, main_text="怀疑记录结构有问题", object_text="记录结构", result_text=null, mood=null, action_text=null, event_text=null
 
+例4b："我觉得今天中午的饭不好吃"
+→ type_hint=想法, main_text="觉得午饭不好吃", object_text="午饭", time_text="中午", mood="不满", action_text=null, event_text=null, cause_text=null, result_text=null
+（评价/感受句：有「我觉得/感觉」→ 想法，不要强行填 action_text，也不要判为「发生」）
+
 例5："今天整体效率一般，主要是上午一直被打断"
 → type_hint=总结, main_text="今天整体效率一般", state="被打断", cause_text="上午一直被打断", result_text="效率一般", action_text=null, event_text=null
 

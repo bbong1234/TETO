@@ -20,9 +20,13 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get('status');
     const is_pinned = searchParams.get('is_pinned');
     const folder_id = searchParams.get('folder_id');
+    const parent_item_id = searchParams.get('parent_item_id');
     if (status) query.status = status as ItemsQuery['status'];
     if (is_pinned !== null) query.is_pinned = is_pinned === 'true';
     if (folder_id !== null) query.folder_id = folder_id || null;
+    if (parent_item_id !== null) {
+      query.parent_item_id = parent_item_id === 'null' ? null : parent_item_id;
+    }
 
     const result = await listItems(userId, query);
     return apiSuccess(result, ctx.traceId);
@@ -50,51 +54,55 @@ export async function POST(request: NextRequest) {
       return apiError(ERROR_CODES.ITEM_MATCH_FAILED, 'title 不能为空白', ctx.traceId, 400);
     }
 
-    // 检查是否有同名的事项（活跃/推进中/放缓/停滞状态，避免重复创建）
     const supabase = await createClient();
-    const { data: existingActiveItems } = await supabase
-      .from('items')
-      .select('id, title, status')
-      .eq('user_id', userId)
-      .eq('title', body.title.trim())
-      .in('status', ['活跃', '推进中', '放缓', '停滞']);
 
-    if (existingActiveItems && existingActiveItems.length > 0) {
-      const existing = existingActiveItems[0];
-      endSpan(spanCtx, 'partial', `同名冲突: ${existing.title}(${existing.status})`, ERROR_CODES.ITEM_DUPLICATE_NAME);
-      return NextResponse.json({
-        data: null,
-        conflict: {
-          type: 'duplicate_name',
-          existing_item_id: existing.id,
-          existing_item_title: existing.title,
-          existing_item_status: existing.status,
-          message: `已存在同名事项「${existing.title}」（${existing.status}）`,
-        },
-      }, { status: 409 });
-    }
+    // 有父级事项时（创建子事项），跳过全局同名检查（不同父级下允许同名）
+    if (!body.parent_item_id) {
+      // 检查是否有同名的事项（活跃/推进中/放缓/停滞状态，避免重复创建）
+      const { data: existingActiveItems } = await supabase
+        .from('items')
+        .select('id, title, status')
+        .eq('user_id', userId)
+        .eq('title', body.title.trim())
+        .in('status', ['活跃', '推进中', '放缓', '停滞']);
 
-    // 检查是否有同名的已完成/已搁置事项（提示可重启）
-    const { data: existingArchivedItems } = await supabase
-      .from('items')
-      .select('id, title, status')
-      .eq('user_id', userId)
-      .eq('title', body.title.trim())
-      .in('status', ['已完成', '已搁置']);
+      if (existingActiveItems && existingActiveItems.length > 0) {
+        const existing = existingActiveItems[0];
+        endSpan(spanCtx, 'partial', `同名冲突: ${existing.title}(${existing.status})`, ERROR_CODES.ITEM_DUPLICATE_NAME);
+        return NextResponse.json({
+          data: null,
+          conflict: {
+            type: 'duplicate_name',
+            existing_item_id: existing.id,
+            existing_item_title: existing.title,
+            existing_item_status: existing.status,
+            message: `已存在同名事项「${existing.title}」（${existing.status}）`,
+          },
+        }, { status: 409 });
+      }
 
-    if (existingArchivedItems && existingArchivedItems.length > 0) {
-      const existing = existingArchivedItems[0];
-      endSpan(spanCtx, 'partial', `已归档同名: ${existing.title}(${existing.status})`, ERROR_CODES.ITEM_DUPLICATE_NAME);
-      return NextResponse.json({
-        data: null,
-        conflict: {
-          type: 'duplicate_name',
-          existing_item_id: existing.id,
-          existing_item_title: existing.title,
-          existing_item_status: existing.status,
-          message: `已存在同名事项「${existing.title}」（${existing.status}），是否在原事项下新建阶段重启？`,
-        },
-      }, { status: 409 });
+      // 检查是否有同名的已完成/已搁置事项（提示可重启）
+      const { data: existingArchivedItems } = await supabase
+        .from('items')
+        .select('id, title, status')
+        .eq('user_id', userId)
+        .eq('title', body.title.trim())
+        .in('status', ['已完成', '已搁置']);
+
+      if (existingArchivedItems && existingArchivedItems.length > 0) {
+        const existing = existingArchivedItems[0];
+        endSpan(spanCtx, 'partial', `已归档同名: ${existing.title}(${existing.status})`, ERROR_CODES.ITEM_DUPLICATE_NAME);
+        return NextResponse.json({
+          data: null,
+          conflict: {
+            type: 'duplicate_name',
+            existing_item_id: existing.id,
+            existing_item_title: existing.title,
+            existing_item_status: existing.status,
+            message: `已存在同名事项「${existing.title}」（${existing.status}），是否在原事项下新建阶段重启？`,
+          },
+        }, { status: 409 });
+      }
     }
 
     const result = await createItemSafely({ userId, payload: body, supabase });

@@ -31,8 +31,19 @@ import type {
   UnitFieldProposal,
   DecisionRecord,
 } from '@/types/semantic';
+import {
+  shouldRaiseActionVague,
+  buildItemMissingIssue,
+  mergeClarificationIssues,
+  recordTypeNeedsActionClarify,
+  resolveRecordTypeForUnit,
+} from '@/lib/ingest/clarify-standards';
 
 const log = createComponentLogger('classify-input');
+
+export interface ClassifyInputOptions {
+  seedFields?: Record<string, unknown>;
+}
 
 /**
  * 模型未标 is_compound 时，用语义线索提示「可能该拆成多条」。
@@ -81,9 +92,13 @@ export async function classifyInput(
   userId: string,
   content: string,
   date: string,
-  traceId?: string
+  traceId?: string,
+  options?: ClassifyInputOptions
 ): Promise<ClassificationResult> {
   const supabase = await createClient();
+  const seedFields = options?.seedFields ?? {};
+  const seedItemId = typeof seedFields.item_id === 'string' ? seedFields.item_id : undefined;
+  const seedType = typeof seedFields.type === 'string' ? seedFields.type : undefined;
 
   // ── 1. 获取用户事项和子项（用于匹配） ──
   const { data: items } = await supabase
@@ -257,14 +272,27 @@ export async function classifyInput(
       fields.time_precision = fields.time_precision || 'inherited';
     }
 
+    const typeHintEarly = result.type_hints?.[i];
+    const resolvedType = resolveRecordTypeForUnit({
+      seedType,
+      typeHint: typeHintEarly,
+      fieldsType: fields.type as string | undefined,
+      rawContent: content,
+      unitText: contentSummary,
+    });
+    fields.type = resolvedType;
+    const needsActionClarify = recordTypeNeedsActionClarify(resolvedType);
+
     // ── 事项匹配 ──
     const itemHint = typeof unit.item_hint === 'string' ? unit.item_hint.trim() : '';
     let matchedItemId: string | undefined;
     let matchedSubItemId: string | undefined;
     let itemMatchAmbiguous: { itemId: string; itemTitle: string } | null = null;
 
+    const unitMatchText = contentSummary?.trim() || content;
+
     if (itemHint && effectiveItems.length > 0) {
-      const matchResult = matchItemSmart(itemHint, effectiveItems, content, subItems ?? undefined);
+      const matchResult = matchItemSmart(itemHint, effectiveItems, unitMatchText, subItems ?? undefined);
       if (matchResult && matchResult.confidence === 'high') {
         matchedItemId = matchResult.itemId;
         fields.item_id = matchedItemId;
@@ -288,7 +316,7 @@ export async function classifyInput(
     // ── 用户学习规则匹配（TETO 1.6）──
     // 当标准匹配未产生高置信结果时，尝试用户自定义/学习的规则
     if (!matchedItemId && itemMappingRules.length > 0) {
-      const searchText = (itemHint || content).toLowerCase();
+      const searchText = (itemHint || unitMatchText).toLowerCase();
       for (const rule of itemMappingRules) {
         if (searchText.includes(rule.trigger_pattern.toLowerCase())) {
           const targetItem = effectiveItems.find(it => it.id === rule.target_id);
@@ -316,7 +344,7 @@ export async function classifyInput(
 
     // ── 用户学习规则：子项匹配（TETO 1.6）──
     if (!matchedSubItemId && matchedItemId && subItemMappingRules.length > 0) {
-      const searchText = (itemHint || content).toLowerCase();
+      const searchText = (itemHint || unitMatchText).toLowerCase();
       for (const rule of subItemMappingRules) {
         if (
           rule.target_type === 'sub_item' &&
@@ -398,21 +426,22 @@ export async function classifyInput(
       });
     }
 
-    // 事项归属不明确（AI 有提示但仅中等置信度）
-    if (!matchedItemId && itemMatchAmbiguous) {
+    // 泛化动作（仅「发生/计划」需要；想法/总结不要求 action_text）
+    if (needsActionClarify && shouldRaiseActionVague(unit)) {
       allIssues.push({
-        type: 'item_ambiguous',
+        type: 'action_vague',
         unitIndex: i,
-        message: `"${itemMatchAmbiguous.itemTitle}"是正确归类吗？`,
-        reason: `AI 建议关联事项"${itemMatchAmbiguous.itemTitle}"，但未在输入中找到核心关键词，请确认`,
-        options: [{ label: itemMatchAmbiguous.itemTitle, value: itemMatchAmbiguous.itemId }],
+        message: '请补充具体做了什么',
+        reason: '仅识别到泛化动作（如「做」），缺少可区分的事件描述',
       });
     }
 
-    // 核心动作无法识别（主谓宾不完整）
+    // 核心动作无法识别（仅发生/计划；评价句如「我觉得…不好吃」归为想法，不追问动作）
     if (
-      allIssues.filter(iss => iss.unitIndex === i).length === 0 &&
-      !unit.action_text && !(unit as Record<string, unknown>).action
+      needsActionClarify &&
+      !unit.action_text &&
+      !(unit as Record<string, unknown>).action &&
+      !allIssues.some((iss) => iss.unitIndex === i && iss.type === 'action_vague')
     ) {
       allIssues.push({
         type: 'parse_uncertain',
@@ -422,9 +451,32 @@ export async function classifyInput(
       });
     }
 
+    // 事项归属不明确（AI 有提示但仅中等置信度）
+    if (!matchedItemId && itemMatchAmbiguous) {
+      allIssues.push({
+        type: 'item_ambiguous',
+        unitIndex: i,
+        message: `"${itemMatchAmbiguous.itemTitle}"是正确归类吗？`,
+        reason: `AI 建议关联事项"${itemMatchAmbiguous.itemTitle}"，请确认是否归入该事项`,
+        options: [
+          { label: itemMatchAmbiguous.itemTitle, value: itemMatchAmbiguous.itemId },
+          { label: '不属于此事项', value: 'none' },
+        ],
+      });
+    }
+
+    // 事项缺失（有事项目录、无匹配、用户未 seed item_id）
+    if (!matchedItemId && !seedItemId && effectiveItems.length > 0) {
+      const unitIssues = allIssues.filter((iss) => iss.unitIndex === i);
+      if (!unitIssues.some((iss) => iss.type === 'item_ambiguous' || iss.type === 'item_missing')) {
+        const missing = buildItemMissingIssue(i, effectiveItems);
+        if (missing) allIssues.push(missing);
+      }
+    }
+
     // mood/cause 边界模糊（"因为太累所以没跑步" → mood还是cause?）
     if (
-      allIssues.filter(iss => iss.unitIndex === i).length === 0 &&
+      !allIssues.some((iss) => iss.unitIndex === i) &&
       (typeof unit.mood === 'string' || typeof unit.body_state === 'string') &&
       typeof unit.cause_text === 'string'
     ) {
@@ -456,16 +508,22 @@ export async function classifyInput(
       }
     }
 
-    // ── 决策：DEC-TYPE（记录类型） ──
-    const typeHint = result.type_hints?.[i];
-    const inferredType = (fields.type as string) || typeHint || '发生';
-    if (typeHint) {
+    // ── 记录类型决策日志 ──
+    if (typeHintEarly && typeHintEarly !== resolvedType) {
       decisions.push({
         decisionId: genDecisionId('TYPE'),
         type: 'DEC-TYPE',
         unitIndex: i,
-        explain: `AI 识别类型为"${inferredType}"`,
-        detail: { type: inferredType, source: 'ai_hint' },
+        explain: `规则将类型由「${typeHintEarly}」调整为「${resolvedType}」`,
+        detail: { type: resolvedType, source: 'discourse_override', originalHint: typeHintEarly },
+      });
+    } else if (typeHintEarly) {
+      decisions.push({
+        decisionId: genDecisionId('TYPE'),
+        type: 'DEC-TYPE',
+        unitIndex: i,
+        explain: `识别类型为「${resolvedType}」`,
+        detail: { type: resolvedType, source: 'ai_hint' },
       });
     }
 
@@ -541,9 +599,10 @@ export async function classifyInput(
         }
       : null;
 
-  const finalIssues: ClarificationIssue[] = compoundConfirmIssue
-    ? [compoundConfirmIssue]
-    : allIssues;
+  const finalIssues: ClarificationIssue[] = mergeClarificationIssues(
+    allIssues,
+    compoundConfirmIssue
+  );
 
   // ── 6. 判定是否需要确认 ──
   if (finalIssues.length > 0) {
@@ -553,7 +612,11 @@ export async function classifyInput(
       type: 'DEC-ADMISSION',
       unitIndex: -1,
       explain: `拒绝入库：存在 ${finalIssues.length} 个待确认问题`,
-      detail: { issueTypes: finalIssues.map(i => i.type), issuesCount: finalIssues.length },
+      detail: {
+        issueTypes: finalIssues.map((i) => i.type),
+        issuesCount: finalIssues.length,
+        compoundGated: Boolean(compoundConfirmIssue),
+      },
     });
 
     return {

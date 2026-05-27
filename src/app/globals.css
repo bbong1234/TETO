@@ -19,6 +19,14 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 移动端 App 壳：全屏、禁橡皮筋、优化触摸 */
+.app-shell {
+  min-height: 100dvh;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
 /* ===== Personal OS 基础视觉层 ===== */
 
 /* 毛玻璃卡片 */

@@ -22,7 +22,11 @@ export async function POST(
 
     const units = await listInputUnits(userId, id);
     for (const unit of units) {
-      if (unit.status === 'pending_clarify' || unit.status === 'ready') {
+      if (
+        unit.status === 'pending_clarify' ||
+        unit.status === 'ready' ||
+        unit.status === 'partial'
+      ) {
         await updateInputUnit(userId, unit.id, {
           status: 'cancelled',
           pending_question: null,

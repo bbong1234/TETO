@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { fetchItemDurationTotals } from '@/lib/db/item-activity-stats';
 import { tryRpc } from '@/lib/domain/transaction-service';
 import { createComponentLogger } from '@/lib/observability/logger';
 import type { Item, CreateItemPayload, UpdateItemPayload, ItemsQuery, Record as TetoRecord } from '@/types/teto';
@@ -43,6 +44,7 @@ export async function createItem(
       is_pinned: payload.is_pinned ?? false,
       started_at: payload.started_at ?? null,
       folder_id: payload.folder_id ?? null,
+      parent_item_id: payload.parent_item_id ?? null,
     })
     .select()
     .single();
@@ -74,6 +76,7 @@ export async function updateItem(
   if (payload.started_at !== undefined) updateData.started_at = payload.started_at;
   if (payload.ended_at !== undefined) updateData.ended_at = payload.ended_at;
   if (payload.folder_id !== undefined) updateData.folder_id = payload.folder_id;
+  if (payload.parent_item_id !== undefined) updateData.parent_item_id = payload.parent_item_id;
 
   const { data, error } = await supabase
     .from('items')
@@ -250,6 +253,14 @@ export async function listItems(
     }
   }
 
+  if ('parent_item_id' in query) {
+    if (query.parent_item_id === null) {
+      q = q.is('parent_item_id', null);
+    } else if (query.parent_item_id) {
+      q = q.eq('parent_item_id', query.parent_item_id);
+    }
+  }
+
   const { data, error } = await q.order('created_at', { ascending: false });
 
   if (error) {
@@ -270,11 +281,14 @@ export async function listItems(
   const phaseMap = new Map<string, string>();
   activePhases?.forEach((p: { item_id: string; title: string }) => phaseMap.set(p.item_id, p.title));
 
+  const durationMap = await fetchItemDurationTotals(userId, itemIds);
+
   return data.map((row: any) => ({
     ...row,
     phase_count: row.phases?.[0]?.count ?? 0,
     record_count: row.records?.[0]?.count ?? 0,
     active_phase_title: phaseMap.get(row.id) || null,
+    total_duration_minutes: durationMap.get(row.id) ?? 0,
     phases: undefined,
     records: undefined,
     recent_records: [],

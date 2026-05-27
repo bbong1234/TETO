@@ -2,14 +2,15 @@ import type { ClarificationIssue } from '@/types/semantic';
 import type { PendingQuestion } from '@/types/inputs';
 
 const PRIORITY: ClarificationIssue['type'][] = [
+  'compound_uncertain',
+  'action_vague',
+  'parse_uncertain',
   'item_missing',
   'item_ambiguous',
   'item_suggestion',
   'sub_item_ambiguous',
   'metric_prompt',
   'shared_duration',
-  'compound_uncertain',
-  'parse_uncertain',
   'boundary_blur',
   'low_confidence',
 ];
@@ -52,6 +53,27 @@ function toQuestion(issue: ClarificationIssue): PendingQuestion {
         prompt: issue.message || `请补充${issue.metricName || '指标'}数值`,
         kind: 'number',
         clarify_class: 'field_clarify',
+      };
+    case 'action_vague':
+    case 'parse_uncertain':
+      return {
+        field: 'action_text',
+        prompt: issue.message || '请补充具体做了什么',
+        kind: 'text',
+        clarify_class: 'field_clarify',
+        placeholder: '如：跑步、吃午饭、开会',
+      };
+    case 'low_confidence':
+      return {
+        field: '_confirm',
+        prompt: issue.message || '部分信息 AI 不太确定，是否仍按当前解析保存？',
+        kind: 'select',
+        clarify_class: 'field_clarify',
+        clarify_subtype: 'low_confidence_confirm',
+        options: [
+          { value: 'confirm', label: '确认保存（按当前解析）' },
+          { value: 'rewrite', label: '取消本次录入' },
+        ],
       };
     case 'compound_uncertain':
       return {
@@ -112,5 +134,24 @@ export function pickPrimaryIssue(issues: ClarificationIssue[], unitIndex: number
 export function buildPrimaryQuestion(issues: ClarificationIssue[], unitIndex: number): PendingQuestion | null {
   const issue = pickPrimaryIssue(issues, unitIndex);
   return issue ? toQuestion(issue) : null;
+}
+
+/** 复合句拆分已确认后，不再重复问全局 compound 题 */
+export function issuesAfterCompoundGate(issues: ClarificationIssue[]): ClarificationIssue[] {
+  return issues.filter((i) => !(i.type === 'compound_uncertain' && i.unitIndex === -1));
+}
+
+export function buildPrimaryQuestionAfterCompound(
+  issues: ClarificationIssue[],
+  unitIndex: number
+): PendingQuestion | null {
+  return buildPrimaryQuestion(issuesAfterCompoundGate(issues), unitIndex);
+}
+
+export function unitHasNonCompoundIssues(
+  issues: ClarificationIssue[],
+  unitIndex: number
+): boolean {
+  return issuesAfterCompoundGate(issues).some((i) => i.unitIndex === unitIndex);
 }
 

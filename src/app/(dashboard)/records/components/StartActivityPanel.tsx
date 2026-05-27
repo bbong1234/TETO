@@ -1,15 +1,18 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import type { Item } from '@/types/teto';
-import { ACTIVITY_CATEGORY_PRESETS, ACTIVITY_SUBCATEGORY_HINTS } from '@/lib/activity/constants';
+import ActivityContextPicker, {
+  EMPTY_ACTIVITY_CONTEXT,
+  type ActivityContextValue,
+} from './ActivityContextPicker';
+import { resolveContextLabel, resolveTargetItemId } from '@/lib/activity/item-tree';
 
 export interface StartActivitySubmitPayload {
   content?: string;
-  category?: string;
-  subcategory?: string;
   item_id?: string | null;
+  sub_item_id?: string | null;
   occurred_at?: string;
   occurred_at_end?: string;
 }
@@ -18,16 +21,13 @@ interface StartActivityPanelProps {
   open: boolean;
   mode: 'start' | 'switch' | 'backfill';
   items: Item[];
-  initialCategory?: string;
-  initialSubcategory?: string;
   initialContent?: string;
   initialStart?: string;
   initialEnd?: string;
   onClose: () => void;
   onSubmit: (payload: StartActivitySubmitPayload) => Promise<void>;
+  onItemsChange?: () => void;
 }
-
-const ACTIVE_ITEM_STATUSES = new Set(['活跃', '推进中', '放缓', '停滞']);
 
 function toDatetimeLocal(iso?: string): string {
   if (!iso) return '';
@@ -45,29 +45,19 @@ export default function StartActivityPanel({
   open,
   mode,
   items,
-  initialCategory,
-  initialSubcategory,
   initialContent,
   initialStart,
   initialEnd,
   onClose,
   onSubmit,
+  onItemsChange,
 }: StartActivityPanelProps) {
-  const [category, setCategory] = useState(initialCategory ?? '');
-  const [subcategory, setSubcategory] = useState(initialSubcategory ?? '');
+  const [context, setContext] = useState<ActivityContextValue>(EMPTY_ACTIVITY_CONTEXT);
   const [content, setContent] = useState(initialContent ?? '');
-  const [itemId, setItemId] = useState<string>('');
   const [startLocal, setStartLocal] = useState(toDatetimeLocal(initialStart));
   const [endLocal, setEndLocal] = useState(toDatetimeLocal(initialEnd));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-
-  const activeItems = useMemo(
-    () => items.filter((i) => ACTIVE_ITEM_STATUSES.has(i.status)),
-    [items]
-  );
-
-  const subcategoryHints = category ? ACTIVITY_SUBCATEGORY_HINTS[category] ?? [] : [];
 
   if (!open) return null;
 
@@ -76,8 +66,9 @@ export default function StartActivityPanel({
 
   const handleSubmit = async () => {
     setError('');
-    if (!category && !content.trim() && mode !== 'switch') {
-      setError('请选择分类或填写事项描述');
+    const resolved = resolveContextLabel(context, items, content);
+    if (!resolved && !resolveTargetItemId(context) && mode !== 'switch') {
+      setError('请选择大类/事项或填写具体内容');
       return;
     }
     if (mode === 'backfill') {
@@ -94,10 +85,9 @@ export default function StartActivityPanel({
     setSubmitting(true);
     try {
       await onSubmit({
-        content: content.trim() || undefined,
-        category: category || undefined,
-        subcategory: subcategory || undefined,
-        item_id: itemId || null,
+        content: resolved || undefined,
+        item_id: resolveTargetItemId(context),
+        sub_item_id: context.subItemId || null,
         occurred_at: mode === 'backfill' ? datetimeLocalToIso(startLocal) : undefined,
         occurred_at_end: mode === 'backfill' ? datetimeLocalToIso(endLocal) : undefined,
       });
@@ -137,74 +127,20 @@ export default function StartActivityPanel({
         </div>
 
         <div className="space-y-4 px-4 py-4">
-          <div>
-            <p className="mb-2 text-xs font-medium text-slate-500">分类</p>
-            <div className="flex flex-wrap gap-2">
-              {ACTIVITY_CATEGORY_PRESETS.map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => {
-                    setCategory(cat === category ? '' : cat);
-                    setSubcategory('');
-                  }}
-                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                    category === cat
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {subcategoryHints.length > 0 && (
-            <div>
-              <p className="mb-2 text-xs font-medium text-slate-500">子类</p>
-              <div className="flex flex-wrap gap-2">
-                {subcategoryHints.map((sub) => (
-                  <button
-                    key={sub}
-                    type="button"
-                    onClick={() => setSubcategory(sub === subcategory ? '' : sub)}
-                    className={`rounded-full px-3 py-1 text-xs transition-colors ${
-                      subcategory === sub
-                        ? 'bg-indigo-100 text-indigo-700'
-                        : 'bg-slate-50 text-slate-500 hover:bg-slate-100'
-                    }`}
-                  >
-                    {sub}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          <ActivityContextPicker
+            items={items}
+            value={context}
+            onChange={setContext}
+            onItemsChange={onItemsChange}
+          />
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-500">项目（可选）</label>
-            <select
-              value={itemId}
-              onChange={(e) => setItemId(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
-            >
-              <option value="">不关联项目</option>
-              {activeItems.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.title}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-500">具体事项（可选）</label>
+            <label className="mb-1 block text-xs font-medium text-slate-500">记录内容（可选）</label>
             <input
               type="text"
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              placeholder="例如：接口联调、写方案"
+              placeholder="例如：背了 30 个单词、写了方案"
               className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
             />
           </div>

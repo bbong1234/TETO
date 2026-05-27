@@ -178,10 +178,57 @@ export interface Item {
   started_at: string | null;
   ended_at: string | null;
   folder_id: string | null;
+  /** 父级事项 ID（null = 顶层大类） */
+  parent_item_id?: string | null;
   created_at: string;
   updated_at: string;
   // 关联数据
   recent_records?: Record[];
+  /** 列表页：阶段数 */
+  phase_count?: number;
+  /** 列表页：记录数 */
+  record_count?: number;
+  /** 列表页：进行中阶段标题 */
+  active_phase_title?: string | null;
+  /** 列表页：活动累计时长（分钟） */
+  total_duration_minutes?: number;
+}
+
+export interface RecurringActivity {
+  id: string;
+  user_id: string;
+  name: string;
+  category: string | null;
+  subcategory: string | null;
+  item_id: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  item?: Pick<Item, 'id' | 'title'> | null;
+}
+
+export interface CreateRecurringActivityPayload {
+  name: string;
+  category?: string | null;
+  subcategory?: string | null;
+  item_id?: string | null;
+  sort_order?: number;
+}
+
+export interface UpdateRecurringActivityPayload {
+  name?: string;
+  category?: string | null;
+  subcategory?: string | null;
+  item_id?: string | null;
+  sort_order?: number;
+}
+
+export interface ItemActivityStats {
+  today_minutes: number;
+  week_minutes: number;
+  month_minutes: number;
+  total_minutes: number;
+  last_active_at: string | null;
 }
 
 export interface Tag {
@@ -320,6 +367,7 @@ export interface CreateItemPayload {
   is_pinned?: boolean;
   started_at?: string;
   folder_id?: string | null;
+  parent_item_id?: string | null;
 }
 
 export interface UpdateItemPayload {
@@ -332,6 +380,7 @@ export interface UpdateItemPayload {
   started_at?: string;
   ended_at?: string;
   folder_id?: string | null;
+  parent_item_id?: string | null;
 }
 
 export interface CreateTagPayload {
@@ -368,6 +417,8 @@ export interface ItemsQuery {
   status?: ItemStatus;
   is_pinned?: boolean;
   folder_id?: string | null;
+  /** null = 只取顶层大类；string = 取指定父级的子事项 */
+  parent_item_id?: string | null;
 }
 
 /** 洞察 API 可按块计算（GET ?metrics= 逗号分隔）；缺省或未识别则全量 */
@@ -419,6 +470,7 @@ export interface TimelineEntry {
   text: string;          // 优先 action_text + event_text 合并，否则 content
   is_current?: boolean;  // 进行中记录
   is_gap?: boolean;      // 空白时间段
+  occurred_at?: string;  // ISO，进行中条目用于实时计时
   duration_minutes?: number;
   item_title?: string;
   category?: string;

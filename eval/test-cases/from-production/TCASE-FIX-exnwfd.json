@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-exnwfd",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260517-b9bls4",
+  "sourceDecisionId": "DEC-CORR-66276351",
+  "description": "用户将 \"type\" 从 \"发生\" 修正为 \"发生\"",
+  "input": {
+    "recordId": "66276351-534c-42e2-b9b9-b8c28cb9753a",
+    "userInput": null
+  },
+  "expected": {
+    "type": "发生"
+  },
+  "actualProduction": {
+    "type": "发生"
+  },
+  "generatedAt": "2026-05-17T06:41:28.353Z"
+}

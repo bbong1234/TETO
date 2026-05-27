@@ -237,6 +237,37 @@ export const RULES_LOW_ENERGY_BODY_STATES: readonly string[] = ['累', '困', '�
 /** 事项匹配：精确子串命中阈值 */
 export const RULES_AUTO_CLASSIFY_THRESHOLD = 0.85;
 
+/** 泛化动词：仅有此类 action_text 且无对象/事件语义时需澄清「做了什么」 */
+export const RULES_VAGUE_ACTION_VERBS: readonly string[] = [
+  '做',
+  '弄',
+  '干',
+  '搞',
+  '整',
+  '搞了',
+  '做了',
+  '弄了',
+  '干了',
+];
+
+/** 总结性表述：存在时保留 AI 的「总结」类型 */
+export const RULES_SUMMARY_DISCOURSE_CUES: readonly string[] = [
+  '整体',
+  '总的来说',
+  '综上',
+  '复盘',
+  '归纳',
+  '这周下来',
+  '今天下来',
+  '一天下来',
+  '这段时间',
+  '总体',
+];
+
+/** 具体完成态动作词（用于类型护栏：总结 + 具体动作 → 纠正为发生） */
+export const RULES_CONCRETE_ACTION_PATTERN =
+  /跑|跑步|走|买|吃|喝|开会|会议|写|读|练|学习|工作|加班|睡|看|听|聊|谈|游|骑|爬|跳|唱|画|洗|打扫|收拾|通勤|出差|健身|游泳|打球|瑜伽|冥想/;
+
 // ================================
 // 4. lifecycle — 生命周期规则
 // ================================
@@ -443,6 +474,9 @@ export const RULES = {
   },
   classification: {
     auto_classify_threshold: RULES_AUTO_CLASSIFY_THRESHOLD,
+    vague_action_verbs: RULES_VAGUE_ACTION_VERBS,
+    summary_discourse_cues: RULES_SUMMARY_DISCOURSE_CUES,
+    concrete_action_pattern: RULES_CONCRETE_ACTION_PATTERN,
   },
   lifecycle: {
     terminal_statuses: RULES_TERMINAL_STATUSES,

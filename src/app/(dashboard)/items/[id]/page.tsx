@@ -21,6 +21,11 @@ import ItemDataPanel from '../components/ItemDataPanel';
 import SubItemTabBar from '../components/SubItemTabBar';
 import SubItemForm from '../components/SubItemForm';
 import SubItemPromoteDialog from '../components/SubItemPromoteDialog';
+import ItemActivityStatsSection from '../components/ItemActivityStatsSection';
+import ItemActivityTimelineSection from '../components/ItemActivityTimelineSection';
+import ItemCategoryChildrenSection from '../components/ItemCategoryChildrenSection';
+import ParentCategorySelect from '../components/ParentCategorySelect';
+import { isCategoryItem } from '@/lib/activity/item-tree';
 
 interface DailyStat {
   date: string;
@@ -89,6 +94,7 @@ export default function ItemDetailPage() {
   const [editTitle, setEditTitle] = useState('');
   const [editStatus, setEditStatus] = useState('');
   const [editDesc, setEditDesc] = useState('');
+  const [editParentId, setEditParentId] = useState('');
   const [saving, setSaving] = useState(false);
   const [todayCount, setTodayCount] = useState<number | null>(null);
 
@@ -120,6 +126,13 @@ export default function ItemDetailPage() {
   const [promotingSubItem, setPromotingSubItem] = useState<SubItem | null>(null);
   const [correctingField, setCorrectingField] = useState<string | null>(null);
   const [promoting, setPromoting] = useState(false);
+  const [addingPlan, setAddingPlan] = useState(false);
+  const [newPlanContent, setNewPlanContent] = useState('');
+  const [planSubmitting, setPlanSubmitting] = useState(false);
+
+  const [parentItem, setParentItem] = useState<Item | null>(null);
+  const [childItems, setChildItems] = useState<Item[]>([]);
+  const [allItemsForTree, setAllItemsForTree] = useState<Item[]>([]);
 
   const { toasts, showError, dismissToast } = useToast();
 
@@ -156,11 +169,48 @@ export default function ItemDetailPage() {
     fetchTodayCount();
   }, [fetchItem, fetchTodayCount]);
 
+  useEffect(() => {
+    if (!item) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const [allRes, childrenRes] = await Promise.all([
+          fetch('/api/v2/items'),
+          fetch(`/api/v2/items?parent_item_id=${itemId}`),
+        ]);
+        const allData = await allRes.json();
+        const childrenData = await childrenRes.json();
+        if (cancelled) return;
+        setAllItemsForTree(allData.data ?? []);
+        setChildItems(childrenData.data ?? []);
+
+        if (item.parent_item_id) {
+          const parentRes = await fetch(`/api/v2/items/${item.parent_item_id}`);
+          const parentData = await parentRes.json();
+          if (!cancelled) setParentItem(parentData.data ?? null);
+        } else {
+          setParentItem(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setChildItems([]);
+          setParentItem(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [item, itemId]);
+
   const startEdit = () => {
     if (!item) return;
     setEditTitle(item.title);
     setEditStatus(item.status);
     setEditDesc(item.description || '');
+    setEditParentId(item.parent_item_id ?? '');
     setEditing(true);
   };
 
@@ -168,11 +218,17 @@ export default function ItemDetailPage() {
     if (!editTitle.trim()) return;
     setSaving(true);
     try {
+      if (!item) return;
+      const isCat =
+        childItems.length > 0 || isCategoryItem(item, allItemsForTree, item.id);
       const payload: UpdateItemPayload = {
         title: editTitle.trim(),
         status: editStatus as Item['status'],
         description: editDesc || undefined,
       };
+      if (!isCat) {
+        payload.parent_item_id = editParentId || null;
+      }
       const res = await fetch(`/api/v2/items/${itemId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -262,6 +318,39 @@ export default function ItemDetailPage() {
       const res = await fetch(`/api/v2/records/${record.id}/cancel`, { method: 'POST' });
       if (res.ok) { setGoalRefreshKey(k => k + 1); fetchItem(); } else { const e = await res.json(); showError(e.error || '取消操作失败'); }
     } catch { showError('取消操作失败，请重试'); }
+  };
+
+  const handleAddPlan = async () => {
+    const text = newPlanContent.trim();
+    if (!text) return;
+    setPlanSubmitting(true);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const res = await fetch('/api/v2/records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: text,
+          type: '计划',
+          date: today,
+          item_id: itemId,
+          lifecycle_status: 'active',
+          input_source: 'manual',
+          review_status: 'confirmed',
+        }),
+      });
+      if (!res.ok) {
+        const e = await res.json();
+        throw new Error(e.error?.message ?? '添加计划失败');
+      }
+      setNewPlanContent('');
+      setAddingPlan(false);
+      fetchItem();
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '添加计划失败');
+    } finally {
+      setPlanSubmitting(false);
+    }
   };
 
   const handleDeletePhase = async (phase: Phase) => {
@@ -570,6 +659,10 @@ export default function ItemDetailPage() {
   const goalMap: Record<string, string> = {};
   (item.goals || (item.goal ? [item.goal] : [])).forEach(g => { if (g) goalMap[g.id] = g.title; });
 
+  const isCategoryView =
+    item &&
+    (childItems.length > 0 || isCategoryItem(item, allItemsForTree, item.id));
+
   // 按子项筛选目标
   const filteredGoals = (() => {
     const allGoals = item.goals || [];
@@ -581,6 +674,31 @@ export default function ItemDetailPage() {
   return (
     <div className="flex-1 overflow-y-auto min-h-0 desktop-bg">
       <div className="mx-auto max-w-[1200px] px-4 py-5">
+
+        {/* 面包屑 */}
+        <nav className="mb-3 flex flex-wrap items-center gap-1 text-xs text-slate-400">
+          <button
+            type="button"
+            onClick={() => router.push('/items')}
+            className="hover:text-indigo-500 transition-colors"
+          >
+            桌面
+          </button>
+          {parentItem && (
+            <>
+              <ChevronRight className="h-3 w-3 shrink-0" />
+              <button
+                type="button"
+                onClick={() => router.push(`/items/${parentItem.id}`)}
+                className="hover:text-indigo-500 transition-colors"
+              >
+                {parentItem.title}
+              </button>
+            </>
+          )}
+          <ChevronRight className="h-3 w-3 shrink-0" />
+          <span className="text-slate-600 font-medium">{item.title}</span>
+        </nav>
 
         {/* 返回 */}
         <button
@@ -603,6 +721,16 @@ export default function ItemDetailPage() {
                 value={editDesc} onChange={e => setEditDesc(e.target.value)} placeholder="描述（可选）" rows={2}
                 className="w-full bg-white/60 rounded-2xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/50 border-0"
               />
+              {!(childItems.length > 0 || isCategoryItem(item, allItemsForTree, item.id)) && (
+                <div>
+                  <label className="mb-1 block text-xs text-slate-400">所属大类</label>
+                  <ParentCategorySelect
+                    items={allItemsForTree}
+                    value={editParentId}
+                    onChange={setEditParentId}
+                  />
+                </div>
+              )}
               <select
                 value={editStatus} onChange={e => setEditStatus(e.target.value)}
                 className="bg-white/60 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/50 border-0"
@@ -703,18 +831,61 @@ export default function ItemDetailPage() {
           )}
         </section>
 
+        <div className="space-y-5 mb-5">
+          <ItemActivityStatsSection itemId={itemId} isCategory={isCategoryView} childCount={childItems.length} />
+          {isCategoryView && (
+            <ItemCategoryChildrenSection categoryItem={item} childItems={childItems} />
+          )}
+          {!isCategoryView && <ItemActivityTimelineSection records={relatedRecords} />}
+        </div>
+
         {/* ── 统一视图 ── */}
         <div className="space-y-5 mb-5">
             {/* 待完成计划 */}
-            {activePlans.length > 0 && (
-              <section className="glass rounded-3xl shadow-soft-lg p-5">
-                <div className="flex items-center gap-2 mb-3">
-                  <Calendar className="h-4 w-4 text-indigo-400" />
-                  <h2 className="text-sm font-bold text-slate-700">待完成计划</h2>
-                  <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-600">
-                    {activePlans.length}
-                  </span>
+            <section className="glass rounded-3xl shadow-soft-lg p-5">
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="h-4 w-4 text-indigo-400" />
+                    <h2 className="text-sm font-bold text-slate-700">待完成计划</h2>
+                    {activePlans.length > 0 && (
+                      <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-600">
+                        {activePlans.length}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAddingPlan((v) => !v)}
+                    className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-50"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    计划
+                  </button>
                 </div>
+                {addingPlan && (
+                  <div className="flex gap-2 mb-3">
+                    <input
+                      type="text"
+                      value={newPlanContent}
+                      onChange={(e) => setNewPlanContent(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleAddPlan()}
+                      placeholder="计划内容…"
+                      className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      disabled={planSubmitting || !newPlanContent.trim()}
+                      onClick={handleAddPlan}
+                      className="rounded-xl bg-indigo-500 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
+                    >
+                      {planSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : '保存'}
+                    </button>
+                  </div>
+                )}
+                {activePlans.length === 0 && !addingPlan ? (
+                  <p className="text-xs text-slate-400">暂无待完成计划</p>
+                ) : (
                 <div className="space-y-1.5">
                   {activePlans
                     .sort((a, b) => {
@@ -763,8 +934,8 @@ export default function ItemDetailPage() {
                       </div>
                     ))}
                 </div>
+                )}
               </section>
-            )}
 
             {/* 子项推进状态 */}
             {(item.sub_items || []).length > 0 && (

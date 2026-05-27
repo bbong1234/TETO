@@ -1,5 +1,6 @@
-import type { Record, TodayActivityStats } from '@/types/teto';
+import type { Record, TodayActivityStats, Item } from '@/types/teto';
 import { buildDayTimelineFromRecords } from './timeline-utils';
+import { buildItemPathLabel, resolveCategoryTitleForItem } from './item-tree';
 
 function recordDurationMinutes(record: Record, nowIso: string): number {
   if (record.duration_minutes != null) return record.duration_minutes;
@@ -14,7 +15,8 @@ function recordDurationMinutes(record: Record, nowIso: string): number {
 export function computeTodayActivityStats(
   records: Record[],
   date: string,
-  currentActivity: Record | null
+  currentActivity: Record | null,
+  items: Item[] = []
 ): TodayActivityStats {
   const nowIso = new Date().toISOString();
   const timed = records.filter(
@@ -29,21 +31,28 @@ export function computeTodayActivityStats(
     const mins = recordDurationMinutes(record, nowIso);
     recordedMinutes += mins;
 
-    if (record.category) {
-      categoryMap.set(record.category, (categoryMap.get(record.category) ?? 0) + mins);
-    }
+    if (record.item_id) {
+      const catTitle =
+        resolveCategoryTitleForItem(items, record.item_id) ??
+        (record.category ?? undefined);
+      if (catTitle) {
+        categoryMap.set(catTitle, (categoryMap.get(catTitle) ?? 0) + mins);
+      }
 
-    if (record.item_id && record.item?.title) {
+      const itemTitle =
+        buildItemPathLabel(items, record.item_id) || record.item?.title || '未命名';
       const existing = itemMap.get(record.item_id);
       if (existing) {
         existing.minutes += mins;
       } else {
-        itemMap.set(record.item_id, { title: record.item.title, minutes: mins });
+        itemMap.set(record.item_id, { title: itemTitle, minutes: mins });
       }
+    } else if (record.category) {
+      categoryMap.set(record.category, (categoryMap.get(record.category) ?? 0) + mins);
     }
   }
 
-  const timeline = buildDayTimelineFromRecords(records, date);
+  const timeline = buildDayTimelineFromRecords(records, date, '今天', items);
   const gapMinutes = timeline.records
     .filter((e) => e.is_gap)
     .reduce((sum, e) => sum + (e.duration_minutes ?? 0), 0);

@@ -9,6 +9,7 @@ export interface IngestFullParams {
   rawInput: string;
   date: string;
   traceId?: string;
+  seedFields?: Record<string, unknown>;
 }
 
 export interface IngestUnitProposal {
@@ -30,6 +31,7 @@ export async function ingestFull(params: IngestFullParams): Promise<IngestFullRe
     content: params.rawInput,
     date: params.date,
     traceId: params.traceId,
+    seedFields: params.seedFields,
   });
 
   const proposals = classification.unitProposals.map((unit) => {
