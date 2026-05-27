@@ -94,21 +94,12 @@ export function resolveContextLabel(
   return '';
 }
 
-/** 客户端种子大类（首次无大类时调用） */
+/** @deprecated 请使用 ensureCategoryItems */
 export async function seedTopLevelCategories(): Promise<Item[]> {
-  const created: Item[] = [];
-  for (const title of ACTIVITY_CATEGORY_PRESETS) {
-    const res = await fetch('/api/v2/items', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, parent_item_id: null, status: '活跃' }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.data) created.push(data.data);
-    }
-  }
-  return created;
+  const res = await fetch('/api/v2/items/seed-categories', { method: 'POST' });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.data?.created ?? [];
 }
 
 export function buildContextPathLabel(

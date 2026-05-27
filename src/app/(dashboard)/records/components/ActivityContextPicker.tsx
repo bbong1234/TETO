@@ -3,11 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Loader2, Plus } from 'lucide-react';
 import type { Item, SubItem } from '@/types/teto';
-import {
-  getCategoryItems,
-  getItemsForCategory,
-  seedTopLevelCategories,
-} from '@/lib/activity/item-tree';
+import { getCategoryItems, getItemsForCategory } from '@/lib/activity/item-tree';
 
 export interface ActivityContextValue {
   /** 大类 item id */
@@ -31,7 +27,7 @@ interface ActivityContextPickerProps {
   items: Item[];
   value: ActivityContextValue;
   onChange: (value: ActivityContextValue) => void;
-  /** 新建/种子大类后通知父级刷新 items */
+  /** 新建后通知父级刷新 items */
   onItemsChange?: () => void;
   compact?: boolean;
 }
@@ -47,7 +43,6 @@ export default function ActivityContextPicker({
 }: ActivityContextPickerProps) {
   const [subItems, setSubItems] = useState<SubItem[]>([]);
   const [subLoading, setSubLoading] = useState(false);
-  const [seeding, setSeeding] = useState(false);
   const [creating, setCreating] = useState<CreateLevel | null>(null);
   const [createText, setCreateText] = useState('');
   const [createSubmitting, setCreateSubmitting] = useState(false);
@@ -63,23 +58,6 @@ export default function ActivityContextPicker({
         : [],
     [items, value.categoryItemId]
   );
-
-  // 首次无大类时种子预设
-  useEffect(() => {
-    if (categoryItems.length > 0 || seeding) return;
-    let cancelled = false;
-    setSeeding(true);
-    seedTopLevelCategories()
-      .then(() => {
-        if (!cancelled) onItemsChange?.();
-      })
-      .finally(() => {
-        if (!cancelled) setSeeding(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [categoryItems.length, seeding, onItemsChange]);
 
   // 加载子项
   useEffect(() => {
@@ -228,15 +206,6 @@ export default function ActivityContextPicker({
     </div>
   );
 
-  if (seeding) {
-    return (
-      <div className="flex items-center gap-2 py-2 text-xs text-slate-400">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        初始化分类…
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-2">
       {/* 大类 */}
@@ -246,6 +215,12 @@ export default function ActivityContextPicker({
           renderCreateRow('category', '新大类名称')
         ) : (
           <div className="flex flex-wrap gap-1.5 flex-1">
+            {categoryItems.length === 0 && items.length === 0 && (
+              <span className="text-[11px] text-slate-400 py-0.5">加载分类…</span>
+            )}
+            {categoryItems.length === 0 && items.length > 0 && (
+              <span className="text-[11px] text-slate-400 py-0.5">暂无大类，请新建</span>
+            )}
             {categoryItems.map((cat) => (
               <button
                 key={cat.id}

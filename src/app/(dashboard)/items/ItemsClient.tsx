@@ -27,8 +27,8 @@ import {
   getChildItems,
   getOrphanItems,
   isCategoryItem,
-  seedTopLevelCategories,
 } from '@/lib/activity/item-tree';
+import { ensureCategoryItems } from '@/lib/activity/ensure-categories';
 import ParentCategorySelect from './components/ParentCategorySelect';
 
 // ============================================================
@@ -153,28 +153,32 @@ export default function ItemsClient() {
       const res = await fetch('/api/v2/items');
       const data = await res.json();
       if (data.data) {
-        let list = data.data.map((item: any) => ({
+        const list = data.data.map((item: any) => ({
           ...item,
           phase_count: item.phase_count ?? 0,
           record_count: item.record_count ?? 0,
           last_active_at: item.last_active_at ?? item.updated_at,
           active_phase_title: item.active_phase_title ?? null,
         }));
-        if (getCategoryItems(list).length === 0) {
-          await seedTopLevelCategories();
-          const retry = await fetch('/api/v2/items');
-          const retryData = await retry.json();
-          if (retryData.data) {
-            list = retryData.data.map((item: any) => ({
-              ...item,
-              phase_count: item.phase_count ?? 0,
-              record_count: item.record_count ?? 0,
-              last_active_at: item.last_active_at ?? item.updated_at,
-              active_phase_title: item.active_phase_title ?? null,
-            }));
-          }
-        }
         setItems(list);
+        setLoading(false);
+
+        if (getCategoryItems(list).length === 0) {
+          ensureCategoryItems(list).then((next) => {
+            if (next) {
+              setItems(
+                next.map((item: any) => ({
+                  ...item,
+                  phase_count: item.phase_count ?? 0,
+                  record_count: item.record_count ?? 0,
+                  last_active_at: item.last_active_at ?? item.updated_at,
+                  active_phase_title: item.active_phase_title ?? null,
+                }))
+              );
+            }
+          });
+        }
+        return;
       }
     } catch (err) {
       console.error('加载事项失败:', err);

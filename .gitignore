@@ -3,6 +3,14 @@ node_modules
 .env.local
 *.tsbuildinfo
 
+# Capacitor / Android 本地构建产物
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+*.apk
+*.aab
+
 # 临时构建/调试输出
 build_output*.txt
 __diff_output.txt

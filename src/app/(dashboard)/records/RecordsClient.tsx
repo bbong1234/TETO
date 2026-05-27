@@ -11,6 +11,8 @@ import DayRecordGroup from './components/DayRecordGroup';
 import RecordEditDrawer from './components/RecordEditDrawer';
 import CurrentActivityCard from './components/CurrentActivityCard';
 import QuickSwitchPanel from './components/QuickSwitchPanel';
+import { getCategoryItems } from '@/lib/activity/item-tree';
+import { ensureCategoryItems } from '@/lib/activity/ensure-categories';
 import TodayActivityTimeline from './components/TodayActivityTimeline';
 import TodayActivityStats from './components/TodayActivityStats';
 import StartActivityPanel, { type StartActivitySubmitPayload } from './components/StartActivityPanel';
@@ -504,7 +506,15 @@ export default function RecordsClient() {
         const tagsData = await tagsRes.json();
         const itemsData = await itemsRes.json();
         if (tagsData.data) setTags(tagsData.data);
-        if (itemsData.data) setItems(itemsData.data);
+        const itemsList = itemsData.data ?? [];
+        setItems(itemsList);
+
+        // 后台补齐预设大类（单次 API，不阻塞首屏）
+        if (getCategoryItems(itemsList).length === 0) {
+          ensureCategoryItems(itemsList).then((next) => {
+            if (next) setItems(next);
+          });
+        }
       } catch (err) {
         console.error('加载标签/事项失败:', err);
         showError('加载标签/事项失败，请刷新重试');
