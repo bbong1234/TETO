@@ -2,7 +2,6 @@
   "name": "teto-1.0",
   "version": "1.5.0",
   "description": "TETO 个人记录、日记复盘、项目跟踪和基础预测系统",
-  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

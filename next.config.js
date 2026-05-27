@@ -1,4 +1,4 @@
-// next.config.js
+/** @type {import('next').NextConfig} */
 const nextConfig = {
   allowedDevOrigins: ['192.168.2.59'],
   async headers() {
@@ -15,4 +15,4 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+module.exports = nextConfig;
