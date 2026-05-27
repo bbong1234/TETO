@@ -25,6 +25,9 @@ function authCallbackUrl(path: string): string {
   return `${window.location.origin}/auth/callback?next=${encodeURIComponent(path)}`;
 }
 
+const AUTH_UI_VERSION = 'password-v2';
+const BUILD_SHA = process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? 'local';
+
 export default function LoginPage() {
   return (
     <Suspense
@@ -305,6 +308,9 @@ function LoginPageContent() {
 
         <p className="mt-6 text-center text-xs leading-relaxed text-slate-500">
           账号仍使用邮箱作为唯一标识；改为密码登录后，日常打开 App 不再需要收验证码邮件。
+        </p>
+        <p className="mt-2 text-center text-[10px] text-slate-600">
+          登录页版本 {AUTH_UI_VERSION} · {BUILD_SHA}
         </p>
       </div>
     </main>
