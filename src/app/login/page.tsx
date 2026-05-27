@@ -2,15 +2,18 @@
 
 import { Suspense, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { isDevMode } from '@/lib/auth/get-current-user-id';
 
 type Mode = 'login' | 'register' | 'forgot';
+type AuthMethod = 'password' | 'otp';
 
 function mapAuthError(message: string): string {
   const lower = message.toLowerCase();
-  if (lower.includes('invalid login credentials')) return '邮箱或密码错误';
+  if (lower.includes('invalid login credentials')) {
+    return '邮箱或密码错误。若你之前用验证码注册，请切换到「验证码登录」，或通过「忘记密码」设置密码。';
+  }
   if (lower.includes('email not confirmed')) return '账号尚未验证，请先到邮箱点击确认链接';
   if (lower.includes('user already registered')) return '该邮箱已注册，请直接登录';
   if (lower.includes('password should be at least')) return '密码至少 6 位';
@@ -25,7 +28,11 @@ function authCallbackUrl(path: string): string {
   return `${window.location.origin}/auth/callback?next=${encodeURIComponent(path)}`;
 }
 
-const AUTH_UI_VERSION = 'password-v2';
+function redirectAfterAuth() {
+  window.location.href = '/records';
+}
+
+const AUTH_UI_VERSION = 'password-v3';
 const BUILD_SHA = process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? 'local';
 
 export default function LoginPage() {
@@ -43,7 +50,6 @@ export default function LoginPage() {
 }
 
 function LoginPageContent() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const devMode = isDevMode();
 
@@ -53,9 +59,12 @@ function LoginPageContent() {
   }, [searchParams]);
 
   const [mode, setMode] = useState<Mode>(initialMode);
+  const [authMethod, setAuthMethod] = useState<AuthMethod>('password');
+  const [otpStep, setOtpStep] = useState<'email' | 'code'>('email');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(() => {
     const authError = searchParams.get('error');
@@ -75,15 +84,18 @@ function LoginPageContent() {
     resetFeedback();
     setPassword('');
     setConfirmPassword('');
+    setOtp('');
+    setOtpStep('email');
+    setAuthMethod('password');
   };
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     resetFeedback();
     setLoading(true);
 
     const supabase = createClient();
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
 
     if (signInError) {
       setError(mapAuthError(signInError.message));
@@ -91,8 +103,62 @@ function LoginPageContent() {
       return;
     }
 
-    router.replace('/records');
-    router.refresh();
+    if (!data.session) {
+      setError('登录失败，未获取到会话，请重试');
+      setLoading(false);
+      return;
+    }
+
+    redirectAfterAuth();
+  };
+
+  const handleSendOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    resetFeedback();
+    setLoading(true);
+
+    const supabase = createClient();
+    const { error: otpError } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: true },
+    });
+
+    if (otpError) {
+      setError(mapAuthError(otpError.message));
+      setLoading(false);
+      return;
+    }
+
+    setMessage('验证码已发送到您的邮箱，请查收');
+    setOtpStep('code');
+    setLoading(false);
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    resetFeedback();
+    setLoading(true);
+
+    const supabase = createClient();
+    const { data, error: verifyError } = await supabase.auth.verifyOtp({
+      email,
+      token: otp,
+      type: 'email',
+    });
+
+    if (verifyError) {
+      setError(mapAuthError(verifyError.message));
+      setLoading(false);
+      return;
+    }
+
+    if (!data.session) {
+      setError('验证失败，未获取到会话，请重试');
+      setLoading(false);
+      return;
+    }
+
+    redirectAfterAuth();
   };
 
   const handleRegister = async (e: React.FormEvent) => {
@@ -125,8 +191,7 @@ function LoginPageContent() {
     }
 
     if (data.session) {
-      router.replace('/records');
-      router.refresh();
+      redirectAfterAuth();
       return;
     }
 
@@ -176,9 +241,13 @@ function LoginPageContent() {
     mode === 'login' ? '登录 TETO' : mode === 'register' ? '创建账号' : '找回密码';
   const subtitle =
     mode === 'login'
-      ? '使用邮箱和密码登录，无需每次收验证码'
+      ? authMethod === 'password'
+        ? '使用邮箱和密码登录'
+        : otpStep === 'email'
+          ? '输入邮箱接收验证码（适合旧账号）'
+          : '输入邮箱中的 6 位验证码'
       : mode === 'register'
-        ? '注册后可长期使用，登录时不再发邮件'
+        ? '注册后可长期使用密码登录'
         : '输入注册邮箱，我们会发送重置密码链接';
 
   return (
@@ -217,6 +286,39 @@ function LoginPageContent() {
           </div>
         )}
 
+        {mode === 'login' && (
+          <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-slate-800 bg-slate-900/40 p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMethod('password');
+                resetFeedback();
+                setOtpStep('email');
+              }}
+              className={[
+                'rounded-lg px-3 py-2 text-xs font-medium transition',
+                authMethod === 'password' ? 'bg-blue-500/20 text-blue-300' : 'text-slate-400 hover:text-white',
+              ].join(' ')}
+            >
+              密码登录
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMethod('otp');
+                resetFeedback();
+                setOtpStep('email');
+              }}
+              className={[
+                'rounded-lg px-3 py-2 text-xs font-medium transition',
+                authMethod === 'otp' ? 'bg-blue-500/20 text-blue-300' : 'text-slate-400 hover:text-white',
+              ].join(' ')}
+            >
+              验证码登录
+            </button>
+          </div>
+        )}
+
         <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-xl backdrop-blur">
           {error && (
             <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
@@ -229,8 +331,8 @@ function LoginPageContent() {
             </div>
           )}
 
-          {mode === 'login' && (
-            <form onSubmit={handleLogin} className="space-y-4">
+          {mode === 'login' && authMethod === 'password' && (
+            <form onSubmit={handlePasswordLogin} className="space-y-4">
               <Field label="邮箱" type="email" value={email} onChange={setEmail} autoComplete="email" />
               <Field
                 label="密码"
@@ -252,6 +354,49 @@ function LoginPageContent() {
                 className="w-full text-sm text-slate-400 transition hover:text-blue-300"
               >
                 忘记密码？
+              </button>
+            </form>
+          )}
+
+          {mode === 'login' && authMethod === 'otp' && otpStep === 'email' && (
+            <form onSubmit={handleSendOtp} className="space-y-4">
+              <Field label="邮箱" type="email" value={email} onChange={setEmail} autoComplete="email" />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full rounded-xl bg-gradient-to-r from-blue-500 to-indigo-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 disabled:opacity-50"
+              >
+                {loading ? '发送中…' : '发送验证码'}
+              </button>
+            </form>
+          )}
+
+          {mode === 'login' && authMethod === 'otp' && otpStep === 'code' && (
+            <form onSubmit={handleVerifyOtp} className="space-y-4">
+              <Field
+                label="验证码"
+                type="text"
+                value={otp}
+                onChange={setOtp}
+                autoComplete="one-time-code"
+                placeholder="6 位验证码"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full rounded-xl bg-gradient-to-r from-blue-500 to-indigo-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 disabled:opacity-50"
+              >
+                {loading ? '验证中…' : '登录'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOtpStep('email');
+                  resetFeedback();
+                }}
+                className="w-full text-sm text-slate-400 transition hover:text-blue-300"
+              >
+                返回重新输入邮箱
               </button>
             </form>
           )}
@@ -307,7 +452,7 @@ function LoginPageContent() {
         </div>
 
         <p className="mt-6 text-center text-xs leading-relaxed text-slate-500">
-          账号仍使用邮箱作为唯一标识；改为密码登录后，日常打开 App 不再需要收验证码邮件。
+          旧账号若无密码，请用「验证码登录」；新用户建议注册后使用密码登录。
         </p>
         <p className="mt-2 text-center text-[10px] text-slate-600">
           登录页版本 {AUTH_UI_VERSION} · {BUILD_SHA}
@@ -326,7 +471,7 @@ function Field({
   placeholder,
 }: {
   label: string;
-  type: 'email' | 'password';
+  type: 'email' | 'password' | 'text';
   value: string;
   onChange: (value: string) => void;
   autoComplete?: string;
@@ -342,6 +487,7 @@ function Field({
         autoComplete={autoComplete}
         required
         placeholder={placeholder}
+        maxLength={type === 'text' && label === '验证码' ? 6 : undefined}
         className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
       />
     </div>

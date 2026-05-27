@@ -14,3 +14,4 @@ android/local.properties
 # 临时构建/调试输出
 build_output*.txt
 __diff_output.txt
+.vercel
