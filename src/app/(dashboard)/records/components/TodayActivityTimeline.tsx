@@ -1,8 +1,9 @@
 'use client';
 
 import { useMemo } from 'react';
-import type { Record, Tag, Item, TimelineEntry } from '@/types/teto';
-import { buildDayTimelineFromRecords } from '@/lib/activity/timeline-utils';
+import type { Record, Item, TimelineEntry } from '@/types/teto';
+import { buildDayFeedFromRecords } from '@/lib/activity/timeline-utils';
+import { resolveDayLabels } from '@/lib/activity/day-labels';
 import DayTimelinePanel from '@/components/timeline/DayTimelinePanel';
 
 interface TodayActivityTimelineProps {
@@ -11,6 +12,7 @@ interface TodayActivityTimelineProps {
   items?: Item[];
   onGapClick?: (startIso: string, endIso: string) => void;
   onRecordClick?: (record: Record) => void;
+  onPlanComplete?: (record: Record) => void;
 }
 
 export default function TodayActivityTimeline({
@@ -19,10 +21,12 @@ export default function TodayActivityTimeline({
   items = [],
   onGapClick,
   onRecordClick,
+  onPlanComplete,
 }: TodayActivityTimelineProps) {
-  const timeline = useMemo(
-    () => buildDayTimelineFromRecords(records, date, '今日时间线', items),
-    [records, date, items]
+  const labels = useMemo(() => resolveDayLabels(date), [date]);
+  const feed = useMemo(
+    () => buildDayFeedFromRecords(records, date, labels.timelineTitle, items),
+    [records, date, items, labels.timelineTitle]
   );
 
   const handleGapClick = onGapClick
@@ -39,18 +43,28 @@ export default function TodayActivityTimeline({
 
   const handleEntryClick = onRecordClick
     ? (entry: TimelineEntry) => {
+        if (entry.is_gap) return;
         const record = records.find((r) => r.id === entry.id);
         if (record) onRecordClick(record);
       }
     : undefined;
 
+  const handlePlanComplete = onPlanComplete
+    ? (entry: TimelineEntry) => {
+        const record = records.find((r) => r.id === entry.id);
+        if (record) onPlanComplete(record);
+      }
+    : undefined;
+
   return (
     <DayTimelinePanel
-      data={timeline}
-      title="今日时间线"
-      emptyText="今天还没有带时间的记录，开始第一件事后将显示在这里。"
+      data={feed}
+      title={labels.timelineTitle}
+      emptyText={labels.timelineEmpty}
+      showGapHint
       onEntryClick={handleEntryClick}
       onGapClick={handleGapClick}
+      onPlanComplete={handlePlanComplete}
     />
   );
 }

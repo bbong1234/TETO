@@ -115,6 +115,7 @@ export async function updateRecord(
   if (recordData.note !== undefined) updateData.note = recordData.note;
   if (recordData.category !== undefined) updateData.category = recordData.category;
   if (recordData.subcategory !== undefined) updateData.subcategory = recordData.subcategory;
+  if (recordData.tool_label !== undefined) updateData.tool_label = recordData.tool_label;
   if (recordData.item_id !== undefined) updateData.item_id = recordData.item_id;
   if (recordData.phase_id !== undefined) updateData.phase_id = recordData.phase_id;
   if (recordData.sub_item_id !== undefined) updateData.sub_item_id = recordData.sub_item_id;
@@ -363,9 +364,10 @@ export async function listRecords(
 
   // 添加排序：同批次记录排在一起，批次内按 created_at 排序
   // occurred_at 为 NULL 的拆分记录应紧跟主记录，而非排在前面
+  const ascending = query.order !== 'desc';
   q = q
-    .order('occurred_at', { ascending: true, nullsFirst: false })
-    .order('created_at', { ascending: true });
+    .order('occurred_at', { ascending, nullsFirst: false })
+    .order('created_at', { ascending });
 
   // 分页获取，突破 Supabase 默认 1000 行限制
   // limit=0 表示无上限

@@ -42,13 +42,13 @@ describe('clarify-standards', () => {
     expect(r.corrected).toBe(true);
   });
 
-  it('keeps 总结 when summary discourse present', () => {
+  it('maps 总结 to 想法 when summary discourse present', () => {
     const r = guardRecordType({
       typeHint: '总结',
       rawContent: '今天整体效率一般，上午一直被打断',
     });
-    expect(r.type).toBe('总结');
-    expect(r.corrected).toBe(false);
+    expect(r.type).toBe('想法');
+    expect(r.corrected).toBe(true);
   });
 
   it('mergeClarificationIssues keeps phase B after compound gate', () => {

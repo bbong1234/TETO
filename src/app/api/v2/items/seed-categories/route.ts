@@ -15,6 +15,9 @@ export async function POST(request: NextRequest) {
         created_count: result.created.length,
         created: result.created,
         items: result.items,
+        english_sub_items_created: result.english_sub_items_created,
+        default_items_created: result.default_items_created,
+        english_migration: result.english_migration,
       },
       ctx.traceId
     );

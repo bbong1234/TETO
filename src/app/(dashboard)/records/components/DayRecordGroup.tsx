@@ -11,12 +11,6 @@ interface DayRecordGroupProps {
   /** 列模式顶部插槽（如 QuickInput），仅 layout=column 时渲染 */
   headerSlot?: ReactNode;
   aiPendingIds?: Set<string>;
-  /** 多选模式 */
-  selectionMode?: boolean;
-  selectedIds?: Set<string>;
-  onToggleSelect?: (id: string) => void;
-  /** 全选指定日期（多天模式下点击日期头触发） */
-  onSelectAllForDate?: (date: string) => void;
   onRecordClick: (record: Record) => void;
   onStarToggle: (record: Record) => void;
   onComplete?: (record: Record) => void;
@@ -50,10 +44,6 @@ export default function DayRecordGroup({
   layout = 'stacked',
   headerSlot,
   aiPendingIds,
-  selectionMode,
-  selectedIds,
-  onToggleSelect,
-  onSelectAllForDate,
   onRecordClick,
   onStarToggle,
   onComplete,
@@ -64,9 +54,6 @@ export default function DayRecordGroup({
   onConvertToGoal,
   onError,
 }: DayRecordGroupProps) {
-  // 判断该日是否全选
-  const isDateAllSelected = selectionMode && selectedIds && records.length > 0 && records.every(r => selectedIds.has(r.id));
-
   // 列模式：固定头 + 可滚动记录区 + 底部总结
 
   if (layout === 'column') {
@@ -75,11 +62,7 @@ export default function DayRecordGroup({
         {/* 日期头 */}
         <div className="flex-shrink-0 px-3 py-2 border-b border-slate-100 bg-slate-50/60">
           <div className="flex items-center gap-2">
-            <h2
-              className={`text-xs font-bold text-slate-900 ${selectionMode && onSelectAllForDate ? 'cursor-pointer hover:text-blue-600 transition-colors' : ''}`}
-              onClick={() => selectionMode && onSelectAllForDate?.(date)}
-              title={selectionMode ? (isDateAllSelected ? '点击取消全选该日记录' : '点击全选该日记录') : undefined}
-            >
+            <h2 className="text-xs font-bold text-slate-900">
               {formatDisplayDate(date, true)}
             </h2>
             <span className="rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
@@ -103,9 +86,6 @@ export default function DayRecordGroup({
               onRecordClick={onRecordClick}
               onStarToggle={onStarToggle}
               aiPendingIds={aiPendingIds}
-              selectionMode={selectionMode}
-              selectedIds={selectedIds}
-              onToggleSelect={onToggleSelect}
               onComplete={onComplete}
               onPostpone={onPostpone}
               onCancel={onCancel}
@@ -130,11 +110,7 @@ export default function DayRecordGroup({
     <div>
       {/* 日期分组头 */}
       <div className="flex items-center gap-2 mb-3">
-        <h2
-          className={`text-sm font-bold text-slate-900 ${selectionMode && onSelectAllForDate ? 'cursor-pointer hover:text-blue-600 transition-colors' : ''}`}
-          onClick={() => selectionMode && onSelectAllForDate?.(date)}
-          title={selectionMode ? (isDateAllSelected ? '点击取消全选该日记录' : '点击全选该日记录') : undefined}
-        >
+        <h2 className="text-sm font-bold text-slate-900">
           {formatDisplayDate(date)}
         </h2>
         <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-medium text-slate-500">
@@ -149,9 +125,6 @@ export default function DayRecordGroup({
           onRecordClick={onRecordClick}
           onStarToggle={onStarToggle}
           aiPendingIds={aiPendingIds}
-          selectionMode={selectionMode}
-          selectedIds={selectedIds}
-          onToggleSelect={onToggleSelect}
           onComplete={onComplete}
           onPostpone={onPostpone}
           onCancel={onCancel}

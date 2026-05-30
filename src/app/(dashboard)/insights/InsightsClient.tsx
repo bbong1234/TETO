@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { BarChart3, Loader2, RefreshCw, Download } from 'lucide-react';
+import { BarChart3, RefreshCw, Download } from 'lucide-react';
 import DateRangeSelector from './components/DateRangeSelector';
 import TodayTimelinePanel from './components/TodayTimelinePanel';
 import YesterdayTimelinePanel from './components/YesterdayTimelinePanel';
@@ -17,6 +17,7 @@ import CorrectionsTrendsPanel from './components/CorrectionsTrendsPanel';
 import { useToast } from '@/components/ui/use-toast';
 import ToastContainer from '@/components/ui/use-toast';
 import { useInsights } from './useInsights';
+import { InsightsPageSkeleton } from '@/components/ui/PageSkeletons';
 
 type DatePreset = '7d' | '30d' | 'month' | 'custom';
 
@@ -102,12 +103,7 @@ export default function InsightsClient() {
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
-        {loading && (
-          <div className="flex items-center justify-center py-20">
-            <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
-            <span className="ml-3 text-slate-500">加载中...</span>
-          </div>
-        )}
+        {loading && <InsightsPageSkeleton />}
 
         {error && (
           <div className="rounded-xl bg-red-50 border border-red-200 p-4">

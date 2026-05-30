@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
-import { listItems } from '@/lib/db/items';
+import { listItems, listItemsLite } from '@/lib/db/items';
 import { createItemSafely } from '@/lib/domain/item-service';
 import { createClient } from '@/lib/supabase/server';
 import type { ItemsQuery, CreateItemPayload } from '@/types/teto';
@@ -28,7 +28,10 @@ export async function GET(request: NextRequest) {
       query.parent_item_id = parent_item_id === 'null' ? null : parent_item_id;
     }
 
-    const result = await listItems(userId, query);
+    const lite = searchParams.get('lite') === 'true';
+    const result = lite
+      ? await listItemsLite(userId, query)
+      : await listItems(userId, query);
     return apiSuccess(result, ctx.traceId);
   } catch (error) {
     return handleApiError(error);

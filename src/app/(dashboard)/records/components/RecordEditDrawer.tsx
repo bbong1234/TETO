@@ -1,10 +1,19 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { X, Save, Trash2, DollarSign, Timer, BarChart3, Plus, MapPin, Users, Smile, Zap, Activity, Link2, Search, RefreshCw, Layers, TrendingUp, Clock, Target, ChevronDown, ChevronRight, Heart, Info, Loader2 } from 'lucide-react';
-import type { Record, Tag, Item, RecordType, UpdateRecordPayload, RecordLinkType, SubItem } from '@/types/teto';
+import { X, Save, Trash2, DollarSign, Timer, BarChart3, Plus, MapPin, Users, Smile, Zap, Activity, Link2, Search, RefreshCw, TrendingUp, Clock, Target, ChevronDown, ChevronRight, Heart, Info, Loader2 } from 'lucide-react';
+import type { Record, Tag, Item, RecordType, UpdateRecordPayload, RecordLinkType } from '@/types/teto';
+import ActivityContextPicker, {
+  type ActivityContextValue,
+} from './ActivityContextPicker';
+import ToolLabelField, { persistToolOptionIfNeeded } from '@/components/records/ToolLabelField';
+import {
+  resolveActivityContextFromRecord,
+  resolveTargetItemId,
+  validateActivityContext,
+} from '@/lib/activity/item-tree';
 import type { ParsedSemantic } from '@/types/semantic';
-import { RECORD_TYPES, OUTCOME_TYPE_LABELS, OUTCOME_DIRECTION_LABELS, PLACE_TYPE_LABELS, MONEY_DIRECTION_LABELS } from '@/types/teto';
+import { USER_RECORD_TYPES, OUTCOME_TYPE_LABELS, OUTCOME_DIRECTION_LABELS, PLACE_TYPE_LABELS, MONEY_DIRECTION_LABELS } from '@/types/teto';
 import type { RecordLinkWithPeer } from '@/lib/db/record-links';
 import { generateContentSummary } from '@/lib/utils/generate-content-summary';
 import { parseClientApiJson } from '@/lib/observability/client-request';
@@ -79,6 +88,10 @@ interface RecordEditDrawerProps {
   onSaved: () => void;
   onDeleted: () => void;
   onError: (message: string) => void;
+  /** 新建大类/事项/子项后刷新列表 */
+  onItemsChange?: () => void | Promise<void>;
+  onItemCreated?: (item: Item) => void;
+  onCreateError?: (message: string) => void;
 }
 
 export default function RecordEditDrawer({
@@ -89,6 +102,9 @@ export default function RecordEditDrawer({
   onSaved,
   onDeleted,
   onError,
+  onItemsChange,
+  onItemCreated,
+  onCreateError,
 }: RecordEditDrawerProps) {
   // --- 状态 ---
   const [content, setContent] = useState(record.content);
@@ -96,10 +112,9 @@ export default function RecordEditDrawer({
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>(
     record.tags?.map((t) => t.id) || []
   );
-  const [selectedItemId, setSelectedItemId] = useState(record.item_id || '');
-  const [selectedSubItemId, setSelectedSubItemId] = useState(record.sub_item_id || '');
-  const [subItemsForSelectedItem, setSubItemsForSelectedItem] = useState<SubItem[]>([]);
-  const [loadingSubItems, setLoadingSubItems] = useState(false);
+  const [activityContext, setActivityContext] = useState<ActivityContextValue>(() =>
+    resolveActivityContextFromRecord(items, record.item_id, record.sub_item_id)
+  );
   const [occurredAt, setOccurredAt] = useState(() => {
     if (!record.occurred_at) return '';
     const d = new Date(record.occurred_at);
@@ -139,6 +154,8 @@ export default function RecordEditDrawer({
   const [bodyState, setBodyState] = useState(record.body_state || '');
   const [moneyCurrency, setMoneyCurrency] = useState(record.money_currency || 'CNY');
   const [resultText, setResultText] = useState(record.result || '');
+  const [toolLabel, setToolLabel] = useState(record.tool_label || '');
+  const [contextSubItemsCount, setContextSubItemsCount] = useState(0);
 
   // 原始输入编辑
   const [rawInput, setRawInput] = useState(record.raw_input || '');
@@ -161,20 +178,12 @@ export default function RecordEditDrawer({
   const [linkSearching, setLinkSearching] = useState(false);
   const [showLinkSearch, setShowLinkSearch] = useState(false);
 
-  // 选事项后，动态拉取该事项的子项列表
   useEffect(() => {
-    const itemId = selectedItemId;
-    if (!itemId) {
-      setSubItemsForSelectedItem([]);
-      return;
-    }
-    setLoadingSubItems(true);
-    fetch(`/api/v2/sub-items?item_id=${itemId}`)
-      .then(res => res.ok ? res.json() : { data: [] })
-      .then(json => setSubItemsForSelectedItem(json.data || []))
-      .catch(() => setSubItemsForSelectedItem([]))
-      .finally(() => setLoadingSubItems(false));
-  }, [selectedItemId]);
+    setActivityContext(
+      resolveActivityContextFromRecord(items, record.item_id, record.sub_item_id)
+    );
+    setToolLabel(record.tool_label || '');
+  }, [record.id, record.item_id, record.sub_item_id, record.tool_label, items]);
 
   useEffect(() => {
     setExplainData(null);
@@ -348,7 +357,9 @@ export default function RecordEditDrawer({
         const hint = unit.item_hint.toLowerCase();
         const matched = items.find(i => i.title.toLowerCase() === hint)
           || items.find(i => i.title.toLowerCase() === hint.replace(/\s+/g, ''));
-        if (matched) setSelectedItemId(matched.id);
+        if (matched) {
+          setActivityContext(resolveActivityContextFromRecord(items, matched.id));
+        }
       }
 
       // 三层九组 Phase 1 字段回填（始终覆盖，null 清空旧值）
@@ -413,6 +424,11 @@ export default function RecordEditDrawer({
   // --- 保存 ---
   const handleSave = async () => {
     if (saving) return;
+    const contextErr = validateActivityContext(activityContext, items, contextSubItemsCount);
+    if (contextErr) {
+      onError(contextErr);
+      return;
+    }
     setSaving(true);
     try {
       const payload: UpdateRecordPayload = {
@@ -479,8 +495,9 @@ export default function RecordEditDrawer({
         payload.occurred_at_end = null;
       }
 
-      payload.item_id = selectedItemId || null;
-      payload.sub_item_id = selectedSubItemId || null;
+      payload.item_id = resolveTargetItemId(activityContext) || null;
+      payload.sub_item_id = activityContext.subItemId || null;
+      payload.tool_label = toolLabel.trim() || null;
 
       // 如果原始输入被编辑过，也传回 raw_input
       if (rawInput && rawInput !== record.raw_input) {
@@ -500,6 +517,7 @@ export default function RecordEditDrawer({
       });
 
       if (res.ok) {
+        if (toolLabel.trim()) void persistToolOptionIfNeeded(toolLabel);
         // TETO 1.6: 比对 AI 原值与用户修改值，差异字段触发纠错记录
         if (record.review_status === 'confirmed' || record.input_source === 'ai') {
           triggerCorrectionsForEditedFields(record as unknown as { [key: string]: unknown }, payload as unknown as { [key: string]: unknown });
@@ -654,7 +672,7 @@ export default function RecordEditDrawer({
           <div>
             <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">主类型</label>
             <div className="flex flex-wrap gap-1">
-              {RECORD_TYPES.map((t) => (
+              {USER_RECORD_TYPES.map((t) => (
                 <button
                   key={t}
                   onClick={() => setType(t)}
@@ -667,6 +685,11 @@ export default function RecordEditDrawer({
                   {t}
                 </button>
               ))}
+              {type === '总结' && (
+                <span className="rounded-md px-2 py-1 text-[11px] font-medium bg-slate-200 text-slate-600">
+                  回顾（遗留）
+                </span>
+              )}
             </div>
           </div>
 
@@ -946,62 +969,23 @@ export default function RecordEditDrawer({
           <div className="space-y-3">
             <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">组织信息</label>
 
-            {/* 关联事项 */}
             <div>
-              <label className="mb-1 block text-[10px] text-slate-400">关联事项</label>
-              <select
-                value={selectedItemId}
-                onChange={(e) => {
-                  setSelectedItemId(e.target.value);
-                  setSelectedSubItemId('');
-                }}
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
-              >
-                <option value="">不选择</option>
-                {items.map((item) => (
-                  <option key={item.id} value={item.id}>{item.title}</option>
-                ))}
-              </select>
+              <label className="mb-2 block text-[10px] text-slate-400">
+                归属（大类 / 事项 / 子项）
+              </label>
+              <ActivityContextPicker
+                items={items}
+                value={activityContext}
+                onChange={setActivityContext}
+                onItemsChange={onItemsChange}
+                onItemCreated={onItemCreated}
+                onCreateError={onCreateError ?? onError}
+                onSubItemsLoaded={(subs) => setContextSubItemsCount(subs.length)}
+                compact
+              />
             </div>
 
-            {/* 关联子项 */}
-            {selectedItemId && subItemsForSelectedItem.length > 0 && (
-              <div>
-                <label className="mb-1 block text-[10px] text-slate-400">
-                  关联子项 <span className="font-normal text-slate-400">（可选）</span>
-                </label>
-                {loadingSubItems ? (
-                  <div className="text-[11px] text-slate-400 py-1">加载子项...</div>
-                ) : (
-                  <div className="flex flex-wrap gap-1">
-                    <button
-                      onClick={() => setSelectedSubItemId('')}
-                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                        !selectedSubItemId
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                    >
-                      不指定子项
-                    </button>
-                    {subItemsForSelectedItem.map(sub => (
-                      <button
-                        key={sub.id}
-                        onClick={() => setSelectedSubItemId(sub.id)}
-                        className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                          selectedSubItemId === sub.id
-                            ? 'bg-blue-500 text-white'
-                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }`}
-                      >
-                        <Layers className="inline h-2.5 w-2.5 mr-0.5" />
-                        {sub.title}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+            <ToolLabelField value={toolLabel} onChange={setToolLabel} compact />
 
             {/* 关联记录 */}
             <div>
@@ -1178,33 +1162,31 @@ export default function RecordEditDrawer({
                 </div>
                 {/* 关系角色 */}
                 <CompactInput icon={<Users className="h-3 w-3" />} label="关系角色" value={relationRolesStr} onChange={setRelationRolesStr} placeholder="如：同事, 朋友" />
+                {/* 横向标记（与事项分类无关） */}
+                {tags.length > 0 && (
+                  <div>
+                    <label className="mb-1 block text-[10px] text-slate-400">横向标记（可选）</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {tags.map((tag) => (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          onClick={() => toggleTag(tag.id)}
+                          className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                            selectedTagIds.includes(tag.id)
+                              ? 'bg-blue-500 text-white'
+                              : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                          }`}
+                        >
+                          {tag.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
-
-          {/* ================================ */}
-          {/* 标签 */}
-          {/* ================================ */}
-          {tags.length > 0 && (
-            <div>
-              <label className="mb-1 block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">标签</label>
-              <div className="flex flex-wrap gap-1.5">
-                {tags.map((tag) => (
-                  <button
-                    key={tag.id}
-                    onClick={() => toggleTag(tag.id)}
-                    className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors ${
-                      selectedTagIds.includes(tag.id)
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-                    }`}
-                  >
-                    {tag.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* AI 低置信度 / 待确认提示区 */}
           {(() => {

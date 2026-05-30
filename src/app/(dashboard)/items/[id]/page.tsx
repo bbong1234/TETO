@@ -6,7 +6,7 @@ import {
   ArrowLeft, Loader2, Trash2, Pencil, X, Check,
   ExternalLink, RefreshCw, Plus, Layers, FileText, History,
   Calendar, DollarSign, Timer, BarChart3, Target, Sparkles,
-  ChevronRight, AlertTriangle, CheckSquare
+  ChevronRight, AlertTriangle
 } from 'lucide-react';
 import type { Item, UpdateItemPayload, Record as TetoRecord, Phase, Goal, ItemAggregation, SubItem } from '@/types/teto';
 import { ITEM_STATUSES } from '@/types/teto';
@@ -16,14 +16,14 @@ import PhaseForm from '../components/PhaseForm';
 import PhaseSuggest from '../components/PhaseSuggest';
 import HistoryImport from '../components/HistoryImport';
 import UnifiedGoalPanel from '../components/UnifiedGoalPanel';
-import ItemTimeline from '../components/ItemTimeline';
+import ItemDayFeedSection from '../components/ItemDayFeedSection';
 import ItemDataPanel from '../components/ItemDataPanel';
 import SubItemTabBar from '../components/SubItemTabBar';
 import SubItemForm from '../components/SubItemForm';
 import SubItemPromoteDialog from '../components/SubItemPromoteDialog';
 import ItemActivityStatsSection from '../components/ItemActivityStatsSection';
-import ItemActivityTimelineSection from '../components/ItemActivityTimelineSection';
 import ItemCategoryChildrenSection from '../components/ItemCategoryChildrenSection';
+import { postManualRecord } from '@/lib/activity/post-manual-record';
 import ParentCategorySelect from '../components/ParentCategorySelect';
 import { isCategoryItem } from '@/lib/activity/item-tree';
 
@@ -119,10 +119,6 @@ export default function ItemDetailPage() {
   const [completeTime, setCompleteTime] = useState('');
   const [completionContent, setCompletionContent] = useState('');
 
-  // 多选模式状态
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [batchDeleting, setBatchDeleting] = useState(false);
   const [promotingSubItem, setPromotingSubItem] = useState<SubItem | null>(null);
   const [correctingField, setCorrectingField] = useState<string | null>(null);
   const [promoting, setPromoting] = useState(false);
@@ -326,23 +322,16 @@ export default function ItemDetailPage() {
     setPlanSubmitting(true);
     try {
       const today = new Date().toISOString().split('T')[0];
-      const res = await fetch('/api/v2/records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content: text,
-          type: '计划',
-          date: today,
-          item_id: itemId,
-          lifecycle_status: 'active',
-          input_source: 'manual',
-          review_status: 'confirmed',
-        }),
+      await postManualRecord({
+        content: text,
+        type: '计划',
+        date: today,
+        time_anchor_date: today,
+        item_id: itemId,
+        lifecycle_status: 'active',
+        input_source: 'manual',
+        review_status: 'confirmed',
       });
-      if (!res.ok) {
-        const e = await res.json();
-        throw new Error(e.error?.message ?? '添加计划失败');
-      }
       setNewPlanContent('');
       setAddingPlan(false);
       fetchItem();
@@ -443,57 +432,11 @@ export default function ItemDetailPage() {
       })()
     : [];
 
-  // 时间线记录：排除活跃计划（计划在"待完成计划"section 中显示）
-  const timelineRecords = useMemo(() =>
-    relatedRecords.filter(r => !(r.type === '计划' && (!r.lifecycle_status || r.lifecycle_status === 'active'))),
-    [relatedRecords]
-  );
-
   // 活跃计划记录（在"待完成计划"section 显示）
   const activePlans = useMemo(() =>
     relatedRecords.filter(r => r.type === '计划' && (!r.lifecycle_status || r.lifecycle_status === 'active')),
     [relatedRecords]
   );
-
-  // 计算占位日期：量化目标范围内、无记录的日期
-  const placeholderEntries = useMemo(() => {
-    if (!item?.goals) return [];
-
-    const numericGoals = item.goals.filter(g => {
-      if (g.rule_type !== '周期性达成' || !g.start_date || !g.item_id) return false;
-      if (activeSubItemId === '__orphan__') return false;
-      if (activeSubItemId) return g.sub_item_id === activeSubItemId;
-      return true;
-    });
-
-    if (numericGoals.length === 0) return [];
-
-    const earliest = numericGoals.reduce<string>((min, g) =>
-      g.start_date! < min ? g.start_date! : min, numericGoals[0].start_date!);
-
-    // 收集已有记录的日期集合
-    const recordDates = new Set<string>();
-    for (const r of relatedRecords) {
-      const d = r.occurred_at?.slice(0, 10) || r.created_at?.slice(0, 10);
-      if (d) recordDates.add(d);
-    }
-
-    const placeholders: Array<{ id: string; date: string }> = [];
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-
-    const cur = new Date(earliest + 'T00:00:00Z');
-    const end = new Date(todayStr + 'T00:00:00Z');
-    while (cur <= end) {
-      const dateStr = `${cur.getUTCFullYear()}-${String(cur.getUTCMonth() + 1).padStart(2, '0')}-${String(cur.getUTCDate()).padStart(2, '0')}`;
-      if (!recordDates.has(dateStr)) {
-        placeholders.push({ id: `placeholder-${dateStr}`, date: dateStr });
-      }
-      cur.setUTCDate(cur.getUTCDate() + 1);
-    }
-
-    return placeholders;
-  }, [item?.goals, relatedRecords, activeSubItemId]);
 
   const handleAssignOrphans = async () => {
     if (!orphanAssignSubId || orphanRecords.length === 0) return;
@@ -518,92 +461,6 @@ export default function ItemDetailPage() {
       setAssigningOrphans(false);
     }
   };
-
-  // 多选模式操作
-  const handleToggleSelectionMode = () => {
-    if (selectionMode) {
-      setSelectionMode(false);
-      setSelectedIds(new Set());
-    } else {
-      setSelectionMode(true);
-    }
-  };
-
-  const handleToggleSelect = useCallback((id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const handleSelectAll = () => {
-    const allIds = relatedRecords.map(r => r.id);
-    const allSelected = allIds.length > 0 && allIds.every(id => selectedIds.has(id));
-    if (allSelected) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(allIds));
-    }
-  };
-
-  const handleBatchDelete = async () => {
-    if (selectedIds.size === 0) return;
-    const msg = selectedIds.size > 20
-      ? `你正在删除 ${selectedIds.size} 条记录，此操作不可撤销。确定继续？`
-      : `确定删除选中的 ${selectedIds.size} 条记录？此操作不可撤销。`;
-    if (!confirm(msg)) return;
-    setBatchDeleting(true);
-    try {
-      const ids = Array.from(selectedIds);
-      const BATCH_SIZE = 200;
-      for (let i = 0; i < ids.length; i += BATCH_SIZE) {
-        const batch = ids.slice(i, i + BATCH_SIZE);
-        const res = await fetch('/api/v2/records/batch-delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: batch }),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || '批量删除失败');
-        }
-      }
-      setSelectedIds(new Set());
-      setSelectionMode(false);
-      fetchItem();
-    } catch (err: any) {
-      showError(err.message || '批量删除失败，请重试');
-    } finally {
-      setBatchDeleting(false);
-    }
-  };
-
-  const handleSelectAllInYear = useCallback((year: string) => {
-    const yearRecordIds = relatedRecords
-      .filter(r => {
-        const d = r.occurred_at || r.created_at;
-        const y = d ? new Date(d).getFullYear().toString() : '';
-        return y === year;
-      })
-      .map(r => r.id);
-
-    const allSelected = yearRecordIds.length > 0 && yearRecordIds.every(id => selectedIds.has(id));
-    if (allSelected) {
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        yearRecordIds.forEach(id => next.delete(id));
-        return next;
-      });
-    } else {
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        yearRecordIds.forEach(id => next.add(id));
-        return next;
-      });
-    }
-  }, [relatedRecords, selectedIds]);
 
   // 子项级聚合计算（必须在 early return 前调用，保持 hooks 顺序稳定）
   const subItemAgg = useMemo(() => {
@@ -630,8 +487,42 @@ export default function ItemDetailPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
+      <div className="flex-1 overflow-y-auto min-h-0 desktop-bg">
+        <div className="mx-auto max-w-[1200px] px-4 py-5 animate-pulse">
+          <div className="mb-3 flex items-center gap-2">
+            <div className="h-3 w-10 rounded bg-slate-200" />
+            <div className="h-3 w-3 rounded bg-slate-100" />
+            <div className="h-3 w-24 rounded bg-slate-200" />
+          </div>
+          <div className="mb-4 h-8 w-28 rounded-xl bg-slate-200" />
+          <section className="glass rounded-3xl shadow-soft-lg p-5 mb-5 space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-2 flex-1">
+                <div className="h-7 w-48 rounded-lg bg-slate-200" />
+                <div className="h-4 w-32 rounded bg-slate-100" />
+              </div>
+              <div className="h-6 w-16 rounded-full bg-slate-200" />
+            </div>
+            <div className="flex gap-3">
+              <div className="h-10 flex-1 rounded-2xl bg-slate-100" />
+              <div className="h-10 flex-1 rounded-2xl bg-slate-100" />
+              <div className="h-10 flex-1 rounded-2xl bg-slate-100" />
+            </div>
+          </section>
+          <section className="glass rounded-3xl shadow-soft-lg p-5 mb-5 space-y-3">
+            <div className="h-4 w-24 rounded bg-slate-200" />
+            <div className="h-20 rounded-2xl bg-slate-100" />
+            <div className="h-20 rounded-2xl bg-slate-100" />
+          </section>
+          <section className="glass rounded-3xl shadow-soft-lg p-5 space-y-3">
+            <div className="h-4 w-20 rounded bg-slate-200" />
+            <div className="h-16 rounded-2xl bg-slate-100" />
+          </section>
+          <div className="mt-6 flex items-center justify-center gap-2 text-sm text-slate-400">
+            <Loader2 className="h-4 w-4 animate-spin text-indigo-400" />
+            加载事项…
+          </div>
+        </div>
       </div>
     );
   }
@@ -655,9 +546,6 @@ export default function ItemDetailPage() {
   const totalCost = effectiveAgg?.total_cost ?? 0;
   const recordCount = effectiveAgg?.record_count ?? relatedRecords.length;
   const gradientClass = STATUS_COLORS[item.status] || 'from-slate-400 to-slate-500';
-
-  const goalMap: Record<string, string> = {};
-  (item.goals || (item.goal ? [item.goal] : [])).forEach(g => { if (g) goalMap[g.id] = g.title; });
 
   const isCategoryView =
     item &&
@@ -836,7 +724,11 @@ export default function ItemDetailPage() {
           {isCategoryView && (
             <ItemCategoryChildrenSection categoryItem={item} childItems={childItems} />
           )}
-          {!isCategoryView && <ItemActivityTimelineSection records={relatedRecords} />}
+          <ItemDayFeedSection
+            records={relatedRecords}
+            onRecordClick={setEditingRecord}
+            onPlanComplete={handleCompleteRecord}
+          />
         </div>
 
         {/* ── 统一视图 ── */}
@@ -1002,7 +894,7 @@ export default function ItemDetailPage() {
               <div className="mt-3 pt-3 border-t border-slate-100/60">
                 <div className="rounded-xl bg-amber-50/60 border border-amber-200/60 px-4 py-3">
                   <p className="text-xs font-medium text-amber-700 mb-2">
-                    以下 {orphanRecords.length} 条记录尚未归类到子项，建议尽快分配
+                    以下 {orphanRecords.length} 条记录尚未归类到子项；新录入须选择子项，建议尽快分配
                   </p>
                   <div className="space-y-1.5 mb-3">
                     {orphanRecords.slice(0, 5).map(r => (
@@ -1236,48 +1128,6 @@ export default function ItemDetailPage() {
               ))}
             </div>
           </>)}
-        </section>
-
-        {/* ── 区域四：章节时间线 ── */}
-        <section className="glass rounded-3xl shadow-soft-lg p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <FileText className="h-4 w-4 text-slate-400" />
-              <h2 className="text-sm font-bold text-slate-700">时间线</h2>
-            </div>
-            {relatedRecords.length > 0 && (
-              <button
-                onClick={handleToggleSelectionMode}
-                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                  selectionMode
-                    ? 'bg-amber-500 text-white shadow-sm'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                <CheckSquare className="h-3.5 w-3.5" />
-                {selectionMode ? '取消' : '选择'}
-              </button>
-            )}
-          </div>
-
-          <ItemTimeline
-            phases={phases}
-            records={timelineRecords}
-            goalMap={goalMap}
-            onRecordClick={setEditingRecord}
-            onEditPhase={handleEditPhase}
-            onComplete={handleCompleteRecord}
-            onPostpone={handlePostponeRecord}
-            onCancel={handleCancelRecord}
-            selectionMode={selectionMode}
-            selectedIds={selectedIds}
-            onToggleSelect={handleToggleSelect}
-            onSelectAll={handleSelectAll}
-            onBatchDelete={handleBatchDelete}
-            batchDeleting={batchDeleting}
-            placeholders={placeholderEntries}
-            onSelectAllInYear={handleSelectAllInYear}
-          />
         </section>
 
         {/* ── 弹窗层 ── */}

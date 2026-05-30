@@ -2,20 +2,30 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Play, Square, ArrowRightLeft, StickyNote, Loader2, ChevronDown, ChevronUp, Plus, Check } from 'lucide-react';
-import type { Item, Record as TetoRecord, RecordType } from '@/types/teto';
+import type { Item, Record as TetoRecord, RecordType, CreateRecordPayload } from '@/types/teto';
 import { formatDurationMinutes } from '@/lib/activity/stats-utils';
+import { DIARY_ITEM_TITLE } from '@/lib/activity/constants';
 import StartActivityPanel, { type StartActivitySubmitPayload } from './StartActivityPanel';
 import ActivityContextPicker, {
   EMPTY_ACTIVITY_CONTEXT,
   type ActivityContextValue,
 } from './ActivityContextPicker';
-import { resolveContextLabel, resolveTargetItemId, buildItemPathLabel } from '@/lib/activity/item-tree';
+import { postBackfillRecord } from '@/lib/activity/post-backfill-record';
+import { postManualRecord } from '@/lib/activity/post-manual-record';
+import { resolveContextLabel, resolveTargetItemId, buildItemPathLabel, validateActivityContext } from '@/lib/activity/item-tree';
+import ToolLabelField, { persistToolOptionIfNeeded } from '@/components/records/ToolLabelField';
+import { CurrentActivityCardSkeleton } from '@/components/ui/PageSkeletons';
 
 interface CurrentActivityCardProps {
   items: Item[];
   refreshKey?: number;
+  /** 父级快速切换后递增，用于同步当前活动（0 = 不覆盖初次 fetch） */
+  activitySyncToken?: number;
+  syncActivity?: TetoRecord | null;
   onChanged: () => void;
-  onItemsChanged?: () => void;
+  onItemsChanged?: () => void | Promise<void>;
+  onItemCreated?: (item: Item) => void;
+  onCreateError?: (message: string) => void;
   onActivityChange?: (activity: TetoRecord | null) => void;
   onError?: (message: string) => void;
 }
@@ -53,8 +63,12 @@ function useElapsed(startIso: string | null | undefined): number {
 export default function CurrentActivityCard({
   items,
   refreshKey = 0,
+  activitySyncToken = 0,
+  syncActivity,
   onChanged,
   onItemsChanged,
+  onItemCreated,
+  onCreateError,
   onActivityChange,
   onError,
 }: CurrentActivityCardProps) {
@@ -72,6 +86,8 @@ export default function CurrentActivityCard({
   const [idleContent, setIdleContent] = useState('');
   const [idleMode, setIdleMode] = useState<IdleMode>('发生');
   const [idleContext, setIdleContext] = useState<ActivityContextValue>(EMPTY_ACTIVITY_CONTEXT);
+  const [idleSubItemsCount, setIdleSubItemsCount] = useState(0);
+  const [idleToolLabel, setIdleToolLabel] = useState('');
   const [idleSubmitting, setIdleSubmitting] = useState(false);
   const [panelInitialContent, setPanelInitialContent] = useState('');
   const elapsed = useElapsed(activity?.occurred_at);
@@ -95,6 +111,12 @@ export default function CurrentActivityCard({
   useEffect(() => {
     fetchCurrent();
   }, [fetchCurrent, refreshKey]);
+
+  useEffect(() => {
+    if (!activitySyncToken) return;
+    setActivity(syncActivity ?? null);
+    setLoading(false);
+  }, [activitySyncToken, syncActivity]);
 
   useEffect(() => {
     if (noteOpen) setTimeout(() => noteRef.current?.focus(), 50);
@@ -127,40 +149,7 @@ export default function CurrentActivityCard({
 
   const handlePanelSubmit = async (payload: StartActivitySubmitPayload) => {
     if (panelMode === 'backfill') {
-      const today = new Date().toISOString().slice(0, 10);
-      const startDate = payload.occurred_at
-        ? new Date(payload.occurred_at).toISOString().slice(0, 10)
-        : today;
-      const duration =
-        payload.occurred_at && payload.occurred_at_end
-          ? Math.max(
-              0,
-              Math.round(
-                (Date.parse(payload.occurred_at_end) - Date.parse(payload.occurred_at)) / 60000
-              )
-            )
-          : undefined;
-      const res = await fetch('/api/v2/records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          date: startDate,
-          content: payload.content || '补记',
-          type: '发生',
-          lifecycle_status: 'completed',
-          occurred_at: payload.occurred_at,
-          occurred_at_end: payload.occurred_at_end,
-          duration_minutes: duration,
-          item_id: payload.item_id,
-          sub_item_id: payload.sub_item_id,
-          input_source: 'manual',
-          review_status: 'confirmed',
-        }),
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error?.message ?? '补记失败');
-      }
+      await postBackfillRecord(payload, todayDateStr());
     } else {
       const res = await fetch('/api/v2/activities/switch', {
         method: 'POST',
@@ -169,6 +158,7 @@ export default function CurrentActivityCard({
           content: payload.content,
           item_id: payload.item_id,
           sub_item_id: payload.sub_item_id,
+          tool_label: payload.tool_label,
         }),
       });
       if (!res.ok) {
@@ -206,9 +196,14 @@ export default function CurrentActivityCard({
 
   const handleIdleSubmit = async () => {
     const text = idleContent.trim();
+    const contextErr = validateActivityContext(idleContext, items, idleSubItemsCount);
+    if (contextErr) {
+      onError?.(contextErr);
+      return;
+    }
     const resolved = resolveIdleContent(text);
     if (!resolved && !resolveTargetItemId(idleContext)) {
-      onError?.('请填写内容，或选择大类/事项');
+      onError?.('请填写内容，或选择大类与事项');
       return;
     }
     setIdleSubmitting(true);
@@ -221,6 +216,7 @@ export default function CurrentActivityCard({
             content: resolved || undefined,
             item_id: resolveTargetItemId(idleContext),
             sub_item_id: idleContext.subItemId || null,
+            tool_label: idleToolLabel.trim() || null,
           }),
         });
         if (!res.ok) {
@@ -229,7 +225,9 @@ export default function CurrentActivityCard({
         }
         const d = await res.json();
         setActivity(d.data?.record ?? null);
+        if (idleToolLabel.trim()) void persistToolOptionIfNeeded(idleToolLabel);
         setIdleContent('');
+        setIdleToolLabel('');
         setIdleContext(EMPTY_ACTIVITY_CONTEXT);
         onChanged();
         await fetchCurrent();
@@ -238,37 +236,24 @@ export default function CurrentActivityCard({
           onError?.('想法/计划请填写具体内容');
           return;
         }
-        const payload: {
-          content: string;
-          type: RecordType;
-          date: string;
-          item_id: string | null;
-          sub_item_id: string | null;
-          input_source: string;
-          review_status: string;
-          lifecycle_status?: string;
-        } = {
+        const payload: CreateRecordPayload = {
           content: text,
           type: idleMode as RecordType,
           date: todayDateStr(),
-          item_id: resolveTargetItemId(idleContext),
+          item_id: resolveTargetItemId(idleContext) ?? undefined,
           sub_item_id: idleContext.subItemId || null,
+          tool_label: idleToolLabel.trim() || null,
           input_source: 'manual',
           review_status: 'confirmed',
         };
         if (idleMode === '计划') {
           payload.lifecycle_status = 'active';
+          payload.time_anchor_date = todayDateStr();
         }
-        const res = await fetch('/api/v2/records', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-          const d = await res.json();
-          throw new Error(d.error?.message ?? '记录失败');
-        }
+        await postManualRecord(payload);
+        if (idleToolLabel.trim()) void persistToolOptionIfNeeded(idleToolLabel);
         setIdleContent('');
+        setIdleToolLabel('');
         onChanged();
       }
     } catch (e) {
@@ -282,36 +267,20 @@ export default function CurrentActivityCard({
     if (!activity || !attachText.trim()) return;
     setAttachSubmitting(true);
     try {
-      const payload: {
-        content: string;
-        type: AttachType;
-        date: string;
-        item_id: string | null;
-        sub_item_id: string | null;
-        input_source: string;
-        review_status: string;
-        lifecycle_status?: string;
-      } = {
+      const payload: CreateRecordPayload = {
         content: attachText.trim(),
         type: attachType,
         date: todayDateStr(),
-        item_id: activity.item_id ?? null,
+        item_id: activity.item_id ?? undefined,
         sub_item_id: activity.sub_item_id ?? null,
         input_source: 'manual',
         review_status: 'confirmed',
       };
       if (attachType === '计划') {
         payload.lifecycle_status = 'active';
+        payload.time_anchor_date = todayDateStr();
       }
-      const res = await fetch('/api/v2/records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error?.message ?? '挂载失败');
-      }
+      await postManualRecord(payload);
       setAttachText('');
       setAttachOpen(false);
       onChanged();
@@ -323,11 +292,7 @@ export default function CurrentActivityCard({
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
-      </div>
-    );
+    return <CurrentActivityCardSkeleton />;
   }
 
   return (
@@ -364,13 +329,18 @@ export default function CurrentActivityCard({
           <IdleUnifiedInput
             items={items}
             onItemsChange={onItemsChanged}
+            onItemCreated={onItemCreated}
+            onCreateError={onCreateError}
             content={idleContent}
             mode={idleMode}
             context={idleContext}
+            toolLabel={idleToolLabel}
             submitting={idleSubmitting}
             onContentChange={setIdleContent}
             onModeChange={setIdleMode}
             onContextChange={setIdleContext}
+            onToolLabelChange={setIdleToolLabel}
+            onSubItemsLoaded={(subs) => setIdleSubItemsCount(subs.length)}
             onSubmit={handleIdleSubmit}
             onBackfill={() => setPanelMode('backfill')}
           />
@@ -382,7 +352,10 @@ export default function CurrentActivityCard({
         mode={panelMode ?? 'start'}
         items={items}
         onItemsChange={onItemsChanged}
+        onItemCreated={onItemCreated}
+        onCreateError={onCreateError}
         initialContent={panelInitialContent || undefined}
+        backfillDate={todayDateStr()}
         onClose={() => {
           setPanelMode(null);
           setPanelInitialContent('');
@@ -596,11 +569,16 @@ function IdleUnifiedInput({
   content,
   mode,
   context,
+  toolLabel,
   submitting,
   onContentChange,
   onModeChange,
   onContextChange,
+  onToolLabelChange,
   onItemsChange,
+  onItemCreated,
+  onCreateError,
+  onSubItemsLoaded,
   onSubmit,
   onBackfill,
 }: {
@@ -608,11 +586,16 @@ function IdleUnifiedInput({
   content: string;
   mode: IdleMode;
   context: ActivityContextValue;
+  toolLabel: string;
   submitting: boolean;
   onContentChange: (v: string) => void;
   onModeChange: (v: IdleMode) => void;
   onContextChange: (v: ActivityContextValue) => void;
-  onItemsChange?: () => void;
+  onToolLabelChange: (v: string) => void;
+  onSubItemsLoaded?: (subItems: import('@/types/teto').SubItem[]) => void;
+  onItemsChange?: () => void | Promise<void>;
+  onItemCreated?: (item: Item) => void;
+  onCreateError?: (message: string) => void;
   onSubmit: () => void;
   onBackfill: () => void;
 }) {
@@ -622,10 +605,15 @@ function IdleUnifiedInput({
     想法: '随手记一条想法…',
   };
 
+  const hasDiaryItem = items.some((i) => i.title === DIARY_ITEM_TITLE);
+
+  const [subItemsCount, setSubItemsCount] = useState(0);
+
   const canSubmit =
     mode === '发生'
-      ? Boolean(content.trim() || context.categoryItemId || context.itemId)
-      : Boolean(content.trim());
+      ? Boolean(resolveTargetItemId(context))
+      : Boolean(content.trim()) &&
+        !validateActivityContext(context, items, subItemsCount);
 
   return (
     <div className="space-y-3 px-4 py-4">
@@ -634,8 +622,15 @@ function IdleUnifiedInput({
         value={context}
         onChange={onContextChange}
         onItemsChange={onItemsChange}
+        onItemCreated={onItemCreated}
+        onCreateError={onCreateError}
+        onSubItemsLoaded={(subs) => {
+          setSubItemsCount(subs.length);
+          onSubItemsLoaded?.(subs);
+        }}
         compact
       />
+      <ToolLabelField value={toolLabel} onChange={onToolLabelChange} compact />
       <input
         type="text"
         value={content}
@@ -644,6 +639,13 @@ function IdleUnifiedInput({
         placeholder={placeholders[mode]}
         className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
       />
+      {mode === '想法' && (
+        <p className="text-[10px] text-slate-400 leading-snug">
+          {hasDiaryItem
+            ? `日复盘可归属「${DIARY_ITEM_TITLE}」事项；项目复盘建议写在对应子项下。`
+            : `建议新建「${DIARY_ITEM_TITLE}」事项作为日复盘入口；项目复盘写在对应子项下。`}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex rounded-lg border border-slate-200 overflow-hidden">
           {(['发生', '想法', '计划'] as const).map((t) => (

@@ -17,6 +17,7 @@ export interface StartActivityParams {
   content?: string;
   item_id?: string | null;
   sub_item_id?: string | null;
+  tool_label?: string | null;
   tag_ids?: string[];
   supabase: SupabaseClient;
   traceId?: string;
@@ -91,7 +92,7 @@ export async function stopAllActiveActivities(
 export async function startActivity(
   params: StartActivityParams
 ): Promise<DomainResult<{ record: TetoRecord; stopped: TetoRecord[] }>> {
-  const { userId, item_id, sub_item_id, tag_ids, supabase, traceId } = params;
+  const { userId, item_id, sub_item_id, tool_label, tag_ids, supabase, traceId } = params;
   const recordContent = resolveRecordContent(params);
 
   if (!recordContent && !item_id) {
@@ -120,6 +121,7 @@ export async function startActivity(
     review_status: 'confirmed',
     item_id: item_id ?? undefined,
     sub_item_id: sub_item_id ?? undefined,
+    tool_label: tool_label?.trim() || undefined,
     tag_ids,
   };
 

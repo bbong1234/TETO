@@ -1,258 +1,302 @@
-'use client';
-
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
-import { Zap, Loader2, Star, X } from 'lucide-react';
-import type { Item, Record as TetoRecord, RecurringActivity } from '@/types/teto';
-import { buildRecentSwitchEntries, type QuickSwitchEntry } from '@/lib/activity/quick-switch-utils';
-import { buildItemPathLabel, buildRecordDisplayLabel } from '@/lib/activity/item-tree';
-
-interface QuickSwitchPanelProps {
-  records: TetoRecord[];
-  items?: Item[];
-  currentActivity?: TetoRecord | null;
-  onSwitched: () => void;
-  onError?: (message: string) => void;
-}
-
-export default function QuickSwitchPanel({
-  records,
-  items = [],
-  currentActivity,
-  onSwitched,
-  onError,
-}: QuickSwitchPanelProps) {
-  const [loadingKey, setLoadingKey] = useState<string | null>(null);
-  const [recurring, setRecurring] = useState<RecurringActivity[]>([]);
-  const [recurringLoading, setRecurringLoading] = useState(true);
-  const [savingRecurring, setSavingRecurring] = useState(false);
-
-  const recentEntries = useMemo(
-    () => buildRecentSwitchEntries(records, items, 10),
-    [records, items]
-  );
-
-  const fetchRecurring = useCallback(async () => {
-    setRecurringLoading(true);
-    try {
-      const res = await fetch('/api/v2/recurring-activities');
-      const data = await res.json();
-      setRecurring(data.data ?? []);
-    } catch {
-      setRecurring([]);
-    } finally {
-      setRecurringLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchRecurring();
-  }, [fetchRecurring]);
-
-  const itemLabel = (itemId: string | null | undefined) => {
-    if (!itemId) return null;
-    return buildItemPathLabel(items, itemId) || items.find((i) => i.id === itemId)?.title || null;
-  };
-
-  const handleSwitch = async (
-    payload: {
-      item_id?: string | null;
-      sub_item_id?: string | null;
-      content?: string;
-    },
-    loadingKeyOverride?: string
-  ) => {
-    const key =
-      loadingKeyOverride ??
-      `${payload.item_id ?? ''}:${payload.sub_item_id ?? ''}:${payload.content ?? ''}`;
-    setLoadingKey(key);
-    try {
-      const res = await fetch('/api/v2/activities/switch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error?.message ?? '切换失败');
-      }
-      onSwitched();
-    } catch (e) {
-      onError?.(e instanceof Error ? e.message : '切换失败');
-    } finally {
-      setLoadingKey(null);
-    }
-  };
-
-  const handleQuickSwitch = (entry: QuickSwitchEntry) => {
-    handleSwitch({
-      item_id: entry.item_id,
-      sub_item_id: entry.sub_item_id,
-      content: entry.content,
-    });
-  };
-
-  const handleRecurringSwitch = (r: RecurringActivity) => {
-    handleSwitch(
-      {
-        item_id: r.item_id,
-        content: r.name,
-      },
-      `recurring:${r.id}`
-    );
-  };
-
-  const handleDeleteRecurring = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      const res = await fetch(`/api/v2/recurring-activities/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('删除失败');
-      await fetchRecurring();
-    } catch (err) {
-      onError?.(err instanceof Error ? err.message : '删除失败');
-    }
-  };
-
-  const handleSaveCurrentAsRecurring = async () => {
-    if (!currentActivity) return;
-    const name =
-      buildRecordDisplayLabel(currentActivity, items) ||
-      currentActivity.content?.trim() ||
-      '当前事项';
-    setSavingRecurring(true);
-    try {
-      const res = await fetch('/api/v2/recurring-activities', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          item_id: currentActivity.item_id ?? null,
-        }),
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error?.message ?? '保存失败');
-      }
-      await fetchRecurring();
-    } catch (err) {
-      onError?.(err instanceof Error ? err.message : '保存失败');
-    } finally {
-      setSavingRecurring(false);
-    }
-  };
-
-  if (recurring.length === 0 && recentEntries.length === 0 && !currentActivity) {
-    return null;
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Zap className="h-4 w-4 text-amber-500" />
-          <h2 className="text-sm font-semibold text-slate-800">快速切换</h2>
-        </div>
-        {currentActivity && (
-          <button
-            type="button"
-            disabled={savingRecurring}
-            onClick={handleSaveCurrentAsRecurring}
-            className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 disabled:opacity-50"
-          >
-            {savingRecurring ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <Star className="h-3 w-3" />
-            )}
-            保存为常用
-          </button>
-        )}
-      </div>
-
-      {recurringLoading ? (
-        <div className="flex items-center gap-2 text-xs text-slate-400">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          加载常用事项…
-        </div>
-      ) : recurring.length > 0 ? (
-        <div className="space-y-1.5">
-          <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wide">常用事项</span>
-          <div className="flex flex-wrap gap-2">
-            {recurring.map((r) => {
-              const key = `recurring:${r.id}`;
-              const linkedTitle = r.item?.title ?? itemLabel(r.item_id);
-              const displayName = r.item_id ? buildItemPathLabel(items, r.item_id, r.name) : r.name;
-              return (
-                <div
-                  key={r.id}
-                  className="relative group flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50/80 pl-3 pr-1 py-1 shadow-sm hover:border-amber-300 hover:bg-amber-100"
-                >
-                  <button
-                    type="button"
-                    disabled={loadingKey !== null}
-                    onClick={() => handleRecurringSwitch(r)}
-                    className="flex items-center gap-1.5 text-xs text-slate-700 disabled:opacity-50"
-                  >
-                    {loadingKey === key && <Loader2 className="h-3 w-3 animate-spin" />}
-                    <span className="max-w-[10rem] truncate">{displayName}</span>
-                  </button>
-                  {linkedTitle && r.item_id && linkedTitle !== displayName && (
-                    <Link
-                      href={`/items/${r.item_id}`}
-                      className="text-[10px] text-blue-600 hover:underline shrink-0 px-1"
-                    >
-                      {linkedTitle}
-                    </Link>
-                  )}
-                  <button
-                    type="button"
-                    onClick={(e) => handleDeleteRecurring(r.id, e)}
-                    className="rounded-full p-0.5 text-slate-400 hover:text-red-500"
-                    aria-label="删除常用事项"
-                  >
-                    <X className="h-2.5 w-2.5" />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-
-      {recentEntries.length > 0 && (
-        <div className="space-y-1.5">
-          <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wide">最近使用</span>
-          <div className="flex flex-wrap gap-2">
-            {recentEntries.map((entry) => {
-              const linkedTitle = itemLabel(entry.item_id);
-              return (
-                <div
-                  key={entry.key}
-                  className="flex items-center gap-1 rounded-full border border-slate-200 bg-white pl-3 pr-2 py-1.5 shadow-sm hover:border-blue-300 hover:bg-blue-50"
-                >
-                  <button
-                    type="button"
-                    disabled={loadingKey !== null}
-                    onClick={() => handleQuickSwitch(entry)}
-                    className="flex items-center gap-1.5 text-xs text-slate-700 disabled:opacity-50"
-                  >
-                    {loadingKey === entry.key && <Loader2 className="h-3 w-3 animate-spin" />}
-                    <span className="max-w-[10rem] truncate">{entry.label}</span>
-                  </button>
-                  {linkedTitle && entry.item_id && linkedTitle !== entry.label && (
-                    <Link
-                      href={`/items/${entry.item_id}`}
-                      className="text-[10px] text-blue-600 hover:underline shrink-0"
-                    >
-                      {linkedTitle}
-                    </Link>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+'use client';
+
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Zap, Loader2, X } from 'lucide-react';
+import type { Item, Record as TetoRecord, UserTool } from '@/types/teto';
+import { buildRecentSwitchEntries, type QuickSwitchEntry } from '@/lib/activity/quick-switch-utils';
+import { shouldPromptQuickSwitchToolPicker } from '@/lib/activity/item-tree';
+import { persistToolOptionIfNeeded } from '@/components/records/ToolLabelField';
+import QuickSwitchToolPicker from './QuickSwitchToolPicker';
+
+export interface ActivitySwitchResult {
+  record: TetoRecord | null;
+  stopped: TetoRecord[];
+}
+
+/** 最多展示条数（约 3 行） */
+const QUICK_SWITCH_MAX_VISIBLE = 9;
+/** 候选池：删几条后还能补满 */
+const QUICK_SWITCH_POOL = 24;
+const DISMISS_STORAGE_KEY = 'teto_quick_switch_dismissed';
+
+function loadDismissedKeys(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(DISMISS_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as string[];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissedKeys(keys: Set<string>) {
+  try {
+    localStorage.setItem(DISMISS_STORAGE_KEY, JSON.stringify([...keys]));
+  } catch {
+    /* ignore */
+  }
+}
+
+interface QuickSwitchPanelProps {
+  /** 当日记录（立即可用，无需等 7 日请求） */
+  supplementRecords?: TetoRecord[];
+  items?: Item[];
+  onSwitched?: (data: ActivitySwitchResult) => void;
+  onError?: (message: string) => void;
+}
+
+function formatDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+export default function QuickSwitchPanel({
+  supplementRecords = [],
+  items = [],
+  onSwitched,
+  onError,
+}: QuickSwitchPanelProps) {
+  const [loadingKey, setLoadingKey] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyRecords, setHistoryRecords] = useState<TetoRecord[]>([]);
+  const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(() => loadDismissedKeys());
+  const [subItemTitles, setSubItemTitles] = useState<Map<string, string>>(new Map());
+  const [userTools, setUserTools] = useState<UserTool[]>([]);
+  const [toolsLoading, setToolsLoading] = useState(true);
+  const [pendingEntry, setPendingEntry] = useState<QuickSwitchEntry | null>(null);
+
+  const mergedRecords = useMemo(() => {
+    const byId = new Map<string, TetoRecord>();
+    for (const r of [...supplementRecords, ...historyRecords]) {
+      byId.set(r.id, r);
+    }
+    return Array.from(byId.values());
+  }, [supplementRecords, historyRecords]);
+
+  const itemIdsForSubItems = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of mergedRecords) {
+      if (r.item_id && r.sub_item_id) ids.add(r.item_id);
+    }
+    return [...ids];
+  }, [mergedRecords]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      setToolsLoading(true);
+      try {
+        const res = await fetch('/api/v2/tools');
+        const data = await res.json();
+        if (!cancelled && res.ok) setUserTools(data.data ?? []);
+      } catch {
+        if (!cancelled) setUserTools([]);
+      } finally {
+        if (!cancelled) setToolsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (itemIdsForSubItems.length === 0) {
+      setSubItemTitles(new Map());
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const next = new Map<string, string>();
+      await Promise.all(
+        itemIdsForSubItems.map(async (itemId) => {
+          try {
+            const res = await fetch(`/api/v2/sub-items?item_id=${itemId}`);
+            const data = await res.json();
+            if (!res.ok) return;
+            for (const sub of data.data ?? []) {
+              if (sub?.id && sub?.title) next.set(sub.id, sub.title);
+            }
+          } catch {
+            /* ignore */
+          }
+        })
+      );
+      if (!cancelled) setSubItemTitles(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [itemIdsForSubItems.join('|')]);
+
+  const visibleEntries = useMemo(() => {
+    const pool = buildRecentSwitchEntries(mergedRecords, items, QUICK_SWITCH_POOL, subItemTitles);
+    return pool.filter((e) => !dismissedKeys.has(e.key)).slice(0, QUICK_SWITCH_MAX_VISIBLE);
+  }, [mergedRecords, items, dismissedKeys, subItemTitles]);
+
+  const dismissEntry = useCallback((key: string) => {
+    setDismissedKeys((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      saveDismissedKeys(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setHistoryLoading(true);
+      try {
+        const end = formatDate(new Date());
+        const start = new Date();
+        start.setDate(start.getDate() - 6);
+        const params = new URLSearchParams({
+          date_from: formatDate(start),
+          date_to: end,
+          type: '发生',
+          limit: '80',
+        });
+        const res = await fetch(`/api/v2/records?${params.toString()}`);
+        if (cancelled) return;
+        const data = await res.json();
+        setHistoryRecords(data.data ?? []);
+      } catch {
+        if (!cancelled) setHistoryRecords([]);
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
+      }
+    }, 800);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  const handleSwitch = async (
+    payload: {
+      item_id?: string | null;
+      sub_item_id?: string | null;
+      content?: string;
+      tool_label?: string | null;
+    },
+    loadingKeyOverride: string
+  ) => {
+    setLoadingKey(loadingKeyOverride);
+    try {
+      const res = await fetch('/api/v2/activities/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        throw new Error(d.error?.message ?? '切换失败');
+      }
+      if (payload.tool_label?.trim()) {
+        void persistToolOptionIfNeeded(payload.tool_label);
+      }
+      onSwitched?.(d.data as ActivitySwitchResult);
+    } catch (e) {
+      onError?.(e instanceof Error ? e.message : '切换失败');
+    } finally {
+      setLoadingKey(null);
+    }
+  };
+
+  const runSwitch = (entry: QuickSwitchEntry, toolLabel: string | null) => {
+    handleSwitch(
+      {
+        item_id: entry.item_id,
+        sub_item_id: entry.sub_item_id,
+        content: entry.content,
+        tool_label: toolLabel,
+      },
+      entry.key
+    );
+  };
+
+  const handleQuickSwitch = (entry: QuickSwitchEntry) => {
+    if (
+      shouldPromptQuickSwitchToolPicker(entry, items, userTools.length) &&
+      !toolsLoading
+    ) {
+      setPendingEntry(entry);
+      return;
+    }
+    runSwitch(entry, null);
+  };
+
+  if (!historyLoading && visibleEntries.length === 0) {
+    return null;
+  }
+
+  const userToolTitles = userTools.map((t) => t.title);
+
+  return (
+    <>
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-3">
+        <div className="flex items-center gap-2">
+          <Zap className="h-4 w-4 text-amber-500" />
+          <h2 className="text-sm font-semibold text-slate-800">快速切换</h2>
+        </div>
+
+        {historyLoading && visibleEntries.length === 0 ? (
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            加载最近使用…
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {visibleEntries.map((entry) => {
+              const isLoading = loadingKey === entry.key;
+              return (
+                <div
+                  key={entry.key}
+                  className="flex max-w-full items-center gap-0.5 rounded-full border border-slate-200 bg-white pl-3 pr-1 py-1.5 shadow-sm hover:border-blue-300 hover:bg-blue-50"
+                >
+                  <button
+                    type="button"
+                    disabled={isLoading}
+                    onClick={() => handleQuickSwitch(entry)}
+                    className="flex min-w-0 items-center gap-1.5 text-xs text-slate-700 disabled:opacity-50"
+                  >
+                    {isLoading && <Loader2 className="h-3 w-3 shrink-0 animate-spin" />}
+                    <span className="max-w-[12rem] truncate">{entry.label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => dismissEntry(entry.key)}
+                    className="shrink-0 rounded-full p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-500"
+                    aria-label="从快速切换移除"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {pendingEntry && (
+        <QuickSwitchToolPicker
+          entryLabel={pendingEntry.label}
+          contextTools={pendingEntry.contextToolLabels}
+          allTools={userToolTitles}
+          loading={toolsLoading}
+          onSelect={(tool) => {
+            const entry = pendingEntry;
+            setPendingEntry(null);
+            runSwitch(entry, tool);
+          }}
+          onClose={() => setPendingEntry(null)}
+        />
+      )}
+    </>
+  );
+}

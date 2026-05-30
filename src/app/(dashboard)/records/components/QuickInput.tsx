@@ -1,8 +1,14 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Send, ChevronDown, ChevronUp, Clock, DollarSign, Timer, BarChart3, FolderOpen, X, Smile, Zap, Activity, Split, MapPin, Users, Layers, Sparkles } from 'lucide-react';
-import type { Tag, Item, RecordType, SubItem } from '@/types/teto';
+import { Send, ChevronDown, ChevronUp, Clock, DollarSign, Timer, BarChart3, FolderOpen, X, Smile, Zap, Activity, Split, MapPin, Users, Sparkles } from 'lucide-react';
+import type { Tag, Item, RecordType } from '@/types/teto';
+import ActivityContextPicker, {
+  EMPTY_ACTIVITY_CONTEXT,
+  type ActivityContextValue,
+} from './ActivityContextPicker';
+import { resolveTargetItemId, resolveActivityContextFromRecord, validateActivityContext } from '@/lib/activity/item-tree';
+import ToolLabelField, { persistToolOptionIfNeeded } from '@/components/records/ToolLabelField';
 import type { PendingQuestion } from '@/types/inputs';
 import type { OptimizeInputResult } from '@/types/semantic';
 import { RECORD_TYPES } from '@/types/teto';
@@ -57,6 +63,8 @@ interface QuickInputProps {
   resumeClarify?: { nonce: number; snapshot: IngestClarifyState } | null;
   onResumeClarifyApplied?: () => void;
   onError: (message: string) => void;
+  /** 新建大类/事项/子项后刷新列表（与事项页同源） */
+  onItemsChange?: () => void;
 }
 
 // ================================
@@ -76,6 +84,7 @@ export default function QuickInput({
   resumeClarify,
   onResumeClarifyApplied,
   onError,
+  onItemsChange,
 }: QuickInputProps) {
   const [rawText, setRawText] = useState('');
   const [parsed, setParsed] = useState<ParsedInput>({});
@@ -83,10 +92,9 @@ export default function QuickInput({
   /** 仅用户手动点击类型芯片时为 true，避免本地预览类型写入 seed 覆盖 AI */
   const [typePinned, setTypePinned] = useState(false);
   const [content, setContent] = useState('');
-  const [selectedItemId, setSelectedItemId] = useState('');
-  const [selectedSubItemId, setSelectedSubItemId] = useState<string>('');
-  const [subItemsForSelectedItem, setSubItemsForSelectedItem] = useState<SubItem[]>([]);
-  const [loadingSubItems, setLoadingSubItems] = useState(false);
+  const [activityContext, setActivityContext] = useState<ActivityContextValue>(EMPTY_ACTIVITY_CONTEXT);
+  const [toolLabel, setToolLabel] = useState('');
+  const [contextSubItemsCount, setContextSubItemsCount] = useState(0);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [splitNotice, setSplitNotice] = useState<string | null>(null); // 拆分成功提示
@@ -139,31 +147,6 @@ export default function QuickInput({
     onResumeClarifyApplied?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅响应父级 nonce 触发灌回
   }, [resumeClarify?.nonce]);
-
-  // 选事项后，动态拉取该事项的子项列表
-  useEffect(() => {
-    if (!selectedItemId) {
-      setSubItemsForSelectedItem([]);
-      setSelectedSubItemId('');
-      return;
-    }
-    setLoadingSubItems(true);
-    fetch(`/api/v2/sub-items?item_id=${selectedItemId}`)
-      .then(res => res.ok ? res.json() : { data: [] })
-      .then(json => {
-        const subs: SubItem[] = json.data || [];
-        setSubItemsForSelectedItem(subs);
-        // 如果当前选中的子项不在新事项的子项列表中，清空
-        if (selectedSubItemId && !subs.find(s => s.id === selectedSubItemId)) {
-          setSelectedSubItemId('');
-        }
-      })
-      .catch(() => setSubItemsForSelectedItem([]))
-      .finally(() => setLoadingSubItems(false));
-  }, [selectedItemId]);
-
-  const selectedItemIdRef = useRef(selectedItemId);
-  selectedItemIdRef.current = selectedItemId;
 
   // ================================
   // 本地即时解析（debounce 300ms，纯本地，不调用 LLM）
@@ -263,7 +246,7 @@ export default function QuickInput({
       if (match) {
         newParsed.suggested_item_id = match.id;
         newParsed.suggested_item_name = match.title;
-        setSelectedItemId(match.id);
+        setActivityContext(resolveActivityContextFromRecord(items, match.id));
       }
     } else if (key === 'mood') {
       newParsed.mood_hint = value;
@@ -298,8 +281,7 @@ export default function QuickInput({
     else if (key === 'item') {
       delete newParsed.suggested_item_id;
       delete newParsed.suggested_item_name;
-      setSelectedItemId('');
-      setSelectedSubItemId('');
+      setActivityContext(EMPTY_ACTIVITY_CONTEXT);
     }
     setParsed(newParsed);
   };
@@ -378,9 +360,8 @@ export default function QuickInput({
     setType('发生');
     setTypePinned(false);
     setContent('');
-    setSelectedItemId('');
-    setSelectedSubItemId('');
-    setSubItemsForSelectedItem([]);
+    setActivityContext(EMPTY_ACTIVITY_CONTEXT);
+    setToolLabel('');
     setSelectedTagIds([]);
     setExpanded(false);
     setIngestClarify(null);
@@ -394,9 +375,8 @@ export default function QuickInput({
     setType('发生');
     setTypePinned(false);
     setContent('');
-    setSelectedItemId('');
-    setSelectedSubItemId('');
-    setSubItemsForSelectedItem([]);
+    setActivityContext(EMPTY_ACTIVITY_CONTEXT);
+    setToolLabel('');
     setSelectedTagIds([]);
     setExpanded(false);
     setIngestTextDraft('');
@@ -649,6 +629,7 @@ export default function QuickInput({
     capturedTypePinned: boolean;
     capturedItemId: string;
     capturedSubItemId: string;
+    capturedToolLabel: string;
     capturedTagIds: string[];
     itemList: Item[];
   }) => {
@@ -661,6 +642,7 @@ export default function QuickInput({
       capturedTypePinned,
       capturedItemId,
       capturedSubItemId,
+      capturedToolLabel,
       capturedTagIds,
       itemList,
     } = params;
@@ -685,6 +667,7 @@ export default function QuickInput({
                 ...(capturedTypePinned ? { type: capturedType } : {}),
                 ...(capturedItemId ? { item_id: capturedItemId } : {}),
                 ...(capturedSubItemId ? { sub_item_id: capturedSubItemId } : {}),
+                ...(capturedToolLabel ? { tool_label: capturedToolLabel } : {}),
                 ...(capturedTagIds.length > 0 ? { tag_ids: capturedTagIds } : {}),
               },
             },
@@ -788,12 +771,25 @@ export default function QuickInput({
       return;
     }
 
+    if (activityContext.categoryItemId || activityContext.itemId) {
+      const contextErr = validateActivityContext(
+        activityContext,
+        items,
+        contextSubItemsCount
+      );
+      if (contextErr) {
+        onError(contextErr);
+        return;
+      }
+    }
+
     const capturedRaw = trimmedInput;
     const submitTraceId = genTraceId();
     const capturedType = type;
     const capturedTypePinned = typePinned;
-    const capturedItemId = selectedItemId;
-    const capturedSubItemId = selectedSubItemId;
+    const capturedItemId = resolveTargetItemId(activityContext) || '';
+    const capturedSubItemId = activityContext.subItemId || '';
+    const capturedToolLabel = toolLabel.trim();
     const capturedTagIds = [...selectedTagIds];
     const capturedDate = selectedDate;
     const multiLines = capturedRaw.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -807,6 +803,7 @@ export default function QuickInput({
     }));
 
     resetSubmitDraft();
+    if (capturedToolLabel) void persistToolOptionIfNeeded(capturedToolLabel);
     for (const token of pendingTokens) {
       onPendingCreated?.(token.sessionId, token.line, capturedDate);
     }
@@ -820,6 +817,7 @@ export default function QuickInput({
       capturedTypePinned,
       capturedItemId,
       capturedSubItemId,
+      capturedToolLabel,
       capturedTagIds,
       itemList: items,
     });
@@ -1050,6 +1048,18 @@ export default function QuickInput({
         </div>
       )}
 
+      {/* 归属：大类 / 事项 / 子项（与事项页同源） */}
+      <ActivityContextPicker
+        items={items}
+        value={activityContext}
+        onChange={setActivityContext}
+        onItemsChange={onItemsChange}
+        onSubItemsLoaded={(subs) => setContextSubItemsCount(subs.length)}
+        compact
+      />
+
+      <ToolLabelField value={toolLabel} onChange={setToolLabel} compact />
+
       {/* 主输入区：textarea + 优化 + 发送 */}
       <div className="flex items-end gap-2">
         <textarea
@@ -1268,83 +1278,28 @@ export default function QuickInput({
             />
           </div>
 
-          {/* 关联事项 */}
-          <div>
-            <label className="mb-1 block text-[11px] font-medium text-slate-500">
-              关联事项
-              {parsed.suggested_item_name && !selectedItemId && (
-                <span className="ml-1 text-blue-500">（推荐：{parsed.suggested_item_name}）</span>
-              )}
-            </label>
-            <select
-              value={selectedItemId}
-              onChange={(e) => {
-                setSelectedItemId(e.target.value);
-                // 事项变化时清空子项选择
-                setSelectedSubItemId('');
-              }}
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="">不关联事项</option>
-              {items.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.title}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* 关联子项 — 仅当选中了有子项的事项时显示 */}
-          {selectedItemId && subItemsForSelectedItem.length > 0 && (
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-slate-500">
-                关联子项
-                <span className="ml-1 text-slate-400 font-normal">（可选）</span>
-              </label>
-              {loadingSubItems ? (
-                <div className="text-[11px] text-slate-400 py-1">加载子项...</div>
-              ) : (
-                <div className="flex flex-wrap gap-1">
-                  <button
-                    onClick={() => setSelectedSubItemId('')}
-                    className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                      !selectedSubItemId
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    暂不选择
-                  </button>
-                  {subItemsForSelectedItem.map(sub => (
-                    <button
-                      key={sub.id}
-                      onClick={() => setSelectedSubItemId(sub.id)}
-                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                        selectedSubItemId === sub.id
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                    >
-                      <Layers className="inline h-2.5 w-2.5 mr-0.5" />
-                      {sub.title}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+          {parsed.suggested_item_name && !activityContext.itemId && !activityContext.categoryItemId && (
+            <p className="text-[11px] text-blue-500">
+              推荐事项：{parsed.suggested_item_name}（请在上方选择或新建归属）
+            </p>
           )}
 
-          {/* 标签多选 */}
+          {/* 横向标记（与事项分类无关） */}
           {tags.length > 0 && (
             <div>
-              <label className="mb-1 block text-[11px] font-medium text-slate-500">标签</label>
+              <label className="mb-1 block text-[11px] font-medium text-slate-500">
+                横向标记（可选）
+              </label>
               <div className="flex flex-wrap gap-1">
                 {tags.map((tag) => (
                   <button
                     key={tag.id}
-                    onClick={() => setSelectedTagIds(prev =>
-                      prev.includes(tag.id) ? prev.filter(id => id !== tag.id) : [...prev, tag.id]
-                    )}
+                    type="button"
+                    onClick={() =>
+                      setSelectedTagIds((prev) =>
+                        prev.includes(tag.id) ? prev.filter((id) => id !== tag.id) : [...prev, tag.id]
+                      )
+                    }
                     className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors ${
                       selectedTagIds.includes(tag.id)
                         ? 'bg-blue-500 text-white'

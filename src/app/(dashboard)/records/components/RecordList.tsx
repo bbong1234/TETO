@@ -60,12 +60,6 @@ interface RecordListProps {
   onStarToggle: (record: Record) => void;
   compact?: boolean;
   aiPendingIds?: Set<string>;
-  /** 多选模式 */
-  selectionMode?: boolean;
-  /** 已选中的 ID 集合 */
-  selectedIds?: Set<string>;
-  /** 切换选中 */
-  onToggleSelect?: (id: string) => void;
   /** 完成计划 */
   onComplete?: (record: Record) => void;
   /** 推迟计划 */
@@ -80,7 +74,7 @@ interface RecordListProps {
   onConvertToGoal?: (record: Record) => void;
 }
 
-export default function RecordList({ records, onRecordClick, onStarToggle, compact, aiPendingIds, selectionMode, selectedIds, onToggleSelect, onComplete, onPostpone, onCancel, onConvertToPlan, onConvertToItem, onConvertToGoal }: RecordListProps) {
+export default function RecordList({ records, onRecordClick, onStarToggle, compact, aiPendingIds, onComplete, onPostpone, onCancel, onConvertToPlan, onConvertToItem, onConvertToGoal }: RecordListProps) {
   if (records.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-slate-400">
@@ -214,9 +208,6 @@ export default function RecordList({ records, onRecordClick, onStarToggle, compa
                   onStarToggle={() => onStarToggle(record)}
                   compact={compact}
                   aiPending={showParsingPulse}
-                  selectionMode={selectionMode}
-                  selected={selectedIds?.has(record.id)}
-                  onToggleSelect={() => onToggleSelect?.(record.id)}
                   onComplete={() => onComplete?.(record)}
                   onPostpone={() => onPostpone?.(record)}
                   onCancel={() => onCancel?.(record)}

@@ -15,6 +15,10 @@ function startOfMonth(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
 
+/** active 且无结束时间：最多计 24h；超过 7 天未结束则不计（避免脏数据撑爆累计） */
+const ACTIVE_RECORD_MAX_MINUTES = 24 * 60;
+const ACTIVE_RECORD_STALE_DAYS = 7;
+
 function recordMinutes(row: {
   duration_minutes: number | null;
   occurred_at: string | null;
@@ -23,11 +27,24 @@ function recordMinutes(row: {
 }): number {
   if (row.duration_minutes != null) return Number(row.duration_minutes);
   if (!row.occurred_at) return 0;
-  const end =
-    row.occurred_at_end ??
-    (row.lifecycle_status === 'active' ? new Date().toISOString() : null);
-  if (!end) return 0;
-  return Math.max(0, Math.round((Date.parse(end) - Date.parse(row.occurred_at)) / 60000));
+  const startMs = Date.parse(row.occurred_at);
+  if (Number.isNaN(startMs)) return 0;
+
+  let endMs: number | null = null;
+  if (row.occurred_at_end) {
+    endMs = Date.parse(row.occurred_at_end);
+  } else if (row.lifecycle_status === 'active') {
+    endMs = Date.now();
+    const staleMs = ACTIVE_RECORD_STALE_DAYS * 24 * 60 * 60 * 1000;
+    if (Date.now() - startMs > staleMs) return 0;
+  }
+
+  if (endMs == null || Number.isNaN(endMs)) return 0;
+  const mins = Math.max(0, Math.round((endMs - startMs) / 60000));
+  if (row.lifecycle_status === 'active' && !row.occurred_at_end) {
+    return Math.min(mins, ACTIVE_RECORD_MAX_MINUTES);
+  }
+  return mins;
 }
 
 /**

@@ -1,6 +1,6 @@
 'use client';
 
-import { Star, Tag, FolderOpen, BarChart3, Timer, MapPin, Users, Smile, Zap, Loader2, DollarSign, Check, CheckCircle2, CalendarClock, HelpCircle, XCircle, Target, Flag, Clock } from 'lucide-react';
+import { Star, Tag, FolderOpen, BarChart3, Timer, MapPin, Users, Smile, Zap, Loader2, DollarSign, CheckCircle2, CalendarClock, HelpCircle, XCircle, Target, Flag, Clock } from 'lucide-react';
 import type { Record } from '@/types/teto';
 import type { ParsedSemantic } from '@/types/semantic';
 
@@ -43,12 +43,6 @@ interface RecordItemProps {
   onStarToggle: () => void;
   compact?: boolean;
   aiPending?: boolean;
-  /** 多选模式 */
-  selectionMode?: boolean;
-  /** 当前是否被选中 */
-  selected?: boolean;
-  /** 切换选中 */
-  onToggleSelect?: () => void;
   /** Todo 完成回调（仅计划类型 active 状态） */
   onComplete?: () => void;
   /** Todo 推迟回调（仅计划类型 active 状态） */
@@ -66,7 +60,7 @@ interface RecordItemProps {
 // ================================
 // 主组件：严格三层结构
 // ================================
-export default function RecordItem({ record, onClick, onStarToggle, compact, aiPending, selectionMode, selected, onToggleSelect, onComplete, onPostpone, onCancel, onConvertToPlan, onConvertToItem, onConvertToGoal }: RecordItemProps) {
+export default function RecordItem({ record, onClick, onStarToggle, compact, aiPending, onComplete, onPostpone, onCancel, onConvertToPlan, onConvertToItem, onConvertToGoal }: RecordItemProps) {
   const sessionUi = (
     record.parsed_semantic as { _session_ui?: { lifecycle?: string; errorMessage?: string | null } } | null | undefined
   )?._session_ui;
@@ -111,27 +105,15 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
 
   return (
     <div
-      onClick={selectionMode ? onToggleSelect : onClick}
+      onClick={onClick}
       className={`group rounded-xl shadow-sm transition-shadow ${
         isParsingPlaceholder ? 'cursor-default' : 'cursor-pointer hover:shadow-md'
       } ${compact ? 'px-3 py-2' : 'px-4 py-3'} ${
         isPlanShadow ? 'bg-blue-50/60 border border-dashed border-blue-200'
-          : selected ? 'bg-blue-50 border border-blue-300 ring-1 ring-blue-200'
           : isSessionFailed ? 'bg-red-50/40 border border-red-100'
           : 'bg-white'
       }`}
     >
-      {/* 多选模式的勾选框 */}
-      {selectionMode && (
-        <div className="flex items-center gap-2 mb-1.5">
-          <span className={`flex h-4 w-4 items-center justify-center rounded border transition-colors ${
-            selected ? 'bg-blue-500 border-blue-500' : 'border-slate-300 bg-white'
-          }`}>
-            {selected && <Check className="h-3 w-3 text-white" />}
-          </span>
-          <span className="text-[10px] text-slate-400">点击选择</span>
-        </div>
-      )}
       {/* ======================= */}
       {/* Layer 1: TopBar（元数据行） */}
       {/* ======================= */}
@@ -176,7 +158,7 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
         {/* 右侧操作区：生命周期按钮 + 星标 */}
         <div className="flex items-center gap-1 shrink-0">
           {/* 计划记录的完成/推迟图标按钮 */}
-          {canLifecycleAction && !selectionMode && !isParsingPlaceholder && !isDeferLike && !isSessionFailed && (
+          {canLifecycleAction && !isParsingPlaceholder && !isDeferLike && !isSessionFailed && (
             <>
               <button
                 onClick={(e) => { e.stopPropagation(); onComplete?.(); }}
@@ -214,7 +196,7 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
             <Star className={`h-3.5 w-3.5 ${record.is_starred ? 'fill-amber-400 text-amber-400' : 'text-slate-300 group-hover:text-slate-400'}`} />
           </button>
           {/* 转为事项 */}
-          {onConvertToItem && !selectionMode && !isParsingPlaceholder && !isDeferLike && !isSessionFailed && (
+          {onConvertToItem && !isParsingPlaceholder && !isDeferLike && !isSessionFailed && (
             <button
               onClick={(e) => { e.stopPropagation(); onConvertToItem(); }}
               className="shrink-0 p-0.5 rounded-lg hover:bg-violet-50 text-slate-300 hover:text-violet-500 transition-colors opacity-0 group-hover:opacity-100"
@@ -225,7 +207,7 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
             </button>
           )}
           {/* 转为目标 */}
-          {onConvertToGoal && !selectionMode && !isParsingPlaceholder && !isDeferLike && !isSessionFailed && (
+          {onConvertToGoal && !isParsingPlaceholder && !isDeferLike && !isSessionFailed && (
             <button
               onClick={(e) => { e.stopPropagation(); onConvertToGoal(); }}
               className="shrink-0 p-0.5 rounded-lg hover:bg-rose-50 text-slate-300 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100"

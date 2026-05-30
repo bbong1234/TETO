@@ -3,6 +3,12 @@
 import { Filter } from 'lucide-react';
 import type { Item, RecordType } from '@/types/teto';
 import { RECORD_TYPES } from '@/types/teto';
+import {
+  getCategoryItems,
+  getChildItems,
+  getOrphanItems,
+  isCategoryItem,
+} from '@/lib/activity/item-tree';
 
 interface FilterBarProps {
   filterType: RecordType | '';
@@ -20,6 +26,9 @@ export default function FilterBar({
   onFilterItemChange,
 }: FilterBarProps) {
   const hasFilter = filterType || filterItemId;
+  const categories = getCategoryItems(items);
+  const orphans = getOrphanItems(items);
+  const hasOtherCategory = categories.some((c) => c.title === '其他');
 
   return (
     <div className="mb-4 rounded-xl bg-white p-3 shadow-sm">
@@ -66,7 +75,7 @@ export default function FilterBar({
         ))}
       </div>
 
-      {/* 事项下拉 */}
+      {/* 事项下拉（按大类分组） */}
       <div className="flex gap-2">
         <select
           value={filterItemId}
@@ -74,11 +83,36 @@ export default function FilterBar({
           className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
         >
           <option value="">全部事项</option>
-          {items.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.title}
-            </option>
-          ))}
+          {categories.map((cat) => {
+            const children = getChildItems(items, cat.id);
+            const extraOrphans =
+              cat.title === '其他'
+                ? orphans.filter((o) => !children.some((c) => c.id === o.id))
+                : [];
+            const options = [...children, ...extraOrphans];
+            if (options.length === 0 && !isCategoryItem(cat, items, cat.id)) return null;
+            return (
+              <optgroup key={cat.id} label={cat.title}>
+                {isCategoryItem(cat, items, cat.id) && (
+                  <option value={cat.id}>{cat.title}（大类）</option>
+                )}
+                {options.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+              </optgroup>
+            );
+          })}
+          {!hasOtherCategory && orphans.length > 0 && (
+            <optgroup label="未归类">
+              {orphans.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.title}
+                </option>
+              ))}
+            </optgroup>
+          )}
         </select>
       </div>
     </div>

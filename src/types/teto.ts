@@ -12,6 +12,12 @@ import type { ParsedSemantic } from './semantic';
 export const RECORD_TYPES = ['发生', '计划', '想法', '总结'] as const;
 export type RecordType = typeof RECORD_TYPES[number];
 
+/** 用户创建/编辑入口展示的主类型（不含遗留「总结」） */
+export const USER_RECORD_TYPES = ['发生', '计划', '想法'] as const;
+export type UserRecordType = typeof USER_RECORD_TYPES[number];
+
+export type TimelineEntryKind = 'activity' | 'gap' | 'plan' | 'idea' | 'summary';
+
 /** 将旧类型（情绪/花费/结果）映射为4种主类型 */
 export function normalizeRecordType(type: string): RecordType {
   if ((RECORD_TYPES as readonly string[]).includes(type)) return type as RecordType;
@@ -87,6 +93,8 @@ export interface Record {
   note: string | null;
   category?: string | null;
   subcategory?: string | null;
+  /** 工具/载体（如：不背单词、多邻国），与子项正交 */
+  tool_label?: string | null;
   item_id: string | null;
   phase_id: string | null;
   sub_item_id: string | null;
@@ -178,7 +186,12 @@ export interface Item {
   started_at: string | null;
   ended_at: string | null;
   folder_id: string | null;
-  /** 父级事项 ID（null = 顶层大类） */
+  /**
+   * 父级 item id。
+   * - null：顶层（大类或待归类事项）
+   * - 有值：隶属该大类的子事项
+   * 与 records.item_id / sub_items 构成「大类 → 事项 → 子项」三层语义
+   */
   parent_item_id?: string | null;
   created_at: string;
   updated_at: string;
@@ -240,6 +253,26 @@ export interface Tag {
   created_at: string;
 }
 
+/** 用户自定义工具/载体选项 */
+export interface UserTool {
+  id: string;
+  user_id: string;
+  title: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateUserToolPayload {
+  title: string;
+  sort_order?: number;
+}
+
+export interface UpdateUserToolPayload {
+  title?: string;
+  sort_order?: number;
+}
+
 export interface RecordTag {
   id: string;
   user_id: string;
@@ -296,6 +329,7 @@ export interface CreateRecordPayload {
   note?: string;
   category?: string;
   subcategory?: string;
+  tool_label?: string | null;
   item_id?: string;
   phase_id?: string | null;
   sub_item_id?: string | null;
@@ -411,6 +445,8 @@ export interface RecordsQuery {
   is_starred?: boolean;
   search?: string;
   limit?: number;
+  /** 默认 asc；详情页 feed 可用 desc 取最近记录 */
+  order?: 'asc' | 'desc';
 }
 
 export interface ItemsQuery {
@@ -468,24 +504,36 @@ export interface TimelineEntry {
   start_time?: string;   // "HH:MM" 格式，来自 occurred_at
   end_time?: string;     // "HH:MM" 格式，来自 occurred_at_end
   text: string;          // 优先 action_text + event_text 合并，否则 content
+  kind?: TimelineEntryKind;
+  record_type?: RecordType;
   is_current?: boolean;  // 进行中记录
   is_gap?: boolean;      // 空白时间段
+  is_pinned?: boolean;   // 置顶（如今日待办计划）
   occurred_at?: string;  // ISO，进行中条目用于实时计时
   duration_minutes?: number;
   item_title?: string;
   category?: string;
   subcategory?: string;
   tag_names?: string[];
+  time_label?: string;   // 模糊时间或计划时段文案
 }
 
 /** 今日活动统计（记录页轻量统计） */
+export interface ActivityStatRow {
+  seconds: number;
+  /** 活动间隙，与时间线空白时间同源 */
+  is_gap?: boolean;
+  /** 未挂大类的记录 */
+  is_uncategorized?: boolean;
+}
+
 export interface TodayActivityStats {
   date: string;
-  recorded_minutes: number;
-  gap_minutes: number;
-  current_elapsed_minutes: number;
-  by_category: { category: string; minutes: number }[];
-  by_item: { item_id: string; item_title: string; minutes: number }[];
+  recorded_seconds: number;
+  gap_seconds: number;
+  current_elapsed_seconds: number;
+  by_category: ({ category: string } & ActivityStatRow)[];
+  by_item: ({ item_id: string; item_title: string } & ActivityStatRow)[];
 }
 
 export interface DayTimeline {

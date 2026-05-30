@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
-import { getItemById, listItems } from '@/lib/db/items';
+import { getItemMeta, listItems } from '@/lib/db/items';
 import { computeItemActivityStats, computeCategoryActivityStats } from '@/lib/db/item-activity-stats';
 import { getChildItems, isCategoryItem } from '@/lib/activity/item-tree';
 import { handleApiError } from '@/lib/api/error-handler';
@@ -16,7 +16,7 @@ export async function GET(
     const userId = await getCurrentUserId();
     const { id } = await params;
 
-    const item = await getItemById(userId, id);
+    const item = await getItemMeta(userId, id);
     if (!item) {
       return apiError(ERROR_CODES.ITEM_NOT_FOUND, '事项不存在', ctx.traceId, 404);
     }

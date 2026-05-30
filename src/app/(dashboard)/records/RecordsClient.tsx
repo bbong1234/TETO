@@ -2,22 +2,24 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, CheckSquare, Trash2, CalendarClock, CheckCircle2, Funnel } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, Funnel } from 'lucide-react';
 import type { Record, Tag, Item, RecordType } from '@/types/teto';
 import { type IngestClarifyState } from './components/QuickInput';
 import FilterBar from './components/FilterBar';
-import RecordList from './components/RecordList';
 import DayRecordGroup from './components/DayRecordGroup';
 import RecordEditDrawer from './components/RecordEditDrawer';
 import CurrentActivityCard from './components/CurrentActivityCard';
-import QuickSwitchPanel from './components/QuickSwitchPanel';
+import QuickSwitchPanel, { type ActivitySwitchResult } from './components/QuickSwitchPanel';
 import { getCategoryItems } from '@/lib/activity/item-tree';
+import { recordBelongsToDay } from '@/lib/activity/timeline-utils';
+import { postBackfillRecord } from '@/lib/activity/post-backfill-record';
 import { ensureCategoryItems } from '@/lib/activity/ensure-categories';
 import TodayActivityTimeline from './components/TodayActivityTimeline';
 import TodayActivityStats from './components/TodayActivityStats';
 import StartActivityPanel, { type StartActivitySubmitPayload } from './components/StartActivityPanel';
 import { useToast } from '@/components/ui/use-toast';
 import ToastContainer from '@/components/ui/use-toast';
+import { RecordsDayContentSkeleton, RecordsMultiDaySkeleton } from '@/components/ui/PageSkeletons';
 
 function formatDate(date: Date): string {
   const y = date.getFullYear();
@@ -54,13 +56,6 @@ const LOAD_BATCH = 7;
 
 const STORAGE_KEY_MULTI_DAY = 'teto_records_multi_day';
 const STORAGE_KEY_PENDING_INPUTS = 'teto_records_pending_inputs_v1';
-
-function getRecordDisplayDate(r: Record): string {
-  if (r.type === '计划' && r.time_anchor_date && r.time_anchor_date !== r.date) {
-    return r.time_anchor_date;
-  }
-  return r.date ?? '';
-}
 
 /** 时间轴会话卡生命周期（同一 input 单槽位） */
 export type SessionLifecycle =
@@ -236,8 +231,9 @@ export default function RecordsClient() {
   // 1.7：补记面板
   const [backfillPanel, setBackfillPanel] = useState<{ startIso?: string; endIso?: string } | null>(null);
   const [currentActivity, setCurrentActivity] = useState<Record | null>(null);
-  const [recentRecordsForSwitch, setRecentRecordsForSwitch] = useState<Record[]>([]);
+  const [activitySyncToken, setActivitySyncToken] = useState(0);
   const [showFilterBar, setShowFilterBar] = useState(false);
+  const tagsLoadedRef = useRef(false);
 
   const hasActiveFilters = Boolean(filterType || filterItemId);
 
@@ -258,9 +254,6 @@ export default function RecordsClient() {
       pendingInputs.filter((p) => p.lifecycle === 'parsing').map((p) => p.id)
     );
   }, [pendingInputs]);
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [batchDeleting, setBatchDeleting] = useState(false);
   const { toasts, showError, dismissToast } = useToast();
 
   // ================================
@@ -488,7 +481,7 @@ export default function RecordsClient() {
   // 加载 tags 和 items
   const reloadItems = useCallback(async () => {
     try {
-      const res = await fetch('/api/v2/items');
+      const res = await fetch('/api/v2/items?lite=true');
       const data = await res.json();
       if (data.data) setItems(data.data);
     } catch (err) {
@@ -496,28 +489,39 @@ export default function RecordsClient() {
     }
   }, []);
 
+  const handleItemCreated = useCallback((item: Item) => {
+    setItems((prev) => (prev.some((i) => i.id === item.id) ? prev : [...prev, item]));
+  }, []);
+
+  const loadTags = useCallback(async () => {
+    if (tagsLoadedRef.current) return;
+    tagsLoadedRef.current = true;
+    try {
+      const res = await fetch('/api/v2/tags');
+      const data = await res.json();
+      if (data.data) setTags(data.data);
+    } catch (err) {
+      console.error('加载标签失败:', err);
+      tagsLoadedRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     async function loadMeta() {
       try {
-        const [tagsRes, itemsRes] = await Promise.all([
-          fetch('/api/v2/tags'),
-          fetch('/api/v2/items'),
-        ]);
-        const tagsData = await tagsRes.json();
+        const itemsRes = await fetch('/api/v2/items?lite=true');
         const itemsData = await itemsRes.json();
-        if (tagsData.data) setTags(tagsData.data);
         const itemsList = itemsData.data ?? [];
         setItems(itemsList);
 
-        // 后台补齐预设大类（单次 API，不阻塞首屏）
         if (getCategoryItems(itemsList).length === 0) {
           ensureCategoryItems(itemsList).then((next) => {
             if (next) setItems(next);
           });
         }
       } catch (err) {
-        console.error('加载标签/事项失败:', err);
-        showError('加载标签/事项失败，请刷新重试');
+        console.error('加载事项失败:', err);
+        showError('加载事项失败，请刷新重试');
       }
     }
     loadMeta();
@@ -536,6 +540,7 @@ export default function RecordsClient() {
         params.set('date_to', multiDayDates[multiDayDates.length - 1]);
       } else {
         params.set('date', singleDayDate);
+        params.set('limit', '200');
       }
       if (filterType) params.set('type', filterType);
       if (filterTagId) params.set('tag_id', filterTagId);
@@ -560,33 +565,37 @@ export default function RecordsClient() {
     fetchRecords();
   }, [fetchRecords, refreshKey]);
 
-  // 近 7 天记录（快速切换面板，延后加载不阻塞首屏）
   useEffect(() => {
-    if (!isOnToday || isMultiDay) return;
-    let cancelled = false;
-    const timer = window.setTimeout(async () => {
-      try {
-        const end = formatDate(new Date());
-        const start = new Date();
-        start.setDate(start.getDate() - 6);
-        const params = new URLSearchParams({
-          date_from: formatDate(start),
-          date_to: end,
-          type: '发生',
-          limit: '150',
-        });
-        const res = await fetch(`/api/v2/records?${params.toString()}`);
-        const data = await res.json();
-        if (!cancelled && data.data) setRecentRecordsForSwitch(data.data);
-      } catch {
-        if (!cancelled) setRecentRecordsForSwitch([]);
-      }
-    }, 300);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [isOnToday, isMultiDay, refreshKey]);
+    if (editingRecord) void loadTags();
+  }, [editingRecord, loadTags]);
+
+  const handleActivitySwitched = useCallback(
+    (data: ActivitySwitchResult) => {
+      setCurrentActivity(data.record);
+      setActivitySyncToken((t) => t + 1);
+      setRecords((prev) => {
+        let next = [...prev];
+        for (const stopped of data.stopped) {
+          const idx = next.findIndex((r) => r.id === stopped.id);
+          if (idx >= 0) {
+            next[idx] = { ...next[idx], ...stopped, lifecycle_status: 'completed' };
+          }
+        }
+        if (data.record) {
+          const enriched = { ...data.record };
+          if (enriched.item_id && !enriched.item) {
+            const item = items.find((i) => i.id === enriched.item_id);
+            if (item) enriched.item = { id: item.id, title: item.title };
+          }
+          if (!enriched.date) enriched.date = singleDayDate;
+          next = next.filter((r) => r.id !== enriched.id);
+          next.unshift(enriched);
+        }
+        return sortRecords(next);
+      });
+    },
+    [items, singleDayDate]
+  );
 
   const handleRecordCreated = () => {
     // 新记录已从录入框入库：关掉右侧编辑抽屉，避免误以为还要「改原文」
@@ -655,25 +664,18 @@ export default function RecordsClient() {
 
   const groupedRecords = useMemo(() => {
     return multiDayDates.map((date) => {
-      const dayRecords = recordsWithPending.filter((r) => getRecordDisplayDate(r) === date);
+      const dayRecords = recordsWithPending.filter((r) => recordBelongsToDay(r, date));
       return { date, records: dayRecords };
     });
   }, [recordsWithPending, multiDayDates]);
 
   // 单日模式数据（包含计划投影）
-  const singleDayRecords = recordsWithPending.filter((r) => getRecordDisplayDate(r) === singleDayDate);
+  const singleDayRecords = recordsWithPending.filter((r) =>
+    recordBelongsToDay(r, singleDayDate)
+  );
   const totalRecords = isMultiDay
     ? recordsWithPending.length
     : singleDayRecords.length;
-
-  // 今日到期计划（类型=计划 + time_anchor_date=今天 + lifecycle_status=active 或 null）
-  const dueTodayPlans = useMemo(() => {
-    return records.filter(r =>
-      r.type === '计划' &&
-      r.time_anchor_date === todayStr &&
-      (!r.lifecycle_status || r.lifecycle_status === 'active')
-    );
-  }, [records, todayStr]);
 
   const isPendingRecord = useCallback((id: string) => id.startsWith('session:'), []);
 
@@ -747,8 +749,6 @@ export default function RecordsClient() {
       showError('操作失败，请重试');
     }
   };
-
-  const quickInputDate = todayStr;
 
   // 完成计划：生成一条“发生”记录，原记录变为 completed
   const handleComplete = async (record: Record) => {
@@ -924,88 +924,6 @@ export default function RecordsClient() {
     }
   };
 
-  // 多选模式操作
-  const handleToggleSelectionMode = () => {
-    if (selectionMode) {
-      setSelectionMode(false);
-      setSelectedIds(new Set());
-    } else {
-      setSelectionMode(true);
-    }
-  };
-
-  const handleToggleSelect = useCallback((id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const handleSelectAll = () => {
-    // 单日模式：toggle 全选/取消全选
-    const allIds = singleDayRecords.map(r => r.id);
-    const allSelected = allIds.length > 0 && allIds.every(id => selectedIds.has(id));
-    if (allSelected) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(allIds));
-    }
-  };
-
-  // 多天模式：全选/取消全选指定日期的记录
-  const handleSelectAllForDate = (date: string) => {
-    const dayIds = records.filter(r => getRecordDisplayDate(r) === date).map(r => r.id);
-    const allSelected = dayIds.length > 0 && dayIds.every(id => selectedIds.has(id));
-    if (allSelected) {
-      // 该日已全选 → 取消全选该日
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        dayIds.forEach(id => next.delete(id));
-        return next;
-      });
-    } else {
-      // 该日未全选 → 全选该日
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        dayIds.forEach(id => next.add(id));
-        return next;
-      });
-    }
-  };
-
-  const handleBatchDelete = async () => {
-    if (selectedIds.size === 0) return;
-    // 根据选中记录数给出不同级别的确认提示
-    const msg = selectedIds.size > 20
-      ? `你正在删除 ${selectedIds.size} 条记录，此操作不可撤销。确定继续？`
-      : `确定删除选中的 ${selectedIds.size} 条记录？此操作不可撤销。`;
-    const confirmed = window.confirm(msg);
-    if (!confirmed) return;
-
-    setBatchDeleting(true);
-    try {
-      const res = await fetch('/api/v2/records/batch-delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: Array.from(selectedIds) }),
-      });
-      if (res.ok) {
-        setSelectedIds(new Set());
-        setSelectionMode(false);
-        setRefreshKey(k => k + 1);
-      } else {
-        const err = await res.json();
-        showError(err.error || '批量删除失败');
-      }
-    } catch {
-      showError('批量删除失败，请重试');
-    } finally {
-      setBatchDeleting(false);
-    }
-  };
-
   return (
     <div className="h-full flex flex-col bg-slate-100">
       {/* 顶部工具栏（固定） */}
@@ -1073,17 +991,6 @@ export default function RecordsClient() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={handleToggleSelectionMode}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                selectionMode
-                  ? 'bg-amber-500 text-white shadow-sm'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              <CheckSquare className="h-3.5 w-3.5" />
-              {selectionMode ? '取消' : '多选'}
-            </button>
-            <button
               onClick={handleToggleMultiDay}
               className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                 isMultiDay
@@ -1140,31 +1047,6 @@ export default function RecordsClient() {
           </div>
         )}
 
-        {/* 多选操作栏 */}
-        {selectionMode && (
-          <div className={`mx-auto mt-2 flex items-center gap-3 ${isMultiDay ? 'max-w-7xl' : 'max-w-2xl'}`}>
-            <span className="text-xs text-slate-500">已选 {selectedIds.size} 条</span>
-            {!isMultiDay && (
-              <button
-                onClick={handleSelectAll}
-                className="rounded-lg px-2.5 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
-              >
-                全选本日
-              </button>
-            )}
-            {isMultiDay && (
-              <span className="text-[11px] text-slate-400">点击列头日期可全选该日</span>
-            )}
-            <button
-              onClick={handleBatchDelete}
-              disabled={selectedIds.size === 0 || batchDeleting}
-              className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              <Trash2 className="h-3 w-3" />
-              {batchDeleting ? '删除中...' : '删除选中'}
-            </button>
-          </div>
-        )}
       </div>
 
       {/* 内容区（填满剩余高度） */}
@@ -1172,105 +1054,56 @@ export default function RecordsClient() {
         {!isMultiDay ? (
           <div className="h-full overflow-y-auto">
             <div className="mx-auto max-w-2xl px-4 py-4">
-              {isOnToday ? (
-                <div className="space-y-4">
-                  {dueTodayPlans.length > 0 && (
-                    <div className="rounded-xl bg-blue-50 border border-blue-200 px-3 py-2.5">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <CalendarClock className="h-4 w-4 text-blue-500 shrink-0" />
-                        <span className="text-xs font-semibold text-blue-700">
-                          今日到期计划（{dueTodayPlans.length}）
-                        </span>
-                      </div>
-                      <div className="space-y-1">
-                        {dueTodayPlans.map((plan) => (
-                          <div
-                            key={plan.id}
-                            className="flex items-center justify-between rounded-lg bg-white border border-blue-100 px-2.5 py-1.5 cursor-pointer hover:bg-blue-50 transition-colors"
-                            onClick={() => setEditingRecord(plan)}
-                          >
-                            <span className="text-xs text-slate-700 truncate">{plan.content}</span>
-                            <div className="flex items-center gap-1 shrink-0 ml-2">
-                              {plan.item && (
-                                <span className="text-[10px] text-slate-400">{plan.item.title}</span>
-                              )}
-                              <CheckCircle2
-                                className="h-3.5 w-3.5 text-green-500 hover:text-green-700 transition-colors"
-                                onClick={(e: React.MouseEvent) => {
-                                  e.stopPropagation();
-                                  handleComplete(plan);
-                                }}
-                                aria-label="完成计划"
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  <CurrentActivityCard
-                    items={items}
-                    refreshKey={refreshKey}
-                    onChanged={() => setRefreshKey((k) => k + 1)}
-                    onItemsChanged={reloadItems}
-                    onActivityChange={setCurrentActivity}
-                    onError={showError}
-                  />
-                  <QuickSwitchPanel
-                    items={items}
-                    records={recentRecordsForSwitch}
-                    currentActivity={currentActivity}
-                    onSwitched={() => setRefreshKey((k) => k + 1)}
-                    onError={showError}
-                  />
-                  <TodayActivityTimeline
-                    records={singleDayRecords}
-                    date={singleDayDate}
-                    items={items}
-                    onGapClick={(startIso, endIso) =>
-                      setBackfillPanel({ startIso, endIso })
-                    }
-                    onRecordClick={handleRecordClick}
-                  />
-                  <TodayActivityStats
-                    records={singleDayRecords}
-                    date={singleDayDate}
-                    currentActivity={currentActivity}
-                    items={items}
-                  />
-                </div>
-              ) : recordsLoading ? (
-                <div className="flex items-center justify-center py-12">
-                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
-                  <span className="ml-2 text-sm text-slate-400">加载记录列表…</span>
-                </div>
-              ) : singleDayRecords.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-slate-400">
-                  <p className="text-sm">暂无记录</p>
-                </div>
-              ) : (
-                <RecordList
-                  records={singleDayRecords}
-                  onRecordClick={handleRecordClick}
-                  onStarToggle={handleStarToggle}
-                  aiPendingIds={aiPendingIds}
-                  selectionMode={selectionMode}
-                  selectedIds={selectedIds}
-                  onToggleSelect={handleToggleSelect}
-                  onComplete={handleComplete}
-                  onPostpone={handlePostpone}
-                  onCancel={handleCancel}
-                  onConvertToPlan={handleConvertToPlan}
-                  onConvertToItem={handleConvertToItem}
-                  onConvertToGoal={handleConvertToGoal}
-                />
-              )}
+              <div className="space-y-4">
+                {isOnToday && (
+                  <>
+                    <CurrentActivityCard
+                      items={items}
+                      refreshKey={refreshKey}
+                      activitySyncToken={activitySyncToken}
+                      syncActivity={currentActivity}
+                      onChanged={() => setRefreshKey((k) => k + 1)}
+                      onItemsChanged={reloadItems}
+                      onItemCreated={handleItemCreated}
+                      onCreateError={showError}
+                      onActivityChange={setCurrentActivity}
+                      onError={showError}
+                    />
+                    <QuickSwitchPanel
+                      supplementRecords={records.filter((r) => r.type === '发生')}
+                      items={items}
+                      onSwitched={handleActivitySwitched}
+                      onError={showError}
+                    />
+                  </>
+                )}
+                {recordsLoading ? (
+                  <RecordsDayContentSkeleton />
+                ) : (
+                  <>
+                    <TodayActivityTimeline
+                      records={recordsWithPending}
+                      date={singleDayDate}
+                      items={items}
+                      onGapClick={(startIso, endIso) =>
+                        setBackfillPanel({ startIso, endIso })
+                      }
+                      onRecordClick={handleRecordClick}
+                      onPlanComplete={handleComplete}
+                    />
+                    <TodayActivityStats
+                      records={singleDayRecords}
+                      date={singleDayDate}
+                      currentActivity={isOnToday ? currentActivity : null}
+                      items={items}
+                    />
+                  </>
+                )}
+              </div>
             </div>
           </div>
         ) : recordsLoading ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
-          </div>
+          <RecordsMultiDaySkeleton />
         ) : (
           <div
             ref={scrollContainerRef}
@@ -1296,10 +1129,6 @@ export default function RecordsClient() {
                       records={group.records}
                       layout="column"
                       aiPendingIds={aiPendingIds}
-                      selectionMode={selectionMode}
-                      selectedIds={selectedIds}
-                      onToggleSelect={handleToggleSelect}
-                      onSelectAllForDate={handleSelectAllForDate}
                       onRecordClick={handleRecordClick}
                       onStarToggle={handleStarToggle}
                       onComplete={handleComplete}
@@ -1337,6 +1166,9 @@ export default function RecordsClient() {
           onSaved={handleRecordUpdated}
           onDeleted={handleRecordUpdated}
           onError={showError}
+          onItemsChange={reloadItems}
+          onItemCreated={handleItemCreated}
+          onCreateError={showError}
         />
       )}
 
@@ -1347,44 +1179,17 @@ export default function RecordsClient() {
           mode="backfill"
           items={items}
           onItemsChange={reloadItems}
+          onItemCreated={handleItemCreated}
+          onCreateError={showError}
+          backfillDate={singleDayDate}
           initialStart={backfillPanel.startIso}
           initialEnd={backfillPanel.endIso}
+          gapStartIso={backfillPanel.startIso}
+          gapEndIso={backfillPanel.endIso}
           onClose={() => setBackfillPanel(null)}
           onSubmit={async (payload) => {
-            const startDate = payload.occurred_at
-              ? new Date(payload.occurred_at).toISOString().slice(0, 10)
-              : singleDayDate;
-            const duration =
-              payload.occurred_at && payload.occurred_at_end
-                ? Math.max(
-                    0,
-                    Math.round(
-                      (Date.parse(payload.occurred_at_end) - Date.parse(payload.occurred_at)) /
-                        60000
-                    )
-                  )
-                : undefined;
-            const res = await fetch('/api/v2/records', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                date: startDate,
-                content: payload.content || '补记',
-                type: '发生',
-                lifecycle_status: 'completed',
-                occurred_at: payload.occurred_at,
-                occurred_at_end: payload.occurred_at_end,
-                duration_minutes: duration,
-                item_id: payload.item_id,
-                sub_item_id: payload.sub_item_id,
-                input_source: 'manual',
-                review_status: 'confirmed',
-              }),
-            });
-            if (!res.ok) {
-              const d = await res.json();
-              throw new Error(d.error?.message ?? '补记失败');
-            }
+            await postBackfillRecord(payload, singleDayDate);
+            setBackfillPanel(null);
             setRefreshKey((k) => k + 1);
           }}
         />

@@ -13,6 +13,7 @@ interface SwitchActivityBody {
   content?: string;
   item_id?: string | null;
   sub_item_id?: string | null;
+  tool_label?: string | null;
   tag_ids?: string[];
 }
 
@@ -45,6 +46,7 @@ export async function POST(request: NextRequest) {
       content: body.content,
       item_id: body.item_id,
       sub_item_id: body.sub_item_id,
+      tool_label: body.tool_label,
       tag_ids: body.tag_ids,
       supabase,
       traceId: ctx.traceId,

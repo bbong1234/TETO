@@ -128,7 +128,11 @@ export function guardRecordType(params: {
   }
 
   if (hasSummaryDiscourse(raw) || hasSummaryDiscourse(unitSlice)) {
-    return { type: '总结', corrected: false };
+    return {
+      type: '想法',
+      corrected: true,
+      reason: '回顾性文本归为用户想法类型，建议归属日记或子项复盘',
+    };
   }
 
   if (hasConcreteActionInText(unitSlice) || hasConcreteActionInText(raw)) {

@@ -2,9 +2,80 @@ import { createClient } from '@/lib/supabase/server';
 import { fetchItemDurationTotals } from '@/lib/db/item-activity-stats';
 import { tryRpc } from '@/lib/domain/transaction-service';
 import { createComponentLogger } from '@/lib/observability/logger';
-import type { Item, CreateItemPayload, UpdateItemPayload, ItemsQuery, Record as TetoRecord } from '@/types/teto';
+import type { Item, CreateItemPayload, UpdateItemPayload, ItemsQuery } from '@/types/teto';
 
 const log = createComponentLogger('db-items');
+
+/** 未执行 sql/031_items_parent.sql 时的提示 */
+export const PARENT_ITEM_ID_MIGRATION_HINT =
+  '数据库缺少 parent_item_id 字段。请在 Supabase → SQL Editor 执行 sql/031_items_parent.sql，完成后等待约 1 分钟再试。';
+
+type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
+
+let parentItemIdSupported: boolean | null = null;
+
+export function isParentItemIdSchemaError(message: string): boolean {
+  return message.includes('parent_item_id') && message.includes('schema cache');
+}
+
+function mapItemDbError(prefix: string, message: string): Error {
+  if (isParentItemIdSchemaError(message)) {
+    return new Error(`${prefix}: ${PARENT_ITEM_ID_MIGRATION_HINT}`);
+  }
+  return new Error(`${prefix}: ${message}`);
+}
+
+export async function supportsParentItemId(supabase: SupabaseServerClient): Promise<boolean> {
+  if (parentItemIdSupported !== null) return parentItemIdSupported;
+  const { error } = await supabase.from('items').select('parent_item_id').limit(0);
+  if (!error) {
+    parentItemIdSupported = true;
+    return true;
+  }
+  if (isParentItemIdSchemaError(error.message)) {
+    parentItemIdSupported = false;
+    return false;
+  }
+  parentItemIdSupported = true;
+  return true;
+}
+
+function buildCreateItemRow(
+  userId: string,
+  payload: CreateItemPayload,
+  includeParent: boolean
+): Record<string, unknown> {
+  const row: Record<string, unknown> = {
+    user_id: userId,
+    title: payload.title.trim(),
+    description: payload.description ?? null,
+    status: payload.status ?? '活跃',
+    color: payload.color ?? null,
+    icon: payload.icon ?? null,
+    is_pinned: payload.is_pinned ?? false,
+    started_at: payload.started_at ?? null,
+    folder_id: payload.folder_id ?? null,
+  };
+  if (includeParent) {
+    row.parent_item_id = payload.parent_item_id ?? null;
+  }
+  return row;
+}
+
+function applyParentItemIdQuery<T extends { is: (col: string, val: null) => T; eq: (col: string, val: string) => T }>(
+  q: T,
+  query: ItemsQuery,
+  includeParent: boolean
+): T {
+  if (!includeParent || !('parent_item_id' in query)) return q;
+  if (query.parent_item_id === null) {
+    return q.is('parent_item_id', null);
+  }
+  if (query.parent_item_id) {
+    return q.eq('parent_item_id', query.parent_item_id);
+  }
+  return q;
+}
 
 /**
  * 创建事项
@@ -32,25 +103,19 @@ export async function createItem(
     );
   }
 
+  const includeParent = await supportsParentItemId(supabase);
+  if (!includeParent && payload.parent_item_id) {
+    throw new Error(PARENT_ITEM_ID_MIGRATION_HINT);
+  }
+
   const { data, error } = await supabase
     .from('items')
-    .insert({
-      user_id: userId,
-      title: payload.title.trim(),
-      description: payload.description ?? null,
-      status: payload.status ?? '活跃',
-      color: payload.color ?? null,
-      icon: payload.icon ?? null,
-      is_pinned: payload.is_pinned ?? false,
-      started_at: payload.started_at ?? null,
-      folder_id: payload.folder_id ?? null,
-      parent_item_id: payload.parent_item_id ?? null,
-    })
+    .insert(buildCreateItemRow(userId, payload, includeParent))
     .select()
     .single();
 
   if (error) {
-    throw new Error(`创建事项失败: ${error.message}`);
+    throw mapItemDbError('创建事项失败', error.message);
   }
 
   return data;
@@ -76,7 +141,15 @@ export async function updateItem(
   if (payload.started_at !== undefined) updateData.started_at = payload.started_at;
   if (payload.ended_at !== undefined) updateData.ended_at = payload.ended_at;
   if (payload.folder_id !== undefined) updateData.folder_id = payload.folder_id;
-  if (payload.parent_item_id !== undefined) updateData.parent_item_id = payload.parent_item_id;
+  const includeParent = await supportsParentItemId(supabase);
+  if (payload.parent_item_id !== undefined) {
+    if (!includeParent && payload.parent_item_id) {
+      throw new Error(PARENT_ITEM_ID_MIGRATION_HINT);
+    }
+    if (includeParent) {
+      updateData.parent_item_id = payload.parent_item_id;
+    }
+  }
 
   const { data, error } = await supabase
     .from('items')
@@ -87,7 +160,7 @@ export async function updateItem(
     .single();
 
   if (error) {
-    throw new Error(`更新事项失败: ${error.message}`);
+    throw mapItemDbError('更新事项失败', error.message);
   }
 
   return data;
@@ -175,9 +248,9 @@ export async function deleteItem(userId: string, id: string): Promise<void> {
 }
 
 /**
- * 根据 ID 获取事项（附带关联记录列表）
+ * 根据 ID 获取事项元数据（不含记录列表，详情页请用专用 API）
  */
-export async function getItemById(
+export async function getItemMeta(
   userId: string,
   id: string
 ): Promise<Item | null> {
@@ -195,29 +268,17 @@ export async function getItemById(
   }
 
   if (!data) return null;
+  return { ...data, recent_records: [] };
+}
 
-  // 附带该事项关联的所有记录（按时间倒序）
-  const { data: records, error: recordsError } = await supabase
-    .from('records')
-    .select('id, content, type, occurred_at, status, result, mood, energy, note, item_id, phase_id, sub_item_id, sort_order, is_starred, created_at, updated_at, user_id, record_day_id, cost, metric_value, metric_unit, metric_name, duration_minutes')
-    .eq('item_id', id)
-    .eq('user_id', userId)
-    .order('occurred_at', { ascending: false, nullsFirst: false })
-    .order('created_at', { ascending: false });
-
-  if (recordsError) {
-    throw new Error(`获取事项关联记录失败: ${recordsError.message}`);
-  }
-
-  // 为每条记录附带 item 信息
-  const enrichedRecords: TetoRecord[] = [];
-  for (const rec of (records || [])) {
-    const record: TetoRecord = { ...rec };
-    record.item = { id: data.id, title: data.title };
-    enrichedRecords.push(record);
-  }
-
-  return { ...data, recent_records: enrichedRecords };
+/**
+ * 根据 ID 获取事项（不含全量记录，兼容旧调用方）
+ */
+export async function getItemById(
+  userId: string,
+  id: string
+): Promise<Item | null> {
+  return getItemMeta(userId, id);
 }
 
 /**
@@ -253,18 +314,13 @@ export async function listItems(
     }
   }
 
-  if ('parent_item_id' in query) {
-    if (query.parent_item_id === null) {
-      q = q.is('parent_item_id', null);
-    } else if (query.parent_item_id) {
-      q = q.eq('parent_item_id', query.parent_item_id);
-    }
-  }
+  const includeParent = await supportsParentItemId(supabase);
+  q = applyParentItemIdQuery(q, query, includeParent);
 
   const { data, error } = await q.order('created_at', { ascending: false });
 
   if (error) {
-    throw new Error(`列出事项失败: ${error.message}`);
+    throw mapItemDbError('列出事项失败', error.message);
   }
 
   if (!data || data.length === 0) return [];
@@ -293,4 +349,48 @@ export async function listItems(
     records: undefined,
     recent_records: [],
   }));
+}
+
+const ITEM_LITE_COLUMNS_BASE =
+  'id, user_id, title, description, status, color, icon, is_pinned, started_at, ended_at, folder_id, created_at, updated_at';
+
+const ITEM_LITE_COLUMNS =
+  'id, user_id, title, description, status, color, icon, is_pinned, started_at, ended_at, folder_id, parent_item_id, created_at, updated_at';
+
+/**
+ * 轻量事项列表（记录页选择器用）：无 phase/record 计数与时长聚合
+ */
+export async function listItemsLite(
+  userId: string,
+  query: ItemsQuery
+): Promise<Item[]> {
+  const supabase = await createClient();
+  const includeParent = await supportsParentItemId(supabase);
+
+  let q = includeParent
+    ? supabase.from('items').select(ITEM_LITE_COLUMNS).eq('user_id', userId)
+    : supabase.from('items').select(ITEM_LITE_COLUMNS_BASE).eq('user_id', userId);
+
+  if (query.status) {
+    q = q.eq('status', query.status);
+  }
+  if (query.is_pinned !== undefined) {
+    q = q.eq('is_pinned', query.is_pinned);
+  }
+  if (query.folder_id !== undefined) {
+    if (query.folder_id === null) {
+      q = q.is('folder_id', null);
+    } else {
+      q = q.eq('folder_id', query.folder_id);
+    }
+  }
+  q = applyParentItemIdQuery(q, query, includeParent);
+
+  const { data, error } = await q.order('created_at', { ascending: false });
+
+  if (error) {
+    throw mapItemDbError('列出事项失败', error.message);
+  }
+
+  return data ?? [];
 }
