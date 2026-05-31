@@ -53,6 +53,9 @@ function validateRecordPayload(body: CreateRecordPayload): string | null {
       if (typeof tagId !== 'string' || !UUID_REGEX.test(tagId)) return `无效的 tag_id: ${tagId}`;
     }
   }
+  if (body.goal_id != null && body.goal_id !== '' && !UUID_REGEX.test(body.goal_id)) {
+    return 'goal_id 格式无效';
+  }
   return null;
 }
 
@@ -67,12 +70,14 @@ export async function GET(request: NextRequest) {
     const date_from = searchParams.get('date_from');
     const date_to = searchParams.get('date_to');
     const item_id = searchParams.get('item_id');
+    const goal_id = searchParams.get('goal_id');
     const sub_item_id = searchParams.get('sub_item_id');
     const type = searchParams.get('type');
     const tag_id = searchParams.get('tag_id');
     const is_starred = searchParams.get('is_starred');
     const search = searchParams.get('search');
     const limit = searchParams.get('limit');
+    const order = searchParams.get('order');
 
     if (date && !DATE_REGEX.test(date)) {
       return apiError(ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED, 'date 格式无效，应为 YYYY-MM-DD', ctx.traceId);
@@ -90,6 +95,10 @@ export async function GET(request: NextRequest) {
       return apiError(ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED, 'item_id 格式无效', ctx.traceId);
     }
     if (item_id) query.item_id = item_id;
+    if (goal_id && !UUID_REGEX.test(goal_id)) {
+      return apiError(ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED, 'goal_id 格式无效', ctx.traceId);
+    }
+    if (goal_id) query.goal_id = goal_id;
     if (sub_item_id) query.sub_item_id = sub_item_id;
     if (type) query.type = type as RecordsQuery['type'];
     const category = searchParams.get('category');
@@ -103,6 +112,9 @@ export async function GET(request: NextRequest) {
         return apiError(ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED, 'limit 必须为非负整数', ctx.traceId);
       }
       query.limit = parsed;
+    }
+    if (order === 'asc' || order === 'desc') {
+      query.order = order;
     }
 
     const result = await listRecords(userId, query);

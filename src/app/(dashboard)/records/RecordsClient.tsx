@@ -3,17 +3,25 @@
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, Funnel } from 'lucide-react';
-import type { Record, Tag, Item, RecordType } from '@/types/teto';
+import type { Goal, Item, Record, Tag, RecordType, UserTool } from '@/types/teto';
 import { type IngestClarifyState } from './components/QuickInput';
 import FilterBar from './components/FilterBar';
 import DayRecordGroup from './components/DayRecordGroup';
 import RecordEditDrawer from './components/RecordEditDrawer';
 import CurrentActivityCard from './components/CurrentActivityCard';
 import QuickSwitchPanel, { type ActivitySwitchResult } from './components/QuickSwitchPanel';
-import { getCategoryItems } from '@/lib/activity/item-tree';
 import { recordBelongsToDay } from '@/lib/activity/timeline-utils';
 import { postBackfillRecord } from '@/lib/activity/post-backfill-record';
-import { ensureCategoryItems } from '@/lib/activity/ensure-categories';
+import { ensureCategoryItems, needsCategorySeed } from '@/lib/activity/ensure-categories';
+import { sortRecords } from '@/lib/activity/sort-records';
+import {
+  mergeSwitchIntoRecords,
+  mergeRecordUpdated,
+  mergeRecordDeleted,
+  replaceOptimisticRecord,
+  enrichRecord,
+  type ActivitySwitchPayload,
+} from '@/lib/activity/records-mutation';
 import TodayActivityTimeline from './components/TodayActivityTimeline';
 import TodayActivityStats from './components/TodayActivityStats';
 import StartActivityPanel, { type StartActivitySubmitPayload } from './components/StartActivityPanel';
@@ -46,6 +54,17 @@ function generateDatesAfter(startDate: string, count: number): string[] {
   const dates: string[] = [];
   for (let i = 1; i <= count; i++) {
     const dd = new Date(start);
+    dd.setDate(dd.getDate() + i);
+    dates.push(formatDate(dd));
+  }
+  return dates;
+}
+
+function buildInitialMultiDayDates(): string[] {
+  const d = new Date();
+  const dates: string[] = [];
+  for (let i = -2; i <= 2; i++) {
+    const dd = new Date(d);
     dd.setDate(dd.getDate() + i);
     dates.push(formatDate(dd));
   }
@@ -212,17 +231,30 @@ export default function RecordsClient() {
     return localStorage.getItem(STORAGE_KEY_MULTI_DAY) === 'true';
   });
   const [singleDayOffset, setSingleDayOffset] = useState(getInitialOffset);
-  const [multiDayDates, setMultiDayDates] = useState<string[]>([]);
-  const [multiDayEarliestOffset, setMultiDayEarliestOffset] = useState(0);
+  const [multiDayDates, setMultiDayDates] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    if (localStorage.getItem(STORAGE_KEY_MULTI_DAY) === 'true') {
+      return buildInitialMultiDayDates();
+    }
+    return [];
+  });
+  const [multiDayEarliestOffset, setMultiDayEarliestOffset] = useState(() =>
+    typeof window !== 'undefined' && localStorage.getItem(STORAGE_KEY_MULTI_DAY) === 'true' ? -2 : 0
+  );
   const [records, setRecords] = useState<Record[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
+  const [userTools, setUserTools] = useState<UserTool[]>([]);
+  const [toolsLoading, setToolsLoading] = useState(true);
+  const [itemsLoading, setItemsLoading] = useState(true);
   const [filterType, setFilterType] = useState<RecordType | ''>('');
   const [filterTagId, setFilterTagId] = useState('');
   const [filterItemId, setFilterItemId] = useState(() => searchParams.get('item_id') || '');
   const [refreshKey, setRefreshKey] = useState(0);
   const [editingRecord, setEditingRecord] = useState<Record | null>(null);
-  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [recordsLoading, setRecordsLoading] = useState(true);
+  const [pageReady, setPageReady] = useState(false);
   const [pendingInputs, setPendingInputs] = useState<PendingInputDraft[]>([]);
   const [resumeClarify, setResumeClarify] = useState<{
     nonce: number;
@@ -234,6 +266,7 @@ export default function RecordsClient() {
   const [activitySyncToken, setActivitySyncToken] = useState(0);
   const [showFilterBar, setShowFilterBar] = useState(false);
   const tagsLoadedRef = useRef(false);
+  const bootstrapMetaLoadedRef = useRef(false);
 
   const hasActiveFilters = Boolean(filterType || filterItemId);
 
@@ -256,123 +289,6 @@ export default function RecordsClient() {
   }, [pendingInputs]);
   const { toasts, showError, dismissToast } = useToast();
 
-  // ================================
-  // 客户端排序：按记录类型不同排序方向
-  // 发生/想法/总结：从晚到早（最新在上）
-  // 计划：从早到晚（最早在上）
-  // 无时间记录：按创建时间（紧邻同批次有时间的记录）
-  // ================================
-  /** 从 time_text 提取时间段排序权重（0-23） */
-  const getTimeTextWeight = (timeText: string | null | undefined): number => {
-    if (!timeText) return 12;
-    const lower = timeText.toLowerCase();
-    if (lower.includes('凌晨') || lower.includes('深夜')) return 0;
-    if (lower.includes('早上') || lower.includes('早晨') || lower.includes('清晨') || lower.includes('上午')) return 8;
-    if (lower.includes('中午') || lower.includes('午饭') || lower.includes('午休')) return 12;
-    if (lower.includes('下午')) return 15;
-    if (lower.includes('傍晚') || lower.includes('黄昏')) return 18;
-    if (lower.includes('晚上') || lower.includes('夜晚') || lower.includes('夜里') || lower.includes('晚饭')) return 20;
-    const hourMatch = timeText.match(/(\d{1,2})\s*点/);
-    if (hourMatch) {
-      let h = parseInt(hourMatch[1]);
-      if (h <= 12 && (lower.includes('下午') || lower.includes('晚上'))) h += 12;
-      return h;
-    }
-    return 12;
-  };
-
-  /** 获取计划记录的可排序时间值（综合 time_anchor_date + time_text 时段权重） */
-  const getPlanSortKey = (record: Record): string => {
-    if (record.occurred_at) return record.occurred_at;
-    const dateStr = record.time_anchor_date || record.created_at;
-    // 在日期后追加小时权重，使字符串比较也能正确排序
-    const weight = getTimeTextWeight(record.time_text);
-    return `${dateStr}T${String(weight).padStart(2, '0')}:00:00`;
-  };
-
-  const sortRecords = (rawRecords: Record[]): Record[] => {
-    // 1. 按 batch_id 分组（同批次拆分记录排在一起）
-    const batchMap = new Map<string, Record[]>();
-    const standalone: Record[] = [];
-    for (const r of rawRecords) {
-      if (r.batch_id) {
-        if (!batchMap.has(r.batch_id)) batchMap.set(r.batch_id, []);
-        batchMap.get(r.batch_id)!.push(r);
-      } else {
-        standalone.push(r);
-      }
-    }
-
-    // 2. 为每组 batch 计算排序键（含 time_text / time_anchor_date 供计划排序）
-    //    同时对批次内记录按各自时间排序（批次整体排序后，内部也应有正确顺序）
-    const batchSortKey = new Map<string, { occurred_at: string | null; created_at: string; type: string; time_text: string | null; time_anchor_date: string | null }>();
-    for (const [batchId, group] of batchMap) {
-      const isPlan = group[0]?.type === '计划';
-      // 批次内记录按各自时间排序
-      if (isPlan) {
-        // 计划：升序（最早在上）
-        group.sort((a, b) => getPlanSortKey(a).localeCompare(getPlanSortKey(b)));
-      } else {
-        // 发生/想法/总结：降序（最新在上）
-        group.sort((a, b) => {
-          const aTime = a.occurred_at || a.created_at;
-          const bTime = b.occurred_at || b.created_at;
-          return bTime.localeCompare(aTime);
-        });
-      }
-      // 排序键：计划用最早的记录，其他用最晚的记录
-      const keyRecord = isPlan ? group[0] : group[0]; // 排序后 [0] 已是极值
-      const withTime = group.find(r => r.occurred_at && r.time_precision !== 'inherited');
-      batchSortKey.set(batchId, {
-        occurred_at: withTime?.occurred_at || null,
-        created_at: keyRecord.created_at,
-        type: keyRecord.type,
-        time_text: keyRecord.time_text ?? null,
-        time_anchor_date: keyRecord.time_anchor_date ?? null,
-      });
-    }
-
-    // 3. 将 batch 组和 standalone 统一为排序单元
-    type SortUnit = { sortKey: { occurred_at: string | null; created_at: string; type: string; time_text: string | null; time_anchor_date: string | null }; records: Record[] };
-    const units: SortUnit[] = [];
-
-    for (const r of standalone) {
-      units.push({ sortKey: { occurred_at: r.occurred_at, created_at: r.created_at, type: r.type, time_text: r.time_text ?? null, time_anchor_date: r.time_anchor_date ?? null }, records: [r] });
-    }
-    for (const [batchId, group] of batchMap) {
-      units.push({ sortKey: batchSortKey.get(batchId)!, records: group });
-    }
-
-    // 4. 排序：计划类型升序（最早在上），其他类型降序（最新在上）
-    units.sort((a, b) => {
-      const aIsPlan = a.sortKey.type === '计划';
-      const bIsPlan = b.sortKey.type === '计划';
-
-      // 先按类型分组：计划排前面，其他排后面
-      if (aIsPlan !== bIsPlan) return aIsPlan ? -1 : 1;
-
-      if (aIsPlan && bIsPlan) {
-        // 计划：从早到晚（最早在上）
-        // 使用 getPlanSortKey 综合 time_anchor_date + time_text 时段权重排序
-        const aKey = a.sortKey.occurred_at
-          ? a.sortKey.occurred_at
-          : `${a.sortKey.time_anchor_date || a.sortKey.created_at}T${String(getTimeTextWeight(a.sortKey.time_text)).padStart(2, '0')}:00:00`;
-        const bKey = b.sortKey.occurred_at
-          ? b.sortKey.occurred_at
-          : `${b.sortKey.time_anchor_date || b.sortKey.created_at}T${String(getTimeTextWeight(b.sortKey.time_text)).padStart(2, '0')}:00:00`;
-        return aKey.localeCompare(bKey);
-      } else {
-        // 发生/想法/总结：从晚到早（最新在上）
-        const aTime = a.sortKey.occurred_at || a.sortKey.created_at;
-        const bTime = b.sortKey.occurred_at || b.sortKey.created_at;
-        return bTime.localeCompare(aTime);
-      }
-    });
-
-    // 5. 展平结果
-    return units.flatMap(u => u.records);
-  };
-
   // 计划完成/推迟对话框状态
   const [completingRecord, setCompletingRecord] = useState<Record | null>(null);
   const [completeDate, setCompleteDate] = useState('');
@@ -385,13 +301,6 @@ export default function RecordsClient() {
   const todayColRef = useRef<HTMLDivElement>(null);
   // 加载更早时，记录需要补偿的 scrollLeft 偏移量
   const scrollAdjustRef = useRef<number | null>(null);
-
-  // 初始化多天日期（如果是多天模式且日期列表为空）
-  useEffect(() => {
-    if (isMultiDay && multiDayDates.length === 0) {
-      initMultiDayDates();
-    }
-  }, []);
 
   // 切换模式时持久化到 localStorage
   const setIsMultiDay = (value: boolean | ((prev: boolean) => boolean)) => {
@@ -478,6 +387,16 @@ export default function RecordsClient() {
     setMultiDayDates((prev) => [...prev, ...newDates]);
   }, [multiDayDates]);
 
+  const loadGoals = useCallback(async () => {
+    try {
+      const res = await fetch('/api/v2/goals');
+      const data = await res.json();
+      if (data.data) setGoals(data.data);
+    } catch (err) {
+      console.error('加载目标失败:', err);
+    }
+  }, []);
+
   // 加载 tags 和 items
   const reloadItems = useCallback(async () => {
     try {
@@ -506,33 +425,16 @@ export default function RecordsClient() {
     }
   }, []);
 
-  useEffect(() => {
-    async function loadMeta() {
-      try {
-        const itemsRes = await fetch('/api/v2/items?lite=true');
-        const itemsData = await itemsRes.json();
-        const itemsList = itemsData.data ?? [];
-        setItems(itemsList);
-
-        if (getCategoryItems(itemsList).length === 0) {
-          ensureCategoryItems(itemsList).then((next) => {
-            if (next) setItems(next);
-          });
-        }
-      } catch (err) {
-        console.error('加载事项失败:', err);
-        showError('加载事项失败，请刷新重试');
-      }
-    }
-    loadMeta();
-  }, []);
-
-  // 加载记录
+  // 加载记录页首屏（合并 items / records / 当前活动 / 工具）
   const fetchRecords = useCallback(async () => {
-    // 多天模式下，日期列表未初始化时跳过（等 initMultiDayDates 填充后再请求）
     if (isMultiDay && multiDayDates.length === 0) return;
 
+    const isFirstLoad = !bootstrapMetaLoadedRef.current;
     setRecordsLoading(true);
+    if (isFirstLoad) {
+      setItemsLoading(true);
+      setToolsLoading(true);
+    }
     try {
       const params = new URLSearchParams();
       if (isMultiDay) {
@@ -546,10 +448,21 @@ export default function RecordsClient() {
       if (filterTagId) params.set('tag_id', filterTagId);
       if (filterItemId) params.set('item_id', filterItemId);
 
-      const res = await fetch(`/api/v2/records?${params.toString()}`);
+      const res = await fetch(`/api/v2/records/bootstrap?${params.toString()}`);
       const data = await res.json();
       if (data.data) {
-        setRecords(sortRecords(data.data));
+        const loadedItems = data.data.items ?? [];
+        setRecords(sortRecords(data.data.records ?? []));
+        setItems(loadedItems);
+        setUserTools(data.data.tools ?? []);
+        setCurrentActivity(data.data.current_activity ?? null);
+        bootstrapMetaLoadedRef.current = true;
+        setPageReady(true);
+        if (needsCategorySeed(loadedItems)) {
+          void ensureCategoryItems(loadedItems).then((next) => {
+            if (next) setItems(next);
+          });
+        }
       } else if (data.error) {
         showError(data.error.message ?? '加载记录失败');
       }
@@ -558,6 +471,8 @@ export default function RecordsClient() {
       showError('加载记录失败，请刷新重试');
     } finally {
       setRecordsLoading(false);
+      setItemsLoading(false);
+      setToolsLoading(false);
     }
   }, [isMultiDay, multiDayDates, singleDayDate, filterType, filterTagId, filterItemId]);
 
@@ -566,35 +481,37 @@ export default function RecordsClient() {
   }, [fetchRecords, refreshKey]);
 
   useEffect(() => {
-    if (editingRecord) void loadTags();
-  }, [editingRecord, loadTags]);
+    if (editingRecord) {
+      void loadTags();
+      void loadGoals();
+    }
+  }, [editingRecord, loadTags, loadGoals]);
 
-  const handleActivitySwitched = useCallback(
-    (data: ActivitySwitchResult) => {
+  const applyActivitySwitch = useCallback(
+    (data: ActivitySwitchPayload) => {
       setCurrentActivity(data.record);
       setActivitySyncToken((t) => t + 1);
-      setRecords((prev) => {
-        let next = [...prev];
-        for (const stopped of data.stopped) {
-          const idx = next.findIndex((r) => r.id === stopped.id);
-          if (idx >= 0) {
-            next[idx] = { ...next[idx], ...stopped, lifecycle_status: 'completed' };
-          }
-        }
-        if (data.record) {
-          const enriched = { ...data.record };
-          if (enriched.item_id && !enriched.item) {
-            const item = items.find((i) => i.id === enriched.item_id);
-            if (item) enriched.item = { id: item.id, title: item.title };
-          }
-          if (!enriched.date) enriched.date = singleDayDate;
-          next = next.filter((r) => r.id !== enriched.id);
-          next.unshift(enriched);
-        }
-        return sortRecords(next);
-      });
+      setRecords((prev) => mergeSwitchIntoRecords(prev, data, items, singleDayDate));
     },
     [items, singleDayDate]
+  );
+
+  const applyRecordAdded = useCallback(
+    (record: Record, replaceOptimistic = true) => {
+      setRecords((prev) =>
+        replaceOptimistic
+          ? replaceOptimisticRecord(prev, record, items, singleDayDate)
+          : sortRecords([enrichRecord(record, items, singleDayDate), ...prev])
+      );
+    },
+    [items, singleDayDate]
+  );
+
+  const handleActivitySwitched = useCallback(
+    (data: ActivitySwitchPayload) => {
+      applyActivitySwitch(data);
+    },
+    [applyActivitySwitch]
   );
 
   const handleRecordCreated = () => {
@@ -603,10 +520,36 @@ export default function RecordsClient() {
     setRefreshKey((k) => k + 1);
   };
 
-  const handleRecordUpdated = () => {
-    setEditingRecord(null);
-    setRefreshKey((k) => k + 1);
-  };
+  const applyRecordUpdated = useCallback(
+    (updated: Record) => {
+      setRecords((prev) => mergeRecordUpdated(prev, updated, items, singleDayDate));
+      setCurrentActivity((prev) => (prev?.id === updated.id ? updated : prev));
+      setActivitySyncToken((t) => t + 1);
+    },
+    [items, singleDayDate]
+  );
+
+  const applyRecordDeleted = useCallback((id: string) => {
+    setRecords((prev) => mergeRecordDeleted(prev, id));
+    setCurrentActivity((prev) => (prev?.id === id ? null : prev));
+    setActivitySyncToken((t) => t + 1);
+  }, []);
+
+  const handleRecordUpdated = useCallback(
+    (updated: Record) => {
+      applyRecordUpdated(updated);
+      setEditingRecord(null);
+    },
+    [applyRecordUpdated]
+  );
+
+  const handleRecordDeleted = useCallback(
+    (id: string) => {
+      applyRecordDeleted(id);
+      setEditingRecord(null);
+    },
+    [applyRecordDeleted]
+  );
 
   // 多天模式 ←/→（一次移动2天）
   const handleMultiPrev = () => {
@@ -1059,10 +1002,18 @@ export default function RecordsClient() {
                   <>
                     <CurrentActivityCard
                       items={items}
+                      itemsLoading={itemsLoading}
+                      pageReady={pageReady}
+                      initialActivity={currentActivity}
                       refreshKey={refreshKey}
                       activitySyncToken={activitySyncToken}
                       syncActivity={currentActivity}
-                      onChanged={() => setRefreshKey((k) => k + 1)}
+                      userTools={userTools}
+                      toolsLoading={toolsLoading}
+                      onToolsChange={setUserTools}
+                      onActivitySwitch={applyActivitySwitch}
+                      onRecordAdded={applyRecordAdded}
+                      onFallbackRefresh={() => setRefreshKey((k) => k + 1)}
                       onItemsChanged={reloadItems}
                       onItemCreated={handleItemCreated}
                       onCreateError={showError}
@@ -1072,12 +1023,14 @@ export default function RecordsClient() {
                     <QuickSwitchPanel
                       supplementRecords={records.filter((r) => r.type === '发生')}
                       items={items}
+                      userTools={userTools}
+                      toolsLoading={toolsLoading}
                       onSwitched={handleActivitySwitched}
                       onError={showError}
                     />
                   </>
                 )}
-                {recordsLoading ? (
+                {recordsLoading && records.length === 0 ? (
                   <RecordsDayContentSkeleton />
                 ) : (
                   <>
@@ -1102,7 +1055,7 @@ export default function RecordsClient() {
               </div>
             </div>
           </div>
-        ) : recordsLoading ? (
+        ) : recordsLoading && records.length === 0 ? (
           <RecordsMultiDaySkeleton />
         ) : (
           <div
@@ -1162,9 +1115,10 @@ export default function RecordsClient() {
           record={editingRecord}
           tags={tags}
           items={items}
+          goals={goals}
           onClose={() => setEditingRecord(null)}
           onSaved={handleRecordUpdated}
-          onDeleted={handleRecordUpdated}
+          onDeleted={handleRecordDeleted}
           onError={showError}
           onItemsChange={reloadItems}
           onItemCreated={handleItemCreated}

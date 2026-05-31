@@ -19,7 +19,9 @@ export default function ParentCategorySelect({
   allowEmpty = true,
   className = '',
 }: ParentCategorySelectProps) {
-  const categories = getCategoryItems(items, value || undefined);
+  const categories = getCategoryItems(items, value || undefined, undefined, {
+    showUnusedPresets: true,
+  });
 
   return (
     <select

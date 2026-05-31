@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { listItems, listItemsLite } from '@/lib/db/items';
+import { fetchItemDurationTotals } from '@/lib/db/item-activity-stats';
 import { createItemSafely } from '@/lib/domain/item-service';
 import { createClient } from '@/lib/supabase/server';
 import type { ItemsQuery, CreateItemPayload } from '@/types/teto';
@@ -29,9 +30,19 @@ export async function GET(request: NextRequest) {
     }
 
     const lite = searchParams.get('lite') === 'true';
+    const skipDuration = searchParams.get('skip_duration') === 'true';
+    const durationOnly = searchParams.get('duration_only') === 'true';
+
+    if (durationOnly) {
+      const liteItems = await listItemsLite(userId, query);
+      const durationMap = await fetchItemDurationTotals(userId, liteItems.map((i) => i.id));
+      const durations = Object.fromEntries(durationMap.entries());
+      return apiSuccess(durations, ctx.traceId);
+    }
+
     const result = lite
       ? await listItemsLite(userId, query)
-      : await listItems(userId, query);
+      : await listItems(userId, query, { skipDuration });
     return apiSuccess(result, ctx.traceId);
   } catch (error) {
     return handleApiError(error);

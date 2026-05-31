@@ -35,7 +35,7 @@ export default function ItemActivityTimelineSection({
       .slice(0, maxDays)
       .map(([date, dayRecords]) => ({
         date,
-        timeline: buildDayTimelineFromRecords(dayRecords, date, date),
+        timeline: buildDayTimelineFromRecords(dayRecords, date, date, [], { includeGaps: false }),
       }));
   }, [records, maxDays]);
 

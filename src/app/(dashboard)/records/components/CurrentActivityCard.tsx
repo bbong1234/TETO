@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Play, Square, ArrowRightLeft, StickyNote, Loader2, ChevronDown, ChevronUp, Plus, Check } from 'lucide-react';
-import type { Item, Record as TetoRecord, RecordType, CreateRecordPayload } from '@/types/teto';
+import type { Item, Record as TetoRecord, RecordType, CreateRecordPayload, UserTool } from '@/types/teto';
 import { formatDurationMinutes } from '@/lib/activity/stats-utils';
 import { DIARY_ITEM_TITLE } from '@/lib/activity/constants';
 import StartActivityPanel, { type StartActivitySubmitPayload } from './StartActivityPanel';
@@ -13,16 +13,29 @@ import ActivityContextPicker, {
 import { postBackfillRecord } from '@/lib/activity/post-backfill-record';
 import { postManualRecord } from '@/lib/activity/post-manual-record';
 import { resolveContextLabel, resolveTargetItemId, buildItemPathLabel, validateActivityContext } from '@/lib/activity/item-tree';
+import {
+  buildOptimisticActiveRecord,
+  buildOptimisticManualRecord,
+  type ActivitySwitchPayload,
+} from '@/lib/activity/records-mutation';
 import ToolLabelField, { persistToolOptionIfNeeded } from '@/components/records/ToolLabelField';
 import { CurrentActivityCardSkeleton } from '@/components/ui/PageSkeletons';
 
 interface CurrentActivityCardProps {
   items: Item[];
+  itemsLoading?: boolean;
+  pageReady?: boolean;
+  initialActivity?: TetoRecord | null;
   refreshKey?: number;
-  /** 父级快速切换后递增，用于同步当前活动（0 = 不覆盖初次 fetch） */
+  /** 父级快速切换后递增，用于同步当前活动 */
   activitySyncToken?: number;
   syncActivity?: TetoRecord | null;
-  onChanged: () => void;
+  userTools?: UserTool[];
+  toolsLoading?: boolean;
+  onToolsChange?: (tools: UserTool[]) => void;
+  onActivitySwitch: (data: ActivitySwitchPayload) => void;
+  onRecordAdded: (record: TetoRecord, replaceOptimistic?: boolean) => void;
+  onFallbackRefresh?: () => void;
   onItemsChanged?: () => void | Promise<void>;
   onItemCreated?: (item: Item) => void;
   onCreateError?: (message: string) => void;
@@ -62,10 +75,18 @@ function useElapsed(startIso: string | null | undefined): number {
 
 export default function CurrentActivityCard({
   items,
+  itemsLoading = false,
+  pageReady = false,
+  initialActivity = null,
   refreshKey = 0,
   activitySyncToken = 0,
   syncActivity,
-  onChanged,
+  userTools,
+  toolsLoading,
+  onToolsChange,
+  onActivitySwitch,
+  onRecordAdded,
+  onFallbackRefresh,
   onItemsChanged,
   onItemCreated,
   onCreateError,
@@ -109,8 +130,14 @@ export default function CurrentActivityCard({
   }, [onActivityChange]);
 
   useEffect(() => {
-    fetchCurrent();
-  }, [fetchCurrent, refreshKey]);
+    if (refreshKey > 0) {
+      void fetchCurrent();
+      return;
+    }
+    if (!pageReady) return;
+    setActivity(initialActivity);
+    setLoading(false);
+  }, [refreshKey, pageReady, initialActivity, fetchCurrent]);
 
   useEffect(() => {
     if (!activitySyncToken) return;
@@ -124,13 +151,22 @@ export default function CurrentActivityCard({
 
   const handleStop = async () => {
     if (!activity) return;
-    setActionLoading(true);
+    const now = new Date().toISOString();
+    const duration = activity.occurred_at
+      ? Math.max(0, Math.round((Date.parse(now) - Date.parse(activity.occurred_at)) / 60000))
+      : null;
+    const stoppedSnapshot = {
+      ...activity,
+      occurred_at_end: now,
+      duration_minutes: duration,
+      lifecycle_status: 'completed' as const,
+    };
+    const prevActivity = activity;
+    setActivity(null);
+    onActivityChange?.(null);
+    onActivitySwitch({ record: null, stopped: [stoppedSnapshot] });
     try {
-      const now = new Date().toISOString();
-      const duration = activity.occurred_at
-        ? Math.max(0, Math.round((Date.parse(now) - Date.parse(activity.occurred_at)) / 60000))
-        : null;
-      await fetch(`/api/v2/records/${activity.id}`, {
+      const res = await fetch(`/api/v2/records/${activity.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -139,39 +175,87 @@ export default function CurrentActivityCard({
           lifecycle_status: 'completed',
         }),
       });
-      setActivity(null);
-      onActivityChange?.(null);
-      onChanged();
-    } finally {
-      setActionLoading(false);
+      if (!res.ok) throw new Error('停止失败');
+    } catch {
+      setActivity(prevActivity);
+      onActivityChange?.(prevActivity);
+      onActivitySwitch({ record: prevActivity, stopped: [] });
+      onError?.('停止失败，请重试');
     }
   };
 
+  const postSwitch = async (payload: {
+    content?: string;
+    item_id?: string | null;
+    sub_item_id?: string | null;
+    phase_id?: string | null;
+    tool_label?: string | null;
+  }) => {
+    const today = todayDateStr();
+    const optimistic = buildOptimisticActiveRecord({
+      content: payload.content,
+      item_id: payload.item_id,
+      sub_item_id: payload.sub_item_id,
+      phase_id: payload.phase_id,
+      tool_label: payload.tool_label,
+      items,
+      date: today,
+    });
+    onActivitySwitch({ record: optimistic, stopped: activity ? [{ ...activity, lifecycle_status: 'completed' }] : [] });
+    setActivity(optimistic);
+    onActivityChange?.(optimistic);
+
+    const res = await fetch('/api/v2/activities/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await res.json();
+    if (!res.ok) {
+      throw new Error(d.error?.message ?? '操作失败');
+    }
+    const data = d.data as ActivitySwitchPayload;
+    onActivitySwitch(data);
+    setActivity(data.record);
+    onActivityChange?.(data.record);
+    return data;
+  };
+
   const handlePanelSubmit = async (payload: StartActivitySubmitPayload) => {
-    if (panelMode === 'backfill') {
-      await postBackfillRecord(payload, todayDateStr());
-    } else {
-      const res = await fetch('/api/v2/activities/switch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    try {
+      if (panelMode === 'backfill') {
+        await postBackfillRecord(payload, todayDateStr());
+        onFallbackRefresh?.();
+      } else if (!payload.item_id && !payload.content?.trim()) {
+        setActivity(null);
+        onActivityChange?.(null);
+        onActivitySwitch({
+          record: null,
+          stopped: activity ? [{ ...activity, lifecycle_status: 'completed' }] : [],
+        });
+        const res = await fetch('/api/v2/activities/switch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error?.message ?? '操作失败');
+        onActivitySwitch(d.data as ActivitySwitchPayload);
+      } else {
+        await postSwitch({
           content: payload.content,
           item_id: payload.item_id,
           sub_item_id: payload.sub_item_id,
+          phase_id: payload.phase_id,
           tool_label: payload.tool_label,
-        }),
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error?.message ?? '操作失败');
+        });
       }
-      const d = await res.json();
-      setActivity(d.data?.record ?? null);
+      setPanelInitialContent('');
+      setIdleContent('');
+    } catch (e) {
+      onFallbackRefresh?.();
+      throw e;
     }
-    onChanged();
-    await fetchCurrent();
-    setPanelInitialContent('');
-    setIdleContent('');
   };
 
   const handleSaveNote = async () => {
@@ -203,34 +287,34 @@ export default function CurrentActivityCard({
     }
     const resolved = resolveIdleContent(text);
     if (!resolved && !resolveTargetItemId(idleContext)) {
-      onError?.('请填写内容，或选择大类与事项');
+      onError?.('请填写内容，或选择归属路径');
       return;
     }
     setIdleSubmitting(true);
+    const today = todayDateStr();
     try {
       if (idleMode === '发生') {
-        const res = await fetch('/api/v2/activities/switch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            content: resolved || undefined,
-            item_id: resolveTargetItemId(idleContext),
-            sub_item_id: idleContext.subItemId || null,
-            tool_label: idleToolLabel.trim() || null,
-          }),
-        });
-        if (!res.ok) {
-          const d = await res.json();
-          throw new Error(d.error?.message ?? '开始失败');
-        }
-        const d = await res.json();
-        setActivity(d.data?.record ?? null);
-        if (idleToolLabel.trim()) void persistToolOptionIfNeeded(idleToolLabel);
+        const toolLabel = idleToolLabel.trim() || null;
+        const itemId = resolveTargetItemId(idleContext);
+        const subItemId = idleContext.subItemId || null;
+        const phaseId = idleContext.phaseId || null;
+        if (toolLabel) void persistToolOptionIfNeeded(idleToolLabel);
         setIdleContent('');
         setIdleToolLabel('');
         setIdleContext(EMPTY_ACTIVITY_CONTEXT);
-        onChanged();
-        await fetchCurrent();
+        setIdleSubmitting(false);
+        try {
+          await postSwitch({
+            content: resolved || undefined,
+            item_id: itemId,
+            sub_item_id: subItemId,
+            phase_id: phaseId,
+            tool_label: toolLabel,
+          });
+        } catch (e) {
+          onFallbackRefresh?.();
+          onError?.(e instanceof Error ? e.message : '开始失败');
+        }
       } else {
         if (!text) {
           onError?.('想法/计划请填写具体内容');
@@ -239,59 +323,71 @@ export default function CurrentActivityCard({
         const payload: CreateRecordPayload = {
           content: text,
           type: idleMode as RecordType,
-          date: todayDateStr(),
+          date: today,
           item_id: resolveTargetItemId(idleContext) ?? undefined,
           sub_item_id: idleContext.subItemId || null,
+          phase_id: idleContext.phaseId || null,
           tool_label: idleToolLabel.trim() || null,
           input_source: 'manual',
           review_status: 'confirmed',
         };
         if (idleMode === '计划') {
           payload.lifecycle_status = 'active';
-          payload.time_anchor_date = todayDateStr();
+          payload.time_anchor_date = today;
         }
-        await postManualRecord(payload);
-        if (idleToolLabel.trim()) void persistToolOptionIfNeeded(idleToolLabel);
+        const optimistic = buildOptimisticManualRecord(payload, items);
+        onRecordAdded(optimistic, false);
         setIdleContent('');
         setIdleToolLabel('');
-        onChanged();
+        setIdleContext(EMPTY_ACTIVITY_CONTEXT);
+        setIdleSubmitting(false);
+        if (idleToolLabel.trim()) void persistToolOptionIfNeeded(idleToolLabel);
+        try {
+          const created = await postManualRecord(payload);
+          onRecordAdded(created, true);
+        } catch (e) {
+          onFallbackRefresh?.();
+          onError?.(e instanceof Error ? e.message : '保存失败');
+        }
       }
     } catch (e) {
       onError?.(e instanceof Error ? e.message : '操作失败');
-    } finally {
       setIdleSubmitting(false);
     }
   };
 
   const handleAttachRecord = async () => {
     if (!activity || !attachText.trim()) return;
-    setAttachSubmitting(true);
+    const text = attachText.trim();
+    const today = todayDateStr();
+    const payload: CreateRecordPayload = {
+      content: text,
+      type: attachType,
+      date: today,
+      item_id: activity.item_id ?? undefined,
+      sub_item_id: activity.sub_item_id ?? null,
+      input_source: 'manual',
+      review_status: 'confirmed',
+    };
+    if (attachType === '计划') {
+      payload.lifecycle_status = 'active';
+      payload.time_anchor_date = today;
+    }
+    const optimistic = buildOptimisticManualRecord(payload, items);
+    onRecordAdded(optimistic, false);
+    setAttachText('');
+    setAttachOpen(false);
+    setAttachSubmitting(false);
     try {
-      const payload: CreateRecordPayload = {
-        content: attachText.trim(),
-        type: attachType,
-        date: todayDateStr(),
-        item_id: activity.item_id ?? undefined,
-        sub_item_id: activity.sub_item_id ?? null,
-        input_source: 'manual',
-        review_status: 'confirmed',
-      };
-      if (attachType === '计划') {
-        payload.lifecycle_status = 'active';
-        payload.time_anchor_date = todayDateStr();
-      }
-      await postManualRecord(payload);
-      setAttachText('');
-      setAttachOpen(false);
-      onChanged();
+      const created = await postManualRecord(payload);
+      onRecordAdded(created, true);
     } catch (e) {
+      onFallbackRefresh?.();
       onError?.(e instanceof Error ? e.message : '挂载失败');
-    } finally {
-      setAttachSubmitting(false);
     }
   };
 
-  if (loading) {
+  if (!pageReady || loading) {
     return <CurrentActivityCardSkeleton />;
   }
 
@@ -328,6 +424,10 @@ export default function CurrentActivityCard({
         ) : (
           <IdleUnifiedInput
             items={items}
+            itemsLoading={itemsLoading}
+            userTools={userTools}
+            toolsLoading={toolsLoading}
+            onToolsChange={onToolsChange}
             onItemsChange={onItemsChanged}
             onItemCreated={onItemCreated}
             onCreateError={onCreateError}
@@ -566,6 +666,10 @@ function ActiveState({
 
 function IdleUnifiedInput({
   items,
+  itemsLoading = false,
+  userTools,
+  toolsLoading,
+  onToolsChange,
   content,
   mode,
   context,
@@ -583,6 +687,10 @@ function IdleUnifiedInput({
   onBackfill,
 }: {
   items: Item[];
+  itemsLoading?: boolean;
+  userTools?: UserTool[];
+  toolsLoading?: boolean;
+  onToolsChange?: (tools: UserTool[]) => void;
   content: string;
   mode: IdleMode;
   context: ActivityContextValue;
@@ -619,6 +727,7 @@ function IdleUnifiedInput({
     <div className="space-y-3 px-4 py-4">
       <ActivityContextPicker
         items={items}
+        itemsLoading={itemsLoading}
         value={context}
         onChange={onContextChange}
         onItemsChange={onItemsChange}
@@ -630,7 +739,14 @@ function IdleUnifiedInput({
         }}
         compact
       />
-      <ToolLabelField value={toolLabel} onChange={onToolLabelChange} compact />
+      <ToolLabelField
+        value={toolLabel}
+        onChange={onToolLabelChange}
+        compact
+        tools={userTools}
+        toolsLoading={toolsLoading}
+        onToolsChange={onToolsChange}
+      />
       <input
         type="text"
         value={content}

@@ -7,19 +7,27 @@ import { formatDurationMinutes } from '@/lib/activity/stats-utils';
 
 interface ItemActivityStatsSectionProps {
   itemId: string;
+  stats?: ItemActivityStats | null;
   isCategory?: boolean;
   childCount?: number;
 }
 
 export default function ItemActivityStatsSection({
   itemId,
+  stats: statsProp,
   isCategory = false,
   childCount = 0,
 }: ItemActivityStatsSectionProps) {
-  const [stats, setStats] = useState<ItemActivityStats | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState<ItemActivityStats | null>(statsProp ?? null);
+  const [loading, setLoading] = useState(statsProp == null);
 
   useEffect(() => {
+    if (statsProp != null) {
+      setStats(statsProp);
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -36,13 +44,20 @@ export default function ItemActivityStatsSection({
     return () => {
       cancelled = true;
     };
-  }, [itemId]);
+  }, [itemId, statsProp]);
 
   if (loading) {
     return (
-      <section className="glass rounded-3xl shadow-soft-lg p-4 flex items-center gap-2 text-xs text-slate-400">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        加载活动统计…
+      <section className="glass rounded-3xl shadow-soft-lg p-5 animate-pulse">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="h-4 w-4 rounded bg-slate-200" />
+          <div className="h-4 w-20 rounded bg-slate-200" />
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="rounded-xl bg-slate-100/80 px-3 py-2 h-14" />
+          ))}
+        </div>
       </section>
     );
   }

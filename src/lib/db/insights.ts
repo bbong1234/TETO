@@ -404,58 +404,58 @@ async function computeGoalProgress(
 
   if (!activeGoals || activeGoals.length === 0) return [];
 
-  const results: GoalProgress[] = [];
+  const results = await Promise.all(
+    activeGoals.map(async (goal) => {
+      try {
+        const engineResult = await computeGoalEngine(userId, (goal as { id: string }).id);
+        if (!engineResult) return null;
 
-  for (const goal of activeGoals) {
-    try {
-      const engineResult = await computeGoalEngine(userId, (goal as any).id);
-      if (!engineResult) continue;
+        const ruleType = (goal as { rule_type: GoalRuleType }).rule_type;
+        const period = (goal as { period: GoalPeriod | null }).period;
+        const unit = (goal as { unit: string | null }).unit || '';
 
-      const ruleType = (goal as any).rule_type as GoalRuleType;
-      const period = (goal as any).period as GoalPeriod | null;
-      const unit = (goal as any).unit || '';
+        let currentValue: number;
+        let targetValue: number;
+        let isOverLimit: boolean | undefined;
 
-      let currentValue: number;
-      let targetValue: number;
-      let isOverLimit: boolean | undefined;
+        switch (ruleType) {
+          case '一次性完成':
+            currentValue = engineResult.total_actual;
+            targetValue = engineResult.total_target ?? 0;
+            break;
+          case '周期性达成':
+            currentValue = engineResult.current_period_actual;
+            targetValue = engineResult.current_period_target;
+            break;
+          case '周期性限制':
+            currentValue = engineResult.current_period_actual;
+            targetValue = engineResult.remaining_budget != null
+              ? currentValue + engineResult.remaining_budget
+              : ((goal as { target_max: number | null }).target_max ?? 0);
+            isOverLimit = engineResult.is_over_limit ?? false;
+            break;
+          default:
+            currentValue = 0;
+            targetValue = 0;
+        }
 
-      switch (ruleType) {
-        case '一次性完成':
-          currentValue = engineResult.total_actual;
-          targetValue = engineResult.total_target ?? 0;
-          break;
-        case '周期性达成':
-          currentValue = engineResult.current_period_actual;
-          targetValue = engineResult.current_period_target;
-          break;
-        case '周期性限制':
-          currentValue = engineResult.current_period_actual;
-          targetValue = engineResult.remaining_budget != null
-            ? currentValue + engineResult.remaining_budget
-            : ((goal as any).target_max ?? 0);
-          isOverLimit = engineResult.is_over_limit ?? false;
-          break;
-        default:
-          currentValue = 0;
-          targetValue = 0;
+        return {
+          goal_id: (goal as { id: string }).id,
+          goal_text: (goal as { goal_text: string | null }).goal_text || '',
+          current_value: Math.round(currentValue * 100) / 100,
+          target_value: Math.round(targetValue * 100) / 100,
+          unit,
+          period_label: ruleType === '一次性完成' ? '累计' : computePeriodLabel(period),
+          is_over_limit: isOverLimit,
+          rule_type: ruleType,
+        } as GoalProgress;
+      } catch {
+        return null;
       }
+    })
+  );
 
-      results.push({
-        goal_id: (goal as any).id,
-        goal_text: (goal as any).goal_text || '',
-        current_value: Math.round(currentValue * 100) / 100,
-        target_value: Math.round(targetValue * 100) / 100,
-        unit,
-        period_label: ruleType === '一次性完成' ? '累计' : computePeriodLabel(period),
-        is_over_limit: isOverLimit,
-        rule_type: ruleType,
-      });
-    } catch {
-      // 单个目标计算失败不影响整体
-    }
-  }
-
-  return results;
+  return results.filter((r): r is GoalProgress => r != null);
 }
 
 // ============================================

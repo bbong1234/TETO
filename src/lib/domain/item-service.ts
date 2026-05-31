@@ -10,9 +10,10 @@
 import type { DomainResult, InvariantIssue } from './domain-errors'
 import { validateItemInvariants } from './item-invariants'
 import { validateItemRelations } from './relation-invariants-item'
-import { createItem, updateItem, deleteItem, getItemById } from '@/lib/db/items'
+import { createItem, updateItem, deleteItem, getItemById, listItemsLite } from '@/lib/db/items'
 import type { CreateItemPayload, UpdateItemPayload, Item } from '@/types/teto'
 import { genDecisionId, genToolCallId, genBehaviorId } from '@/lib/observability/id-registry'
+import { validateItemReparent, type ItemLevel } from '@/lib/activity/item-reparent'
 
 type SupabaseClient = Awaited<ReturnType<typeof import('@/lib/supabase/server')['createClient']>>
 
@@ -153,7 +154,27 @@ export async function updateItemSafely(
     { userId, supabase }
   )
 
-  const allIssues = [...invariantIssues, ...relationIssues]
+  let reparentIssues: InvariantIssue[] = []
+  if (normalizedPatch.parent_item_id !== undefined) {
+    const allItems = await listItemsLite(userId, {})
+    const reparent = validateItemReparent(
+      id,
+      normalizedPatch.parent_item_id ?? null,
+      allItems
+    )
+    if (!reparent.ok) {
+      reparentIssues.push({
+        code: 'ITEM_REPARENT_INVALID',
+        severity: 'blocking',
+        message: reparent.error ?? '无法移动到目标位置',
+        entity: 'item',
+        field: 'parent_item_id',
+        entityId: id,
+      })
+    }
+  }
+
+  const allIssues = [...invariantIssues, ...relationIssues, ...reparentIssues]
 
   // 6. 有 blocking → 不写入
   if (allIssues.some(i => i.severity === 'blocking')) {
@@ -173,6 +194,64 @@ export async function updateItemSafely(
       entityId: id,
     }
     return buildDomainResult<Item>([...allIssues, dbError])
+  }
+}
+
+interface ReparentItemSafelyParams {
+  userId: string
+  id: string
+  parentItemId: string | null
+  asLevel?: ItemLevel
+  supabase: SupabaseClient
+}
+
+/**
+ * 安全移动事项（reparent）
+ */
+export async function reparentItemSafely(
+  params: ReparentItemSafelyParams
+): Promise<DomainResult<Item>> {
+  const { userId, id, parentItemId, asLevel, supabase } = params
+
+  const existingItem = await getItemById(userId, id)
+  if (!existingItem) {
+    return buildDomainResult<Item>([{
+      code: 'ITEM_NOT_FOUND',
+      severity: 'blocking',
+      message: '事项不存在',
+      entity: 'item',
+      entityId: id,
+    }])
+  }
+
+  const allItems = await listItemsLite(userId, {})
+  const reparent = validateItemReparent(id, parentItemId, allItems, asLevel)
+  if (!reparent.ok) {
+    return buildDomainResult<Item>([{
+      code: 'ITEM_REPARENT_INVALID',
+      severity: 'blocking',
+      message: reparent.error ?? '无法移动到目标位置',
+      entity: 'item',
+      field: 'parent_item_id',
+      entityId: id,
+    }])
+  }
+
+  if (existingItem.parent_item_id === parentItemId) {
+    return buildDomainResult<Item>([], existingItem)
+  }
+
+  try {
+    const item = await updateItem(userId, id, { parent_item_id: parentItemId })
+    return buildDomainResult<Item>([], item)
+  } catch (error) {
+    return buildDomainResult<Item>([{
+      code: 'ITEM_UPDATE_FAILED',
+      severity: 'blocking',
+      message: error instanceof Error ? error.message : '移动事项失败',
+      entity: 'item',
+      entityId: id,
+    }])
   }
 }
 

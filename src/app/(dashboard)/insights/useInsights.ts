@@ -7,6 +7,8 @@ export interface UseInsightsOptions {
   /** 只算指定块（与服务端 `?metrics=` 一致）；不传则全量 */
   metrics?: InsightMetricId[];
   onLoadError?: () => void;
+  /** 为 false 时不发起请求（用于分阶段加载） */
+  enabled?: boolean;
 }
 
 /**
@@ -14,7 +16,7 @@ export interface UseInsightsOptions {
  */
 export function useInsights(dateFrom: string, dateTo: string, options?: UseInsightsOptions) {
   const [data, setData] = useState<InsightsData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => Boolean(dateFrom && dateTo));
   const [error, setError] = useState<string | null>(null);
 
   const onLoadErrorRef = useRef(options?.onLoadError);
@@ -25,8 +27,10 @@ export function useInsights(dateFrom: string, dateTo: string, options?: UseInsig
   const metricsRef = useRef(metrics);
   metricsRef.current = metrics;
 
+  const enabled = options?.enabled !== false;
+
   const fetchInsights = useCallback(async () => {
-    if (!dateFrom || !dateTo) return;
+    if (!dateFrom || !dateTo || !enabled) return;
     setLoading(true);
     setError(null);
     try {
@@ -49,11 +53,15 @@ export function useInsights(dateFrom: string, dateTo: string, options?: UseInsig
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, metricsKey]);
+  }, [dateFrom, dateTo, metricsKey, enabled]);
 
   useEffect(() => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     void fetchInsights();
-  }, [fetchInsights]);
+  }, [fetchInsights, enabled]);
 
   return { data, loading, error, refetch: fetchInsights };
 }

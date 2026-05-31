@@ -2,6 +2,7 @@ interface BackfillSubmitPayload {
   content?: string;
   item_id?: string | null;
   sub_item_id?: string | null;
+  phase_id?: string | null;
   tool_label?: string | null;
   occurred_at?: string;
   occurred_at_end?: string;
@@ -37,6 +38,7 @@ export async function postBackfillRecord(
       duration_minutes: backfillDurationMinutes(payload.occurred_at, payload.occurred_at_end),
       item_id: payload.item_id ?? null,
       sub_item_id: payload.sub_item_id ?? null,
+      phase_id: payload.phase_id ?? null,
       tool_label: payload.tool_label?.trim() || null,
       input_source: 'manual',
       review_status: 'confirmed',

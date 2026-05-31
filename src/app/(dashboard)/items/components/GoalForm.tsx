@@ -132,7 +132,7 @@ export default function GoalForm({ goal, itemId, phaseId, phases, subItems, pres
               phase_id: selectedPhaseId,
             };
         const res = await fetch(`/api/v2/goals/${goal.id}`, {
-          method: 'PUT',
+          method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
@@ -455,7 +455,7 @@ export default function GoalForm({ goal, itemId, phaseId, phases, subItems, pres
         </div>
 
         {/* 底部保存按钮 */}
-        {(showRuleCard || isEditing) && !isCompleted && (
+        {(showRuleCard || isEditing) && (!isCompleted || status === '放弃' || status === '暂停') && (
           <div className="sticky bottom-0 border-t border-slate-200 bg-white px-5 py-4">
             <button
               onClick={handleSave}

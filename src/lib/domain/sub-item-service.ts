@@ -9,6 +9,9 @@ import { validateSubItemInvariants } from './sub-item-invariants'
 import { createSubItem, updateSubItem, deleteSubItem, promoteSubItemToItem, getSubItemById } from '@/lib/db/sub-items'
 import type { CreateSubItemPayload, UpdateSubItemPayload, SubItem } from '@/types/teto'
 import { genDecisionId, genToolCallId } from '@/lib/observability/id-registry'
+import { listItemsLite } from '@/lib/db/items'
+import { getItemDepth } from '@/lib/activity/item-tree'
+import { isLevel2ItemHost } from '@/lib/activity/item-reparent'
 
 type SupabaseClient = Awaited<ReturnType<typeof import('@/lib/supabase/server')['createClient']>>
 
@@ -68,7 +71,7 @@ function buildDomainResult<T>(issues: InvariantIssue[], data?: T): DomainResult<
 }
 
 /**
- * DB 关系校验：item_id 存在性
+ * DB 关系校验：item_id 存在性，且目标须为二类节点
  */
 async function validateSubItemRelations(
   itemId: string,
@@ -89,6 +92,23 @@ async function validateSubItemRelations(
       code: 'SUBITEM_ITEM_NOT_FOUND',
       severity: 'blocking',
       message: '关联的事项不存在或不属于当前用户',
+      entity: 'sub_item',
+      field: 'item_id',
+      entityId: itemId,
+    })
+    return issues
+  }
+
+  const allItems = await listItemsLite(userId, {})
+  if (!isLevel2ItemHost(allItems, itemId)) {
+    const depth = getItemDepth(allItems, itemId)
+    issues.push({
+      code: 'SUBITEM_HOST_INVALID_DEPTH',
+      severity: 'blocking',
+      message:
+        depth === 0
+          ? '三类标签须挂在二类事项下，不能直接挂在一类下'
+          : '三类标签须挂在二类事项下',
       entity: 'sub_item',
       field: 'item_id',
       entityId: itemId,
@@ -166,7 +186,12 @@ export async function updateSubItemSafely(
   const merged = { ...existingSubItem, ...normalizedPatch, id }
   const invariantIssues = validateSubItemInvariants(merged, { isUpdate: true })
 
-  const allIssues = [...invariantIssues]
+  let relationIssues: InvariantIssue[] = []
+  if (normalizedPatch.item_id !== undefined) {
+    relationIssues = await validateSubItemRelations(normalizedPatch.item_id, { userId, supabase })
+  }
+
+  const allIssues = [...invariantIssues, ...relationIssues]
 
   // 4. 有 blocking → 不写入
   if (allIssues.some(i => i.severity === 'blocking')) {

@@ -18,6 +18,7 @@ export interface StartActivitySubmitPayload {
   content?: string;
   item_id?: string | null;
   sub_item_id?: string | null;
+  phase_id?: string | null;
   tool_label?: string | null;
   occurred_at?: string;
   occurred_at_end?: string;
@@ -146,7 +147,7 @@ export default function StartActivityPanel({
     }
     const resolved = resolveContextLabel(context, items, content);
     if (!resolved && !resolveTargetItemId(context) && mode !== 'switch') {
-      setError('请选择大类与事项，或填写具体内容');
+      setError('请选择归属路径，或填写具体内容');
       return;
     }
     if (mode === 'backfill') {
@@ -175,6 +176,7 @@ export default function StartActivityPanel({
           content: resolved || undefined,
           item_id: resolveTargetItemId(context),
           sub_item_id: context.subItemId || null,
+          phase_id: context.phaseId || null,
           tool_label: toolLabel.trim() || null,
           occurred_at: occurredAt,
           occurred_at_end: occurredAtEnd,
@@ -195,6 +197,7 @@ export default function StartActivityPanel({
         content: resolved || undefined,
         item_id: resolveTargetItemId(context),
         sub_item_id: context.subItemId || null,
+        phase_id: context.phaseId || null,
         tool_label: toolLabel.trim() || null,
       });
       if (toolLabel.trim()) void persistToolOptionIfNeeded(toolLabel);

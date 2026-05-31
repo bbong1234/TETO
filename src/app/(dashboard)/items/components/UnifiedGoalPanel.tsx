@@ -1,14 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Loader2, Target, Plus, Trash2, Pencil,
   CheckCircle2, PauseCircle, XCircle, Circle, FileEdit,
-  BarChart3, TrendingUp, TrendingDown,
+  BarChart3, TrendingUp, TrendingDown, Flag,
 } from 'lucide-react';
 import { useGoalEngine } from '@/lib/hooks/useGoalEngine';
-import type { GoalEngineResult, Goal, GoalStatus, GoalRuleType, SubItem } from '@/types/teto';
+import type { GoalEngineResult, Goal, GoalStatus, GoalRuleType, SubItem, Record as TetoRecord } from '@/types/teto';
 import GoalForm from './GoalForm';
+import GoalTransitionDialog from './GoalTransitionDialog';
 
 // ── 常量 ──
 
@@ -45,21 +46,61 @@ interface UnifiedGoalPanelProps {
   refreshKey?: number;
   onGoalChanged: () => void;
   onError: (message: string) => void;
+  onRecordOpen?: (record: TetoRecord) => void;
 }
 
 // ── 主组件 ──
 
 export default function UnifiedGoalPanel({
   itemId, goals, subItems, activeSubItemId, phases, refreshKey,
-  onGoalChanged, onError,
+  onGoalChanged, onError, onRecordOpen,
 }: UnifiedGoalPanelProps) {
   const { data: engineData, loading, error } = useGoalEngine(itemId, refreshKey);
   const [showGoalForm, setShowGoalForm] = useState(false);
   const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [transitionGoal, setTransitionGoal] = useState<Goal | null>(null);
+  const [linkedByGoal, setLinkedByGoal] = useState<Map<string, TetoRecord>>(new Map());
 
   // 按 goal_id 索引引擎数据
   const engineMap = new Map(engineData.map(r => [r.goal_id, r]));
+
+  useEffect(() => {
+    if (!itemId || goals.length === 0) {
+      setLinkedByGoal(new Map());
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/v2/records?item_id=${encodeURIComponent(itemId)}&limit=500`);
+        const json = await res.json();
+        if (!res.ok || cancelled) return;
+        const records: TetoRecord[] = json.data ?? [];
+        const goalIdSet = new Set(goals.map((g) => g.id));
+        const map = new Map<string, TetoRecord>();
+        for (const r of records) {
+          if (!r.goal_id || !goalIdSet.has(r.goal_id)) continue;
+          const existing = map.get(r.goal_id);
+          if (!existing) {
+            map.set(r.goal_id, r);
+            continue;
+          }
+          const rIsSummary = r.type === '总结';
+          const eIsSummary = existing.type === '总结';
+          if (rIsSummary && !eIsSummary) {
+            map.set(r.goal_id, r);
+          } else if (rIsSummary === eIsSummary && r.created_at > existing.created_at) {
+            map.set(r.goal_id, r);
+          }
+        }
+        if (!cancelled) setLinkedByGoal(map);
+      } catch {
+        /* 非致命 */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [itemId, goals, refreshKey]);
 
   // 按 goal_id 索引 sub_item_id
   const goalSubItemMap = new Map(goals?.map(g => [g.id, g.sub_item_id]) || []);
@@ -130,9 +171,12 @@ export default function UnifiedGoalPanel({
               key={goal.id}
               goal={goal}
               engineResult={engineMap.get(goal.id)}
+              linkedRecord={linkedByGoal.get(goal.id)}
               onEdit={g => { setEditingGoal(g); setShowGoalForm(true); }}
               onDelete={handleDelete}
               onConfirm={handleConfirmDraft}
+              onTransition={g => setTransitionGoal(g)}
+              onRecordOpen={onRecordOpen}
               deletingId={deletingId}
               isDraft
             />
@@ -154,8 +198,11 @@ export default function UnifiedGoalPanel({
               key={goal.id}
               goal={goal}
               engineResult={engineMap.get(goal.id)}
+              linkedRecord={linkedByGoal.get(goal.id)}
               onEdit={g => { setEditingGoal(g); setShowGoalForm(true); }}
               onDelete={handleDelete}
+              onTransition={g => setTransitionGoal(g)}
+              onRecordOpen={onRecordOpen}
               deletingId={deletingId}
             />
           ))}
@@ -192,6 +239,15 @@ export default function UnifiedGoalPanel({
           onError={onError}
         />
       )}
+
+      {transitionGoal && (
+        <GoalTransitionDialog
+          goal={transitionGoal}
+          onClose={() => setTransitionGoal(null)}
+          onDone={() => { setTransitionGoal(null); onGoalChanged(); }}
+          onError={onError}
+        />
+      )}
     </div>
   );
 }
@@ -201,17 +257,22 @@ export default function UnifiedGoalPanel({
 // ============================================
 
 function UnifiedGoalCard({
-  goal, engineResult, onEdit, onDelete, onConfirm, deletingId, isDraft,
+  goal, engineResult, linkedRecord, onEdit, onDelete, onConfirm, onTransition, onRecordOpen, deletingId, isDraft,
 }: {
   goal: Goal;
   engineResult?: GoalEngineResult;
+  linkedRecord?: TetoRecord;
   onEdit: (goal: Goal) => void;
   onDelete: (goal: Goal) => void;
   onConfirm?: (goal: Goal) => void;
+  onTransition?: (goal: Goal) => void;
+  onRecordOpen?: (record: TetoRecord) => void;
   deletingId: string | null;
   isDraft?: boolean;
 }) {
   const ruleStyle = RULE_TYPE_STYLES[goal.rule_type] || RULE_TYPE_STYLES['一次性完成'];
+  const canTransition = !isDraft && (goal.status === '进行中' || goal.status === '暂停');
+  const showLinkedRecord = linkedRecord && ['暂停', '已完成', '放弃'].includes(goal.status);
 
   return (
     <div className={`glass rounded-2xl p-3.5 shadow-soft border-l-2 ${ruleStyle.border} ${isDraft ? 'border-dashed opacity-75' : ''}`}>
@@ -241,6 +302,15 @@ function UnifiedGoalCard({
           </div>
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
+          {canTransition && onTransition && (
+            <button
+              onClick={() => onTransition(goal)}
+              className="p-1.5 rounded-lg hover:bg-indigo-50/60 text-slate-400 hover:text-indigo-500 transition-colors"
+              title="更新状态"
+            >
+              <Flag className="h-3 w-3" />
+            </button>
+          )}
           {isDraft && onConfirm && (
             <button onClick={() => onConfirm(goal)} className="p-1.5 rounded-lg hover:bg-green-50/60 text-slate-400 hover:text-green-500 transition-colors" title="确认目标">
               <CheckCircle2 className="h-3 w-3" />
@@ -258,6 +328,20 @@ function UnifiedGoalCard({
       {/* 引擎数据区域 */}
       {engineResult && goal.status !== '草稿' && (
         <EngineMetricsSection result={engineResult} goal={goal} />
+      )}
+
+      {showLinkedRecord && linkedRecord && (
+        <button
+          type="button"
+          onClick={() => onRecordOpen?.(linkedRecord)}
+          className="mt-3 w-full rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2 text-left hover:bg-slate-50 transition-colors"
+        >
+          <p className="text-[10px] text-slate-400 mb-0.5">最近进展说明</p>
+          <p className="text-xs text-slate-700 line-clamp-2">{linkedRecord.content}</p>
+          <p className="text-[10px] text-slate-400 mt-1">
+            {linkedRecord.date || linkedRecord.time_anchor_date || linkedRecord.created_at.slice(0, 10)}
+          </p>
+        </button>
       )}
     </div>
   );

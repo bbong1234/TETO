@@ -117,6 +117,7 @@ export async function updateRecord(
   if (recordData.subcategory !== undefined) updateData.subcategory = recordData.subcategory;
   if (recordData.tool_label !== undefined) updateData.tool_label = recordData.tool_label;
   if (recordData.item_id !== undefined) updateData.item_id = recordData.item_id;
+  if (recordData.goal_id !== undefined) updateData.goal_id = recordData.goal_id;
   if (recordData.phase_id !== undefined) updateData.phase_id = recordData.phase_id;
   if (recordData.sub_item_id !== undefined) updateData.sub_item_id = recordData.sub_item_id;
   if (recordData.sort_order !== undefined) updateData.sort_order = recordData.sort_order;
@@ -233,8 +234,9 @@ export async function getRecordById(
 
   if (!data) return null;
 
-  // 后处理：获取关联的 item（单条记录，单独查询 item）
+  // 后处理：获取关联的 item / goal
   const itemMap = new Map<string, { id: string; title: string }>();
+  const goalMap = new Map<string, { id: string; title: string }>();
   if (data.item_id) {
     const { data: itemData } = await supabase
       .from('items')
@@ -246,8 +248,19 @@ export async function getRecordById(
       itemMap.set(itemData.id, itemData);
     }
   }
+  if (data.goal_id) {
+    const { data: goalData } = await supabase
+      .from('goals')
+      .select('id, title, goal_text')
+      .eq('id', data.goal_id)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (goalData) {
+      goalMap.set(goalData.id, { id: goalData.id, title: goalData.goal_text || goalData.title });
+    }
+  }
 
-  return enrichRecordWithRelations(data, itemMap);
+  return enrichRecordWithRelations(data, itemMap, goalMap);
 }
 
 /**
@@ -330,6 +343,9 @@ export async function listRecords(
   if (query.item_id) {
     q = q.eq('item_id', query.item_id);
   }
+  if (query.goal_id) {
+    q = q.eq('goal_id', query.goal_id);
+  }
   if (query.sub_item_id) {
     q = q.eq('sub_item_id', query.sub_item_id);
   }
@@ -397,9 +413,11 @@ export async function listRecords(
 
   if (!data || data.length === 0) return [];
 
-  // 批量获取关联的 item（避免 N+1）
+  // 批量获取关联的 item / goal（避免 N+1）
   const itemIds = [...new Set(data.filter((r: any) => r.item_id).map((r: any) => r.item_id as string))];
+  const goalIds = [...new Set(data.filter((r: any) => r.goal_id).map((r: any) => r.goal_id as string))];
   const itemMap = new Map<string, { id: string; title: string }>();
+  const goalMap = new Map<string, { id: string; title: string }>();
   if (itemIds.length > 0) {
     const { data: itemsData } = await supabase
       .from('items')
@@ -410,8 +428,18 @@ export async function listRecords(
       itemMap.set(item.id, item);
     }
   }
+  if (goalIds.length > 0) {
+    const { data: goalsData } = await supabase
+      .from('goals')
+      .select('id, title, goal_text')
+      .eq('user_id', userId)
+      .in('id', goalIds);
+    for (const goal of (goalsData ?? [])) {
+      goalMap.set(goal.id, { id: goal.id, title: goal.goal_text || goal.title });
+    }
+  }
 
-  return data.map((row: any) => enrichRecordWithRelations(row, itemMap));
+  return data.map((row: any) => enrichRecordWithRelations(row, itemMap, goalMap));
 }
 
 /**
@@ -419,7 +447,8 @@ export async function listRecords(
  */
 function enrichRecordWithRelations(
   row: Record & { record_tags?: { tags: Tag }[]; record_days?: { date: string } | null },
-  itemMap: Map<string, { id: string; title: string }>
+  itemMap: Map<string, { id: string; title: string }>,
+  goalMap: Map<string, { id: string; title: string }> = new Map()
 ): Record {
   const record: Record = { ...row };
 
@@ -435,8 +464,9 @@ function enrichRecordWithRelations(
     delete (record as Record & { record_tags?: unknown }).record_tags;
   }
 
-  // 从预加载的 itemMap 中取 item
+  // 从预加载的 itemMap / goalMap 中取关联
   record.item = (row.item_id ? itemMap.get(row.item_id) ?? null : null);
+  record.goal = (row.goal_id ? goalMap.get(row.goal_id) ?? null : null);
 
   return record;
 }

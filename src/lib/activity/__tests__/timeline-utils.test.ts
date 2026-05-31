@@ -121,4 +121,28 @@ describe('buildDayFeedFromRecords', () => {
     expect(entry?.kind).toBe('plan');
     expect(entry?.start_time).toBeDefined();
   });
+
+  it('includeGaps: false 时不插入空白时间', () => {
+    const a = baseRecord({
+      id: 'a1',
+      type: '发生',
+      content: '活动 A',
+      occurred_at: `${date}T10:00:00.000+08:00`,
+      occurred_at_end: `${date}T10:30:00.000+08:00`,
+    });
+    const b = baseRecord({
+      id: 'b1',
+      type: '发生',
+      content: '活动 B',
+      occurred_at: `${date}T12:00:00.000+08:00`,
+      occurred_at_end: `${date}T12:30:00.000+08:00`,
+    });
+
+    const withGaps = buildDayFeedFromRecords([a, b], date, '今天');
+    const withoutGaps = buildDayFeedFromRecords([a, b], date, '今天', [], { includeGaps: false });
+
+    expect(withGaps.records.some((e) => e.is_gap)).toBe(true);
+    expect(withoutGaps.records.some((e) => e.is_gap)).toBe(false);
+    expect(withoutGaps.records.filter((e) => e.kind === 'activity')).toHaveLength(2);
+  });
 });

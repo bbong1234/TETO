@@ -1,16 +1,19 @@
 import type { Item } from '@/types/teto';
-import { getCategoryItems } from '@/lib/activity/item-tree';
 
 /** 同页并发去重，避免多处同时触发种子 */
 let seedPromise: Promise<Item[] | null> | null = null;
 
+/** 是否需首次种子（库中尚无任何顶层 item） */
+export function needsCategorySeed(items: Item[]): boolean {
+  return !items.some((i) => !i.parent_item_id);
+}
+
 /**
- * 若尚无大类，调用服务端批量种子（单次请求）。
+ * 若尚无顶层 item，调用服务端批量种子（单次请求）。
  * 返回最新 items 列表；无需更新时返回 null。
  */
 export async function ensureCategoryItems(items: Item[]): Promise<Item[] | null> {
-  if (getCategoryItems(items).length > 0) return null;
-
+  if (!needsCategorySeed(items)) return null;
   if (!seedPromise) {
     seedPromise = (async () => {
       try {

@@ -1,14 +1,14 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   ArrowLeft, Loader2, Trash2, Pencil, X, Check,
   ExternalLink, RefreshCw, Plus, Layers, FileText, History,
   Calendar, DollarSign, Timer, BarChart3, Target, Sparkles,
-  ChevronRight, AlertTriangle
+  ChevronRight, AlertTriangle, FolderInput
 } from 'lucide-react';
-import type { Item, UpdateItemPayload, Record as TetoRecord, Phase, Goal, ItemAggregation, SubItem } from '@/types/teto';
+import type { Item, UpdateItemPayload, Record as TetoRecord, Phase, Goal, ItemAggregation, SubItem, ItemActivityStats, Tag } from '@/types/teto';
 import { ITEM_STATUSES } from '@/types/teto';
 import { useToast } from '@/components/ui/use-toast';
 import ToastContainer from '@/components/ui/use-toast';
@@ -25,7 +25,9 @@ import ItemActivityStatsSection from '../components/ItemActivityStatsSection';
 import ItemCategoryChildrenSection from '../components/ItemCategoryChildrenSection';
 import { postManualRecord } from '@/lib/activity/post-manual-record';
 import ParentCategorySelect from '../components/ParentCategorySelect';
-import { isCategoryItem } from '@/lib/activity/item-tree';
+import { isCategoryItemLite } from '@/lib/activity/item-tree';
+import ItemMoveDialog from '@/components/items/ItemMoveDialog';
+import RecordEditDrawer from '@/app/(dashboard)/records/components/RecordEditDrawer';
 
 interface DailyStat {
   date: string;
@@ -44,34 +46,13 @@ interface ItemWithPhases extends Item {
   aggregation?: ItemAggregation | null;
   records?: TetoRecord[];
   recent_daily_stats?: DailyStat[];
-}
-
-function fieldLabel(field: string): string {
-  const map: Record<string, string> = {
-    mood: '心情', energy: '能量', item_hint: '关联事项',
-    type_hint: '类型', location: '地点', people: '关系人',
-    record_link_hint: '关联记录',
-  };
-  return map[field] || field;
-}
-
-/** 调用纠错 API 修正 AI 推测错误的字段 */
-async function correctField(
-  recordId: string,
-  field: string,
-  newValue: string,
-  decisionId?: string
-) {
-  const res = await fetch(`/api/v2/records/${recordId}/correct`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      field_corrected: field,
-      new_value: newValue,
-      decision_id: decisionId ?? undefined,
-    }),
-  });
-  return res.ok ? await res.json() : null;
+  activity_stats?: ItemActivityStats | null;
+  child_items?: Item[];
+  parent_item?: Item | null;
+  is_category?: boolean;
+  item_depth?: number;
+  ancestor_items?: Item[];
+  today_record_count?: number;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -86,6 +67,7 @@ const STATUS_COLORS: Record<string, string> = {
 export default function ItemDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const itemId = params.id as string;
 
   const [item, setItem] = useState<ItemWithPhases | null>(null);
@@ -96,7 +78,6 @@ export default function ItemDetailPage() {
   const [editDesc, setEditDesc] = useState('');
   const [editParentId, setEditParentId] = useState('');
   const [saving, setSaving] = useState(false);
-  const [todayCount, setTodayCount] = useState<number | null>(null);
 
   const [editingRecord, setEditingRecord] = useState<TetoRecord | null>(null);
   const [editingPhase, setEditingPhase] = useState<Phase | null>(null);
@@ -120,7 +101,6 @@ export default function ItemDetailPage() {
   const [completionContent, setCompletionContent] = useState('');
 
   const [promotingSubItem, setPromotingSubItem] = useState<SubItem | null>(null);
-  const [correctingField, setCorrectingField] = useState<string | null>(null);
   const [promoting, setPromoting] = useState(false);
   const [addingPlan, setAddingPlan] = useState(false);
   const [newPlanContent, setNewPlanContent] = useState('');
@@ -129,6 +109,11 @@ export default function ItemDetailPage() {
   const [parentItem, setParentItem] = useState<Item | null>(null);
   const [childItems, setChildItems] = useState<Item[]>([]);
   const [allItemsForTree, setAllItemsForTree] = useState<Item[]>([]);
+  const [recordTags, setRecordTags] = useState<Tag[]>([]);
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [showItemComplete, setShowItemComplete] = useState(false);
+  const [itemCompleteNote, setItemCompleteNote] = useState('');
+  const [completingItem, setCompletingItem] = useState(false);
 
   const { toasts, showError, dismissToast } = useToast();
 
@@ -138,68 +123,66 @@ export default function ItemDetailPage() {
       const res = await fetch(`/api/v2/items/${itemId}`);
       if (!res.ok) throw new Error('事项不存在');
       const data = await res.json();
-      setItem(data.data);
+      const loaded = data.data as ItemWithPhases;
+      setItem(loaded);
+      setChildItems(loaded.child_items ?? []);
+      setParentItem(loaded.parent_item ?? null);
     } catch (err) {
       console.error('加载事项详情失败:', err);
       showError('加载事项详情失败');
     } finally {
       setLoading(false);
     }
-  }, [itemId]);
+  }, [itemId, showError]);
 
-  // 获取今日记录数
-  const fetchTodayCount = useCallback(async () => {
-    const today = new Date().toISOString().split('T')[0];
+  const loadItemsForEdit = useCallback(async () => {
     try {
-      const res = await fetch(`/api/v2/records?item_id=${itemId}&date=${today}&limit=500`);
+      const res = await fetch('/api/v2/items?lite=true');
       if (!res.ok) return;
       const data = await res.json();
-      setTodayCount((data.data ?? []).length);
+      setAllItemsForTree(data.data ?? []);
     } catch {
-      // 非关键，静默失败
+      // 编辑时非关键
     }
-  }, [itemId]);
+  }, []);
 
   useEffect(() => {
     fetchItem();
-    fetchTodayCount();
-  }, [fetchItem, fetchTodayCount]);
+    void loadItemsForEdit();
+  }, [fetchItem, loadItemsForEdit]);
 
   useEffect(() => {
-    if (!item) return;
-    let cancelled = false;
+    const sub = searchParams.get('sub');
+    if (sub) setActiveSubItemId(sub);
+  }, [searchParams]);
 
-    (async () => {
+  const handleSubTabChange = useCallback(
+    (subId: string | null) => {
+      setActiveSubItemId(subId);
+      const params = new URLSearchParams(searchParams.toString());
+      if (subId && subId !== '__orphan__') params.set('sub', subId);
+      else params.delete('sub');
+      const qs = params.toString();
+      router.replace(qs ? `/items/${itemId}?${qs}` : `/items/${itemId}`, { scroll: false });
+    },
+    [itemId, router, searchParams]
+  );
+
+  useEffect(() => {
+    if (!editingRecord) return;
+    void loadItemsForEdit();
+    void (async () => {
       try {
-        const [allRes, childrenRes] = await Promise.all([
-          fetch('/api/v2/items'),
-          fetch(`/api/v2/items?parent_item_id=${itemId}`),
-        ]);
-        const allData = await allRes.json();
-        const childrenData = await childrenRes.json();
-        if (cancelled) return;
-        setAllItemsForTree(allData.data ?? []);
-        setChildItems(childrenData.data ?? []);
-
-        if (item.parent_item_id) {
-          const parentRes = await fetch(`/api/v2/items/${item.parent_item_id}`);
-          const parentData = await parentRes.json();
-          if (!cancelled) setParentItem(parentData.data ?? null);
-        } else {
-          setParentItem(null);
+        const res = await fetch('/api/v2/tags');
+        if (res.ok) {
+          const data = await res.json();
+          setRecordTags(data.data ?? []);
         }
       } catch {
-        if (!cancelled) {
-          setChildItems([]);
-          setParentItem(null);
-        }
+        /* ignore */
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [item, itemId]);
+  }, [editingRecord, loadItemsForEdit]);
 
   const startEdit = () => {
     if (!item) return;
@@ -207,6 +190,7 @@ export default function ItemDetailPage() {
     setEditStatus(item.status);
     setEditDesc(item.description || '');
     setEditParentId(item.parent_item_id ?? '');
+    void loadItemsForEdit();
     setEditing(true);
   };
 
@@ -216,7 +200,7 @@ export default function ItemDetailPage() {
     try {
       if (!item) return;
       const isCat =
-        childItems.length > 0 || isCategoryItem(item, allItemsForTree, item.id);
+        item.is_category ?? (childItems.length > 0 || isCategoryItemLite(item, childItems.length));
       const payload: UpdateItemPayload = {
         title: editTitle.trim(),
         status: editStatus as Item['status'],
@@ -226,7 +210,7 @@ export default function ItemDetailPage() {
         payload.parent_item_id = editParentId || null;
       }
       const res = await fetch(`/api/v2/items/${itemId}`, {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
@@ -246,13 +230,58 @@ export default function ItemDetailPage() {
   };
 
   const handleDelete = async () => {
-    if (!confirm('确定删除此事项？关联的记录不会被删除。')) return;
+    if (
+      !confirm(
+        '确定搁置此事项？\n\n关联记录将解除与事项的绑定，子项将被删除。记录本身不会删除，但会失去事项归属。'
+      )
+    ) {
+      return;
+    }
     try {
       const res = await fetch(`/api/v2/items/${itemId}`, { method: 'DELETE' });
       if (res.ok) router.push('/items');
+      else {
+        const errData = await res.json();
+        showError(errData.error || '搁置事项失败');
+      }
     } catch (err) {
-      console.error('删除事项失败:', err);
-      showError('删除事项失败，请重试');
+      console.error('搁置事项失败:', err);
+      showError('搁置事项失败，请重试');
+    }
+  };
+
+  const handleCompleteItem = async () => {
+    setCompletingItem(true);
+    try {
+      const res = await fetch(`/api/v2/items/${itemId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: '已完成' }),
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || '标记完成失败');
+      }
+      const note = itemCompleteNote.trim();
+      if (note) {
+        const today = new Date().toISOString().split('T')[0];
+        await postManualRecord({
+          content: note,
+          type: '总结',
+          date: today,
+          item_id: itemId,
+          lifecycle_status: 'active',
+          input_source: 'manual',
+          review_status: 'confirmed',
+        });
+      }
+      setShowItemComplete(false);
+      setItemCompleteNote('');
+      fetchItem();
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '标记完成失败');
+    } finally {
+      setCompletingItem(false);
     }
   };
 
@@ -547,9 +576,22 @@ export default function ItemDetailPage() {
   const recordCount = effectiveAgg?.record_count ?? relatedRecords.length;
   const gradientClass = STATUS_COLORS[item.status] || 'from-slate-400 to-slate-500';
 
+  const itemDepth =
+    item.item_depth ??
+    (item.ancestor_items?.length ?? (parentItem ? 1 : 0));
+
   const isCategoryView =
-    item &&
-    (childItems.length > 0 || isCategoryItem(item, allItemsForTree, item.id));
+    item.is_category ??
+    (itemDepth === 0 &&
+      (childItems.length > 0 || isCategoryItemLite(item, childItems.length)));
+
+  const breadcrumbAncestors =
+    item.ancestor_items ?? (parentItem ? [parentItem] : []);
+
+  const activeSubItem =
+    activeSubItemId && activeSubItemId !== '__orphan__'
+      ? (item.sub_items || []).find((s) => s.id === activeSubItemId)
+      : null;
 
   // 按子项筛选目标
   const filteredGoals = (() => {
@@ -572,20 +614,26 @@ export default function ItemDetailPage() {
           >
             桌面
           </button>
-          {parentItem && (
-            <>
+          {breadcrumbAncestors.map((anc) => (
+            <span key={anc.id} className="flex items-center gap-1">
               <ChevronRight className="h-3 w-3 shrink-0" />
               <button
                 type="button"
-                onClick={() => router.push(`/items/${parentItem.id}`)}
+                onClick={() => router.push(`/items/${anc.id}`)}
                 className="hover:text-indigo-500 transition-colors"
               >
-                {parentItem.title}
+                {anc.title}
               </button>
-            </>
-          )}
+            </span>
+          ))}
           <ChevronRight className="h-3 w-3 shrink-0" />
           <span className="text-slate-600 font-medium">{item.title}</span>
+          {activeSubItem && (
+            <>
+              <ChevronRight className="h-3 w-3 shrink-0" />
+              <span className="text-purple-600 font-medium">{activeSubItem.title}</span>
+            </>
+          )}
         </nav>
 
         {/* 返回 */}
@@ -609,9 +657,9 @@ export default function ItemDetailPage() {
                 value={editDesc} onChange={e => setEditDesc(e.target.value)} placeholder="描述（可选）" rows={2}
                 className="w-full bg-white/60 rounded-2xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/50 border-0"
               />
-              {!(childItems.length > 0 || isCategoryItem(item, allItemsForTree, item.id)) && (
+              {!isCategoryView && (
                 <div>
-                  <label className="mb-1 block text-xs text-slate-400">所属大类</label>
+                  <label className="mb-1 block text-xs text-slate-400">所属一类</label>
                   <ParentCategorySelect
                     items={allItemsForTree}
                     value={editParentId}
@@ -649,13 +697,18 @@ export default function ItemDetailPage() {
               <div className="flex-1 min-w-0">
                 {/* 标题行 */}
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <h1 className="text-lg font-bold text-slate-900">{item.title}</h1>
+                  <h1 className="text-lg font-bold text-slate-900">
+                    {activeSubItem ? activeSubItem.title : item.title}
+                  </h1>
+                  {activeSubItem && (
+                    <span className="text-xs text-slate-400">· {item.title}</span>
+                  )}
                   <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold bg-gradient-to-br ${gradientClass} text-white shadow-sm`}>
                     {item.status}
                   </span>
-                  {todayCount !== null && todayCount > 0 && (
+                  {(item.today_record_count ?? 0) > 0 && (
                     <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-[10px] font-semibold text-indigo-600">
-                      今日 {todayCount} 条
+                      今日 {item.today_record_count} 条
                     </span>
                   )}
                 </div>
@@ -706,12 +759,31 @@ export default function ItemDetailPage() {
                   className="p-2 rounded-xl glass shadow-soft hover:shadow-soft-lg text-slate-400 hover:text-teal-500 transition-all" title="历史导入">
                   <History className="h-4 w-4" />
                 </button>
+                <button
+                  onClick={() => {
+                    void loadItemsForEdit();
+                    setMoveDialogOpen(true);
+                  }}
+                  className="p-2 rounded-xl glass shadow-soft hover:shadow-soft-lg text-slate-400 hover:text-indigo-500 transition-all"
+                  title="移动到…"
+                >
+                  <FolderInput className="h-4 w-4" />
+                </button>
                 <button onClick={startEdit}
                   className="p-2 rounded-xl glass shadow-soft hover:shadow-soft-lg text-slate-400 hover:text-indigo-500 transition-all" title="编辑">
                   <Pencil className="h-4 w-4" />
                 </button>
+                {item.status !== '已完成' && item.status !== '已搁置' && (
+                  <button
+                    onClick={() => setShowItemComplete(true)}
+                    className="p-2 rounded-xl glass shadow-soft hover:shadow-soft-lg text-slate-400 hover:text-emerald-500 transition-all"
+                    title="标记完成"
+                  >
+                    <Check className="h-4 w-4" />
+                  </button>
+                )}
                 <button onClick={handleDelete}
-                  className="p-2 rounded-xl glass shadow-soft hover:shadow-soft-lg text-slate-400 hover:text-red-500 transition-all" title="删除">
+                  className="p-2 rounded-xl glass shadow-soft hover:shadow-soft-lg text-slate-400 hover:text-red-500 transition-all" title="搁置">
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
@@ -720,7 +792,12 @@ export default function ItemDetailPage() {
         </section>
 
         <div className="space-y-5 mb-5">
-          <ItemActivityStatsSection itemId={itemId} isCategory={isCategoryView} childCount={childItems.length} />
+          <ItemActivityStatsSection
+            itemId={itemId}
+            stats={item.activity_stats}
+            isCategory={isCategoryView}
+            childCount={childItems.length}
+          />
           {isCategoryView && (
             <ItemCategoryChildrenSection categoryItem={item} childItems={childItems} />
           )}
@@ -852,7 +929,9 @@ export default function ItemDetailPage() {
                             ? 'bg-indigo-50 border border-indigo-200'
                             : 'bg-slate-50/80 hover:bg-slate-100/80'
                         }`}
-                        onClick={() => setActiveSubItemId(activeSubItemId === sub.id ? null : sub.id)}
+                        onClick={() =>
+                          handleSubTabChange(activeSubItemId === sub.id ? null : sub.id)
+                        }
                       >
                         <div className="flex items-center gap-2">
                           <div className={`w-2 h-2 rounded-full ${isStalled ? 'bg-amber-400' : 'bg-green-400'}`} />
@@ -884,7 +963,7 @@ export default function ItemDetailPage() {
               subItems={item.sub_items || []}
               activeSubItemId={activeSubItemId}
               orphanCount={orphanRecords.length}
-              onTabChange={setActiveSubItemId}
+              onTabChange={handleSubTabChange}
               onAdd={() => { setEditingSubItem(null); setShowSubItemForm(true); }}
               onEdit={(sub) => { setEditingSubItem(sub); setShowSubItemForm(true); }}
               onPromote={(sub) => setPromotingSubItem(sub)}
@@ -988,6 +1067,7 @@ export default function ItemDetailPage() {
               refreshKey={goalRefreshKey}
               onGoalChanged={() => { setGoalRefreshKey(k => k + 1); fetchItem(); }}
               onError={showError}
+              onRecordOpen={(record) => setEditingRecord(record)}
             />
           </section>
         </div>
@@ -1170,135 +1250,26 @@ export default function ItemDetailPage() {
           </div>
         )}
 
-        {/* 记录详情 */}
         {editingRecord && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setEditingRecord(null)}>
-            <div className="absolute inset-0 glass-dark" />
-            <div className="relative glass-heavy rounded-3xl shadow-soft-xl w-[520px] max-h-[75vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-              <div className="sticky top-0 glass-heavy rounded-t-3xl px-6 py-4 flex items-center justify-between z-10">
-                <div className="flex items-center gap-2">
-                  <span className="rounded-xl bg-slate-100/80 px-2.5 py-1 text-[11px] font-medium text-slate-500">{editingRecord.type}</span>
-                  <h3 className="text-sm font-bold text-slate-800">记录详情</h3>
-                </div>
-                <button onClick={() => setEditingRecord(null)} className="p-1.5 rounded-xl hover:bg-white/50 text-slate-400 hover:text-slate-600 transition-colors">
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="px-6 pb-5 space-y-3">
-                <p className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">{editingRecord.content}</p>
-
-                {/* AI 低置信度提示 + 纠错入口 */}
-                {editingRecord.parsed_semantic && (() => {
-                  const ps = editingRecord.parsed_semantic;
-                  const confidence = typeof ps.confidence === 'number' ? ps.confidence : null;
-                  const fieldConf = ps.field_confidence || {};
-                  const guessedFields = Object.entries(fieldConf).filter(([, v]) => v === 'guess').map(([k]) => k);
-                  if (confidence !== null && confidence < 0.7) {
-                    return (
-                      <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5">
-                        <p className="text-xs font-medium text-amber-700 mb-1">AI 无法确定以下信息，点击字段可纠正</p>
-                        {guessedFields.length > 0 ? (
-                          <div className="flex flex-wrap gap-1">
-                            {guessedFields.map(f => (
-                              <button
-                                key={f}
-                                onClick={() => {
-                                  const val = prompt(`纠正「${fieldLabel(f)}」字段的值 (当前: AI推测)`);
-                                  if (val && editingRecord?.id) {
-                                    correctField(editingRecord.id as string, f, val).then(r => {
-                                      if (r) {
-                                        setCorrectingField(null);
-                                        // 刷新页面以反映纠错结果
-                                        window.location.reload();
-                                      }
-                                    });
-                                  }
-                                }}
-                                className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-600 hover:bg-amber-200 cursor-pointer transition-colors"
-                                title={`纠正${fieldLabel(f)}`}
-                              >
-                                ✎ {fieldLabel(f)}
-                              </button>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-[10px] text-amber-500">解析置信度较低（{Math.round(confidence * 100)}%），请核对结构化字段</p>
-                        )}
-                      </div>
-                    );
-                  }
-                  return null;
-                })()}
-
-                <div className="space-y-1.5 text-xs text-slate-500">
-                  {editingRecord.occurred_at && (
-                    <p className="flex items-center gap-1">
-                      <Calendar className="h-3 w-3" />
-                      {new Date(editingRecord.occurred_at).toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                    </p>
-                  )}
-                  {editingRecord.time_text && (
-                    <p>时间描述: {editingRecord.time_text}</p>
-                  )}
-                  {editingRecord.action_text && (
-                    <p>动作: {editingRecord.action_text}</p>
-                  )}
-                  {editingRecord.event_text && (
-                    <p>事件: {editingRecord.event_text}</p>
-                  )}
-                  {editingRecord.object_text && (
-                    <p>对象: {editingRecord.object_text}</p>
-                  )}
-                  {editingRecord.cause_text && (
-                    <p>原因: {editingRecord.cause_text}</p>
-                  )}
-                  {editingRecord.outcome_type && (
-                    <p>结果类型: {editingRecord.outcome_type}</p>
-                  )}
-                  {editingRecord.outcome_direction && (
-                    <p>结果方向: {editingRecord.outcome_direction}</p>
-                  )}
-                  {editingRecord.place_type && (
-                    <p>地点: {editingRecord.place_type}</p>
-                  )}
-                  {editingRecord.location && (
-                    <p>位置: {editingRecord.location}</p>
-                  )}
-                  {editingRecord.people && editingRecord.people.length > 0 && (
-                    <p>人物: {editingRecord.people.join(', ')}</p>
-                  )}
-                  {editingRecord.metric_value != null && (
-                    <p>指标: +{editingRecord.metric_value.toLocaleString()} {editingRecord.metric_unit ?? ''} {editingRecord.metric_name ?? ''}</p>
-                  )}
-                  {editingRecord.duration_minutes != null && (
-                    <p>时长: {editingRecord.duration_minutes}分钟</p>
-                  )}
-                  {editingRecord.cost != null && (
-                    <p>花费: ¥{editingRecord.cost.toLocaleString()}</p>
-                  )}
-                  {editingRecord.mood && <p>心情: {editingRecord.mood}</p>}
-                  {editingRecord.energy && <p>精力: {editingRecord.energy}</p>}
-                  {editingRecord.note && <p>备注: {editingRecord.note}</p>}
-                  {editingRecord.lifecycle_status && editingRecord.lifecycle_status !== 'active' && (
-                    <p>生命周期: {editingRecord.lifecycle_status}</p>
-                  )}
-                </div>
-                <div className="pt-3">
-                  <button
-                    onClick={() => {
-                      const rd = editingRecord.occurred_at
-                        ? new Date(editingRecord.occurred_at).toISOString().slice(0, 10)
-                        : new Date(editingRecord.created_at).toISOString().slice(0, 10);
-                      router.push(`/records?date=${rd}&item_id=${itemId}`);
-                    }}
-                    className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-700 font-medium"
-                  >
-                    <ExternalLink className="h-3 w-3" />在记录页查看
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <RecordEditDrawer
+            record={editingRecord}
+            tags={recordTags}
+            items={allItemsForTree}
+            goals={filteredGoals}
+            onClose={() => setEditingRecord(null)}
+            onSaved={() => {
+              setEditingRecord(null);
+              void fetchItem();
+            }}
+            onDeleted={() => {
+              setEditingRecord(null);
+              void fetchItem();
+            }}
+            onError={showError}
+            onItemsChange={loadItemsForEdit}
+            onItemCreated={(created) => setAllItemsForTree((prev) => [...prev, created])}
+            onCreateError={showError}
+          />
         )}
 
         {/* 阶段表单 */}
@@ -1371,7 +1342,57 @@ export default function ItemDetailPage() {
           />
         )}
 
+        {showItemComplete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+            <div className="glass rounded-2xl shadow-soft-lg p-5 w-full max-w-md">
+              <h3 className="text-sm font-bold text-slate-800 mb-2">标记为已完成</h3>
+              <p className="text-xs text-slate-500 mb-3">
+                事项将从桌面默认隐藏，关联记录仍保留。可在桌面开启「显示已完成」查看。
+              </p>
+              <textarea
+                value={itemCompleteNote}
+                onChange={(e) => setItemCompleteNote(e.target.value)}
+                placeholder="可选：写一句总结…"
+                rows={3}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-200 mb-4"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowItemComplete(false);
+                    setItemCompleteNote('');
+                  }}
+                  className="rounded-xl px-4 py-1.5 text-xs text-slate-500 hover:bg-slate-100"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={completingItem}
+                  onClick={handleCompleteItem}
+                  className="rounded-xl bg-emerald-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+                >
+                  {completingItem ? '处理中…' : '确认完成'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
+      <ItemMoveDialog
+        open={moveDialogOpen}
+        onClose={() => setMoveDialogOpen(false)}
+        items={allItemsForTree}
+        node={item ? { kind: 'item', item } : null}
+        onMoved={async () => {
+          await loadItemsForEdit();
+          await fetchItem();
+        }}
+        onError={showError}
+      />
+
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

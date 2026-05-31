@@ -101,6 +101,7 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
     record.metric_value != null ||
     (record.tags && record.tags.length > 0) ||
     (!!(record.occurred_at || record.occurred_at_end || record.time_text)) ||
+    !!(record.goal_id || record.goal?.title) ||
     aiPending;
 
   return (
@@ -301,6 +302,12 @@ export default function RecordItem({ record, onClick, onStarToggle, compact, aiP
           {record.metric_value != null && (
             <Capsule icon={<BarChart3 className="h-2.5 w-2.5" />} color="bg-purple-50 text-purple-600">
               {record.metric_name && `${record.metric_name} `}{record.metric_value}{record.metric_unit && ` ${record.metric_unit}`}
+            </Capsule>
+          )}
+          {/* 🎯 关联目标 */}
+          {(record.goal?.title || record.goal_id) && (
+            <Capsule icon={<Flag className="h-2.5 w-2.5" />} color="bg-indigo-50 text-indigo-600">
+              {record.goal?.title || '已关联目标'}
             </Capsule>
           )}
           {/* # 标签 */}

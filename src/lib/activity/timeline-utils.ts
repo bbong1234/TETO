@@ -106,7 +106,8 @@ function feedKindForType(type: RecordType): TimelineEntry['kind'] {
 function buildActivityEntries(
   records: Record[],
   date: string,
-  items: Item[] = []
+  items: Item[] = [],
+  includeGaps = true
 ): TimelineEntry[] {
   const timed = records
     .filter(isTimedActivityRecord)
@@ -120,7 +121,7 @@ function buildActivityEntries(
     const startIso = record.occurred_at!;
     const isCurrent = record.lifecycle_status === 'active' && !record.occurred_at_end;
 
-    if (prevEndIso) {
+    if (includeGaps && prevEndIso) {
       const gapMinutes = calcMinutesBetween(prevEndIso, startIso);
       if (gapMinutes >= GAP_THRESHOLD_MINUTES) {
         entries.push({
@@ -199,13 +200,16 @@ function buildUntimedFeedEntry(record: Record, items?: Item[]): TimelineEntry {
 
 /**
  * 从记录列表构建单日动态 feed（发生 + 空白 + 计划 + 想法，总结作回顾展示）
+ * @param options.includeGaps 是否在相邻活动间插入空白时间（事项详情页应设为 false）
  */
 export function buildDayFeedFromRecords(
   records: Record[],
   date: string,
   label = '今天',
-  items: Item[] = []
+  items: Item[] = [],
+  options?: { includeGaps?: boolean }
 ): DayTimeline {
+  const includeGaps = options?.includeGaps !== false;
   const dayRecords = records.filter((r) => recordOnDate(r, date));
 
   const pinnedPlans = dayRecords.filter(
@@ -214,7 +218,7 @@ export function buildDayFeedFromRecords(
 
   const pinnedIds = new Set(pinnedPlans.map((r) => r.id));
 
-  const activityEntries = buildActivityEntries(dayRecords, date, items);
+  const activityEntries = buildActivityEntries(dayRecords, date, items, includeGaps);
 
   const timedOthers: TimelineEntry[] = [];
   for (const record of dayRecords) {
@@ -264,9 +268,10 @@ export function buildDayTimelineFromRecords(
   records: Record[],
   date: string,
   label = '今天',
-  items: Item[] = []
+  items: Item[] = [],
+  options?: { includeGaps?: boolean }
 ): DayTimeline {
-  const feed = buildDayFeedFromRecords(records, date, label, items);
+  const feed = buildDayFeedFromRecords(records, date, label, items, options);
   return {
     ...feed,
     records: feed.records.filter(

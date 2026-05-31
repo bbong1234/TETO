@@ -10,11 +10,60 @@ const ACTIVE_ITEM_STATUSES = new Set(['活跃', '推进中', '放缓', '停滞']
 const PRESET_SET = new Set<string>(ACTIVITY_CATEGORY_PRESETS);
 const SKILL_PRESET_SET = new Set<string>(SKILL_CATEGORY_PRESETS);
 
+/** Item 树最大 depth（0=一类，1=二类，2=三类 Item） */
+export const MAX_ITEM_DEPTH = 2;
+
 export function isActiveItem(item: Item): boolean {
   return ACTIVE_ITEM_STATUSES.has(item.status);
 }
 
-/** 是否为大类节点 */
+/** 从根到该节点的路径（path[0]=一类） */
+export function getItemPath(items: Item[], itemId: string): Item[] {
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const path: Item[] = [];
+  let current = byId.get(itemId);
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    path.unshift(current);
+    current = current.parent_item_id ? byId.get(current.parent_item_id) : undefined;
+  }
+  return path;
+}
+
+/** 节点 depth：一类=0，二类=1，三类 Item=2；不存在返回 -1 */
+export function getItemDepth(items: Item[], itemId: string): number {
+  const path = getItemPath(items, itemId);
+  if (path.length === 0) return -1;
+  return path.length - 1;
+}
+
+export function getItemAncestors(items: Item[], itemId: string): Item[] {
+  const path = getItemPath(items, itemId);
+  return path.slice(0, -1);
+}
+
+/** 是否为一类（顶层）节点 */
+export function isLevel1Item(items: Item[], itemId: string): boolean {
+  return getItemDepth(items, itemId) === 0;
+}
+
+export interface ItemPathForRecord {
+  l1?: Item;
+  l2?: Item;
+  l3Item?: Item;
+}
+
+export function getItemPathForRecord(items: Item[], itemId: string): ItemPathForRecord {
+  const path = getItemPath(items, itemId);
+  return {
+    l1: path[0],
+    l2: path[1],
+    l3Item: path[2],
+  };
+}
+
+/** 是否为大类节点（结构判定：含空预设名，供详情页/服务端） */
 export function isCategoryItem(item: Item, items: Item[], selectedCategoryId?: string): boolean {
   if (!isActiveItem(item) || item.parent_item_id) return false;
   if (PRESET_SET.has(item.title)) return true;
@@ -23,16 +72,45 @@ export function isCategoryItem(item: Item, items: Item[], selectedCategoryId?: s
   return false;
 }
 
-/** 大类 chips：预设 / 有子事项 / 当前选中 / 用户标记的大类 */
-export function getCategoryItems(
+/** 记录页 chip / 桌面：仅展示「在用」的一类（有子项、用户新建、或当前选中） */
+export function isUsedCategoryItem(
+  item: Item,
   items: Item[],
   selectedCategoryId?: string,
   userCategoryIds?: ReadonlySet<string>
+): boolean {
+  if (!isActiveItem(item) || item.parent_item_id) return false;
+  if (userCategoryIds?.has(item.id)) return true;
+  if (selectedCategoryId && item.id === selectedCategoryId) return true;
+  if (items.some((i) => i.parent_item_id === item.id && isActiveItem(i))) return true;
+  return false;
+}
+
+/** 服务端轻量判断：已知子事项数量时无需拉全量 items */
+export function isCategoryItemLite(item: Item, childCount: number): boolean {
+  if (!isActiveItem(item) || item.parent_item_id) return false;
+  if (PRESET_SET.has(item.title)) return true;
+  if (childCount > 0) return true;
+  return false;
+}
+
+/** 大类 chips：默认仅「在用」一类；showUnusedPresets 含空预设（选父级等场景） */
+export function getCategoryItems(
+  items: Item[],
+  selectedCategoryId?: string,
+  userCategoryIds?: ReadonlySet<string>,
+  options?: { includeCompleted?: boolean; showUnusedPresets?: boolean }
 ): Item[] {
+  const includeCompleted = options?.includeCompleted ?? false;
+  const showUnusedPresets = options?.showUnusedPresets ?? false;
   const cats = items.filter((i) => {
-    if (!isActiveItem(i) || i.parent_item_id) return false;
-    if (userCategoryIds?.has(i.id)) return true;
-    return isCategoryItem(i, items, selectedCategoryId);
+    if (i.parent_item_id) return false;
+    if (!isActiveItem(i) && !(includeCompleted && i.status === '已完成')) return false;
+    if (showUnusedPresets) {
+      if (userCategoryIds?.has(i.id)) return true;
+      return isCategoryItem(i, items, selectedCategoryId);
+    }
+    return isUsedCategoryItem(i, items, selectedCategoryId, userCategoryIds);
   });
   return cats.sort((a, b) => {
     const aPreset = PRESET_SET.has(a.title) ? 0 : 1;
@@ -46,14 +124,33 @@ export function getCategoryItems(
 }
 
 /** 某大类下的子事项 */
-export function getChildItems(items: Item[], parentItemId: string): Item[] {
-  return items.filter((i) => i.parent_item_id === parentItemId && isActiveItem(i));
+export function isBoardVisibleItem(item: Item, includeCompleted = false): boolean {
+  return isActiveItem(item) || (includeCompleted && item.status === '已完成');
+}
+
+export function getChildItems(
+  items: Item[],
+  parentItemId: string,
+  options?: { includeCompleted?: boolean }
+): Item[] {
+  const includeCompleted = options?.includeCompleted ?? false;
+  return items.filter(
+    (i) => i.parent_item_id === parentItemId && isBoardVisibleItem(i, includeCompleted)
+  );
 }
 
 /** 未挂大类的 legacy 事项（parent 为空且不是大类） */
-export function getOrphanItems(items: Item[], selectedCategoryId?: string): Item[] {
+export function getOrphanItems(
+  items: Item[],
+  selectedCategoryId?: string,
+  options?: { includeCompleted?: boolean }
+): Item[] {
+  const includeCompleted = options?.includeCompleted ?? false;
   return items.filter(
-    (i) => isActiveItem(i) && !i.parent_item_id && !isCategoryItem(i, items, selectedCategoryId)
+    (i) =>
+      isBoardVisibleItem(i, includeCompleted) &&
+      !i.parent_item_id &&
+      !isCategoryItem(i, items, selectedCategoryId)
   );
 }
 
@@ -139,7 +236,7 @@ export function validateActivityContext(
   _subItemsCount?: number
 ): string | null {
   if (ctx.categoryItemId && !ctx.itemId) {
-    return '请选择事项，或新建一个';
+    return '请选择归属路径';
   }
   return null;
 }
@@ -157,17 +254,39 @@ export function resolveActivityContextFromRecord(
   };
   if (!itemId) return base;
 
-  const item = items.find((i) => i.id === itemId);
+  const path = getItemPath(items, itemId);
+  const item = path[path.length - 1];
   if (!item) return { ...base, itemId };
 
-  if (item.parent_item_id) {
-    const parent = items.find((i) => i.id === item.parent_item_id);
+  if (subItemId) {
+    const l1 = path[0];
+    const host = path[path.length - 1];
     return {
-      categoryItemId: parent?.id ?? '',
-      categoryTitle: parent?.title,
-      itemId: item.id,
-      itemTitle: item.title,
-      subItemId: subItemId || '',
+      categoryItemId: l1?.id ?? '',
+      categoryTitle: l1?.title,
+      itemId: host.id,
+      itemTitle: host.title,
+      subItemId,
+    };
+  }
+
+  if (path.length >= 3) {
+    return {
+      categoryItemId: path[0].id,
+      categoryTitle: path[0].title,
+      itemId: path[2].id,
+      itemTitle: path[2].title,
+      subItemId: '',
+    };
+  }
+
+  if (path.length === 2) {
+    return {
+      categoryItemId: path[0].id,
+      categoryTitle: path[0].title,
+      itemId: path[1].id,
+      itemTitle: path[1].title,
+      subItemId: '',
     };
   }
 
@@ -179,14 +298,14 @@ export function resolveActivityContextFromRecord(
         categoryTitle: item.title,
         itemId: defaultChild.id,
         itemTitle: defaultChild.title,
-        subItemId: subItemId || '',
+        subItemId: '',
       };
     }
     return {
       categoryItemId: item.id,
       categoryTitle: item.title,
       itemId: '',
-      subItemId: subItemId || '',
+      subItemId: '',
     };
   }
 
@@ -197,7 +316,7 @@ export function resolveActivityContextFromRecord(
       categoryTitle: otherCat.title,
       itemId: item.id,
       itemTitle: item.title,
-      subItemId: subItemId || '',
+      subItemId: '',
     };
   }
 
@@ -205,7 +324,7 @@ export function resolveActivityContextFromRecord(
     categoryItemId: '',
     itemId: item.id,
     itemTitle: item.title,
-    subItemId: subItemId || '',
+    subItemId: '',
   };
 }
 
@@ -265,14 +384,11 @@ export function resolveCategoryTitleForItem(
   itemId: string | null | undefined
 ): string | null {
   if (!itemId) return null;
-  const item = items.find((i) => i.id === itemId);
-  if (!item) return null;
-  if (item.parent_item_id) {
-    const parent = items.find((i) => i.id === item.parent_item_id);
-    return parent?.title ?? null;
-  }
-  if (isCategoryItem(item, items)) {
-    return item.title;
+  const path = getItemPath(items, itemId);
+  if (path.length === 0) return null;
+  const root = path[0];
+  if (isCategoryItem(root, items) || getItemDepth(items, root.id) === 0) {
+    return root.title;
   }
   return null;
 }
@@ -284,23 +400,18 @@ export function buildItemPathLabel(
   contentFallback?: string
 ): string {
   if (!itemId) return contentFallback?.trim() ?? '';
-  const item = items.find((i) => i.id === itemId);
-  if (!item) return contentFallback?.trim() ?? '';
-  const parts: string[] = [];
-  if (item.parent_item_id) {
-    const parent = items.find((i) => i.id === item.parent_item_id);
-    if (parent) parts.push(parent.title);
-  }
-  parts.push(item.title);
-  const path = parts.join(' / ');
+  const path = getItemPath(items, itemId);
+  if (path.length === 0) return contentFallback?.trim() ?? '';
+  const pathStr = path.map((i) => i.title).join(' / ');
   const content = contentFallback?.trim();
-  if (content && content !== item.title && !path.endsWith(content)) {
-    return `${path} · ${content}`;
+  const leaf = path[path.length - 1]?.title;
+  if (content && content !== leaf && !pathStr.endsWith(content)) {
+    return `${pathStr} · ${content}`;
   }
-  return path || content || item.title;
+  return pathStr || content || leaf || '';
 }
 
-/** 快速切换标签：必须同时有事项与子项名称，不含大类 */
+/** 快速切换标签：展示路径末两段（有子项时 事项·子项，无子项时 大类·事项 或 单标签名） */
 export function buildQuickSwitchLabel(
   items: Item[],
   opts: {
@@ -310,12 +421,22 @@ export function buildQuickSwitchLabel(
   }
 ): string | null {
   const { itemId, subItemId, subItemTitles } = opts;
-  if (!itemId || !subItemId) return null;
+  if (!itemId) return null;
   const item = items.find((i) => i.id === itemId);
   if (!item) return null;
-  const subTitle = subItemTitles?.get(subItemId);
-  if (!subTitle) return null;
-  return `${item.title} · ${subTitle}`;
+
+  if (subItemId) {
+    const subTitle = subItemTitles?.get(subItemId);
+    if (!subTitle) return null;
+    return `${item.title} · ${subTitle}`;
+  }
+
+  const path = getItemPath(items, itemId);
+  if (path.length >= 2) {
+    return `${path[path.length - 2].title} · ${path[path.length - 1].title}`;
+  }
+
+  return item.title;
 }
 
 /** 是否应对该快速切换项弹出工具选择（技能型大类或该上下文曾用过工具） */
@@ -348,4 +469,18 @@ export function buildRecordDisplayLabel(record: {
     Boolean
   );
   return parts.join(' / ') || record.content || '';
+}
+
+/** 服务端：根据 parent 链计算 depth 与祖先（不含自身） */
+export async function resolveItemPathMeta(
+  userId: string,
+  item: Item,
+  listLite: (uid: string) => Promise<Item[]>
+): Promise<{ item_depth: number; ancestor_items: Item[] }> {
+  const allItems = await listLite(userId);
+  const path = getItemPath(allItems, item.id);
+  return {
+    item_depth: path.length > 0 ? path.length - 1 : 0,
+    ancestor_items: path.slice(0, -1),
+  };
 }

@@ -38,7 +38,7 @@ export default function ItemDayFeedSection({
       .slice(0, maxDays)
       .map(([date, dayRecords]) => ({
         date,
-        feed: buildDayFeedFromRecords(dayRecords, date, date),
+        feed: buildDayFeedFromRecords(dayRecords, date, date, [], { includeGaps: false }),
       }));
   }, [records, maxDays]);
 

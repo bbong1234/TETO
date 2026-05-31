@@ -629,6 +629,7 @@ export default function QuickInput({
     capturedTypePinned: boolean;
     capturedItemId: string;
     capturedSubItemId: string;
+    capturedPhaseId: string;
     capturedToolLabel: string;
     capturedTagIds: string[];
     itemList: Item[];
@@ -642,6 +643,7 @@ export default function QuickInput({
       capturedTypePinned,
       capturedItemId,
       capturedSubItemId,
+      capturedPhaseId,
       capturedToolLabel,
       capturedTagIds,
       itemList,
@@ -667,6 +669,7 @@ export default function QuickInput({
                 ...(capturedTypePinned ? { type: capturedType } : {}),
                 ...(capturedItemId ? { item_id: capturedItemId } : {}),
                 ...(capturedSubItemId ? { sub_item_id: capturedSubItemId } : {}),
+                ...(capturedPhaseId ? { phase_id: capturedPhaseId } : {}),
                 ...(capturedToolLabel ? { tool_label: capturedToolLabel } : {}),
                 ...(capturedTagIds.length > 0 ? { tag_ids: capturedTagIds } : {}),
               },
@@ -789,6 +792,7 @@ export default function QuickInput({
     const capturedTypePinned = typePinned;
     const capturedItemId = resolveTargetItemId(activityContext) || '';
     const capturedSubItemId = activityContext.subItemId || '';
+    const capturedPhaseId = activityContext.phaseId || '';
     const capturedToolLabel = toolLabel.trim();
     const capturedTagIds = [...selectedTagIds];
     const capturedDate = selectedDate;
@@ -817,6 +821,7 @@ export default function QuickInput({
       capturedTypePinned,
       capturedItemId,
       capturedSubItemId,
+      capturedPhaseId,
       capturedToolLabel,
       capturedTagIds,
       itemList: items,
@@ -1048,7 +1053,7 @@ export default function QuickInput({
         </div>
       )}
 
-      {/* 归属：大类 / 事项 / 子项（与事项页同源） */}
+      {/* 归属：标签路径 + 阶段（与事项页同源） */}
       <ActivityContextPicker
         items={items}
         value={activityContext}

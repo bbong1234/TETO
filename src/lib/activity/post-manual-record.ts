@@ -1,10 +1,9 @@
-import type { CreateRecordPayload } from '@/types/teto';
+import type { CreateRecordPayload, Record } from '@/types/teto';
 
 /**
  * 手动录入（想法/计划等）：走 enhance=client 直连入库，不经 AI 清分。
- * 若走默认 POST，API 可能返回 200 + _clarification 而不写库，前端会误判为成功。
  */
-export async function postManualRecord(payload: CreateRecordPayload): Promise<{ id: string }> {
+export async function postManualRecord(payload: CreateRecordPayload): Promise<Record> {
   const res = await fetch('/api/v2/records?enhance=client', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -20,5 +19,5 @@ export async function postManualRecord(payload: CreateRecordPayload): Promise<{ 
   if (!data.data?.id) {
     throw new Error('记录失败：未创建记录');
   }
-  return { id: data.data.id as string };
+  return data.data as Record;
 }

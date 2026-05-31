@@ -29,6 +29,47 @@ export async function getSubItemsByItemId(
   return data || [];
 }
 
+/** 批量获取多个二类事项下的子项 */
+export async function getSubItemsByItemIds(
+  userId: string,
+  itemIds: string[]
+): Promise<SubItem[]> {
+  if (itemIds.length === 0) return [];
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from('sub_items')
+    .select('*')
+    .eq('user_id', userId)
+    .in('item_id', itemIds)
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`批量获取子项失败: ${error.message}`);
+  }
+
+  return data || [];
+}
+
+/** 用户全部子项（事项桌面用） */
+export async function listAllSubItems(userId: string): Promise<SubItem[]> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from('sub_items')
+    .select('*')
+    .eq('user_id', userId)
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`获取子项列表失败: ${error.message}`);
+  }
+
+  return data || [];
+}
+
 /**
  * 根据 ID 获取单个子项
  */
@@ -94,6 +135,7 @@ export async function updateSubItem(
   if (payload.title !== undefined) updateData.title = payload.title;
   if (payload.description !== undefined) updateData.description = payload.description;
   if (payload.sort_order !== undefined) updateData.sort_order = payload.sort_order;
+  if (payload.item_id !== undefined) updateData.item_id = payload.item_id;
 
   const { data, error } = await supabase
     .from('sub_items')

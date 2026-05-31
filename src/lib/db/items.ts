@@ -288,7 +288,8 @@ export async function getItemById(
  */
 export async function listItems(
   userId: string,
-  query: ItemsQuery
+  query: ItemsQuery,
+  options?: { skipDuration?: boolean }
 ): Promise<Item[]> {
   const supabase = await createClient();
 
@@ -325,19 +326,23 @@ export async function listItems(
 
   if (!data || data.length === 0) return [];
 
-  // 批量查询进行中阶段（1 次查询代替 N 次）
+  // 批量查询进行中阶段 + 时长 + 待完成计划（并行）
   const itemIds = data.map(d => d.id);
-  const { data: activePhases } = await supabase
-    .from('phases')
-    .select('item_id, title')
-    .eq('user_id', userId)
-    .eq('status', '进行中')
-    .in('item_id', itemIds);
+  const [{ data: activePhases }, durationMap, pendingPlanMap] = await Promise.all([
+    supabase
+      .from('phases')
+      .select('item_id, title')
+      .eq('user_id', userId)
+      .eq('status', '进行中')
+      .in('item_id', itemIds),
+    options?.skipDuration
+      ? Promise.resolve(new Map<string, number>())
+      : fetchItemDurationTotals(userId, itemIds),
+    fetchPendingPlanCounts(userId, itemIds),
+  ]);
 
   const phaseMap = new Map<string, string>();
   activePhases?.forEach((p: { item_id: string; title: string }) => phaseMap.set(p.item_id, p.title));
-
-  const durationMap = await fetchItemDurationTotals(userId, itemIds);
 
   return data.map((row: any) => ({
     ...row,
@@ -345,6 +350,7 @@ export async function listItems(
     record_count: row.records?.[0]?.count ?? 0,
     active_phase_title: phaseMap.get(row.id) || null,
     total_duration_minutes: durationMap.get(row.id) ?? 0,
+    pending_plan_count: pendingPlanMap.get(row.id) ?? 0,
     phases: undefined,
     records: undefined,
     recent_records: [],
@@ -393,4 +399,29 @@ export async function listItemsLite(
   }
 
   return data ?? [];
+}
+
+/** 批量统计各事项下未完成计划数 */
+async function fetchPendingPlanCounts(
+  userId: string,
+  itemIds: string[]
+): Promise<Map<string, number>> {
+  if (itemIds.length === 0) return new Map();
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('records')
+    .select('item_id')
+    .eq('user_id', userId)
+    .in('item_id', itemIds)
+    .eq('type', '计划')
+    .or('lifecycle_status.is.null,lifecycle_status.eq.active');
+
+  if (error || !data) return new Map();
+
+  const map = new Map<string, number>();
+  for (const row of data as { item_id: string | null }[]) {
+    if (!row.item_id) continue;
+    map.set(row.item_id, (map.get(row.item_id) ?? 0) + 1);
+  }
+  return map;
 }

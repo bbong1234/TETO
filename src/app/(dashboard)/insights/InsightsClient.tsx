@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { BarChart3, RefreshCw, Download } from 'lucide-react';
+import { useState, useCallback, useMemo } from 'react';
+import { BarChart3, RefreshCw, Download, Loader2 } from 'lucide-react';
 import DateRangeSelector from './components/DateRangeSelector';
 import TodayTimelinePanel from './components/TodayTimelinePanel';
 import YesterdayTimelinePanel from './components/YesterdayTimelinePanel';
@@ -18,8 +18,19 @@ import { useToast } from '@/components/ui/use-toast';
 import ToastContainer from '@/components/ui/use-toast';
 import { useInsights } from './useInsights';
 import { InsightsPageSkeleton } from '@/components/ui/PageSkeletons';
+import type { InsightMetricId, InsightsData } from '@/types/teto';
 
 type DatePreset = '7d' | '30d' | 'month' | 'custom';
+
+const FAST_METRICS: InsightMetricId[] = ['recent_timeline', 'activity_heatmap'];
+const SLOW_METRICS: InsightMetricId[] = [
+  'summary',
+  'items',
+  'goals',
+  'time_distribution',
+  'comparison',
+  'data_review',
+];
 
 function getDateRange(preset: DatePreset): { date_from: string; date_to: string } {
   const today = new Date();
@@ -43,26 +54,66 @@ function getDateRange(preset: DatePreset): { date_from: string; date_to: string 
   return { date_from, date_to };
 }
 
+function mergeInsights(fast: InsightsData, slow: InsightsData | null): InsightsData {
+  if (!slow) return fast;
+  return {
+    ...fast,
+    summary: slow.summary,
+    range: slow.range,
+    items: slow.items,
+    goals: slow.goals,
+    time_distribution: slow.time_distribution,
+    comparison: slow.comparison,
+    data_review: slow.data_review,
+    facts: slow.facts,
+  };
+}
+
+function DeferredSectionSkeleton({ label }: { label: string }) {
+  return (
+    <div className="rounded-xl border border-slate-100 bg-white p-4 flex items-center gap-2 text-sm text-slate-400">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      {label}
+    </div>
+  );
+}
+
 export default function InsightsClient() {
+  const initialRange = getDateRange('7d');
   const [preset, setPreset] = useState<DatePreset>('7d');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [dateFrom, setDateFrom] = useState(initialRange.date_from);
+  const [dateTo, setDateTo] = useState(initialRange.date_to);
   const { toasts, showError, dismissToast } = useToast();
 
   const onLoadError = useCallback(() => {
     showError('加载洞察数据失败');
   }, [showError]);
 
-  const { data: insightsData, loading, error, refetch } = useInsights(dateFrom, dateTo, {
-    onLoadError,
-  });
+  const {
+    data: fastData,
+    loading: fastLoading,
+    error: fastError,
+    refetch: refetchFast,
+  } = useInsights(dateFrom, dateTo, { metrics: FAST_METRICS, onLoadError });
 
-  // Initialize dates
-  useEffect(() => {
-    const range = getDateRange(preset);
-    setDateFrom(range.date_from);
-    setDateTo(range.date_to);
-  }, []);
+  const {
+    data: slowData,
+    loading: slowLoading,
+    error: slowError,
+    refetch: refetchSlow,
+  } = useInsights(dateFrom, dateTo, { metrics: SLOW_METRICS, onLoadError });
+
+  const insightsData = useMemo(
+    () => (fastData ? mergeInsights(fastData, slowData) : null),
+    [fastData, slowData]
+  );
+
+  const loading = fastLoading;
+  const error = fastError || slowError;
+  const refetch = useCallback(() => {
+    void refetchFast();
+    void refetchSlow();
+  }, [refetchFast, refetchSlow]);
 
   const handlePresetChange = (newPreset: string) => {
     setPreset(newPreset as DatePreset);
@@ -81,7 +132,6 @@ export default function InsightsClient() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden p-4 lg:p-6">
-      {/* Header */}
       <div className="flex-shrink-0 flex items-center justify-between gap-3 mb-5">
         <div className="flex items-center gap-2">
           <BarChart3 className="h-5 w-5 text-blue-500" />
@@ -101,7 +151,6 @@ export default function InsightsClient() {
         </button>
       </div>
 
-      {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
         {loading && <InsightsPageSkeleton />}
 
@@ -120,53 +169,43 @@ export default function InsightsClient() {
 
         {!loading && !error && insightsData && (
           <>
-            {/* 1. 今日时间线 */}
             <TodayTimelinePanel data={insightsData.recent_timeline.today} />
-
-            {/* 2. 昨日时间线 */}
             <YesterdayTimelinePanel data={insightsData.recent_timeline.yesterday} />
-
-            {/* 3. 活跃热力图 */}
             <ActivityHeatmapPanel days={insightsData.activity_heatmap.days} />
 
-            {/* 4. 本期摘要 */}
-            <InsightSummaryPanel facts={insightsData.summary.headline_facts} />
+            {slowLoading ? (
+              <DeferredSectionSkeleton label="正在加载摘要与统计..." />
+            ) : (
+              <>
+                <InsightSummaryPanel facts={insightsData.summary.headline_facts} />
 
-            {/* 5. 日期范围选择器 */}
-            <DateRangeSelector
-              preset={preset}
-              dateFrom={dateFrom}
-              dateTo={dateTo}
-              rangeLabel={insightsData.range.label}
-              onPresetChange={handlePresetChange}
-              onCustomDateChange={handleCustomDateChange}
-            />
+                <DateRangeSelector
+                  preset={preset}
+                  dateFrom={dateFrom}
+                  dateTo={dateTo}
+                  rangeLabel={insightsData.range.label}
+                  onPresetChange={handlePresetChange}
+                  onCustomDateChange={handleCustomDateChange}
+                />
 
-            {/* 6. 事项活动 */}
-            <ItemActivityPanel
-              active_items={insightsData.items.active_items}
-              time_ranking={insightsData.items.time_ranking}
-              stagnant_items={insightsData.items.stagnant_items}
-            />
+                <ItemActivityPanel
+                  active_items={insightsData.items.active_items}
+                  time_ranking={insightsData.items.time_ranking}
+                  stagnant_items={insightsData.items.stagnant_items}
+                />
 
-            {/* 7. 目标进度 */}
-            <GoalProgressPanel progress={insightsData.goals.progress} />
-
-            {/* 8. 时间分布 */}
-            <TimeDistributionPanel data={insightsData.time_distribution} />
-
-            {/* 9. 周期对比 */}
-            <PeriodComparisonPanel changes={insightsData.comparison.changes} />
-
-            {/* 10. 数据待整理 */}
-            <DataReviewPanel data={insightsData.data_review} />
-
-            {/* 11. 事实来源 & AI 润色 */}
-            <FactSourcePanel facts={insightsData.facts} />
-            {/* 12. 纠错趋势 */}
-            <CorrectionsTrendsPanel />
+                <GoalProgressPanel progress={insightsData.goals.progress} />
+                <TimeDistributionPanel data={insightsData.time_distribution} />
+                <PeriodComparisonPanel changes={insightsData.comparison.changes} />
+                <DataReviewPanel data={insightsData.data_review} />
+                <FactSourcePanel facts={insightsData.facts} />
+              </>
+            )}
           </>
         )}
+
+        {/* 与主洞察并行加载，不阻塞首屏 */}
+        <CorrectionsTrendsPanel />
       </div>
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>

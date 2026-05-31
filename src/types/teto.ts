@@ -96,6 +96,8 @@ export interface Record {
   /** 工具/载体（如：不背单词、多邻国），与子项正交 */
   tool_label?: string | null;
   item_id: string | null;
+  /** 强关联目标（结案/进展说明记录必填；日常努力记录可选） */
+  goal_id?: string | null;
   phase_id: string | null;
   sub_item_id: string | null;
   sort_order: number;
@@ -161,6 +163,7 @@ export interface Record {
   date?: string;
   tags?: Tag[];
   item?: { id: string; title: string } | null;
+  goal?: { id: string; title: string } | null;
   linked_records?: RecordLinkWithPeer[];
 }
 
@@ -205,6 +208,8 @@ export interface Item {
   active_phase_title?: string | null;
   /** 列表页：活动累计时长（分钟） */
   total_duration_minutes?: number;
+  /** 列表页：未完成计划条数 */
+  pending_plan_count?: number;
 }
 
 export interface RecurringActivity {
@@ -331,6 +336,7 @@ export interface CreateRecordPayload {
   subcategory?: string;
   tool_label?: string | null;
   item_id?: string;
+  goal_id?: string | null;
   phase_id?: string | null;
   sub_item_id?: string | null;
   sort_order?: number;
@@ -384,10 +390,11 @@ export interface CreateRecordPayload {
 }
 
 /** 更新记录载荷。所有字段可选。`occurred_at`、`item_id` 可传 `null` 清除。详见 {@link CreateRecordPayload}。 */
-export type UpdateRecordPayload = Omit<CreateRecordPayload, 'content' | 'date' | 'occurred_at' | 'item_id'> & {
+export type UpdateRecordPayload = Omit<CreateRecordPayload, 'content' | 'date' | 'occurred_at' | 'item_id' | 'goal_id'> & {
   content?: string;
   occurred_at?: string | null;
   item_id?: string | null;
+  goal_id?: string | null;
   category?: string | null;
   subcategory?: string | null;
 };
@@ -438,6 +445,7 @@ export interface RecordsQuery {
   date_from?: string;
   date_to?: string;
   item_id?: string;
+  goal_id?: string;
   sub_item_id?: string;
   type?: RecordType;
   category?: string;
@@ -900,6 +908,8 @@ export interface UpdateSubItemPayload {
   title?: string;
   description?: string | null;
   sort_order?: number;
+  /** 改挂到另一二类事项 */
+  item_id?: string;
 }
 
 // 子项查询参数

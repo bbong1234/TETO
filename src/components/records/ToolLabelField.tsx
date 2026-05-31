@@ -11,36 +11,61 @@ interface ToolLabelFieldProps {
   value: string;
   onChange: (value: string) => void;
   compact?: boolean;
+  /** 父级已加载工具列表时传入，避免重复请求 */
+  tools?: UserTool[];
+  toolsLoading?: boolean;
+  onToolsChange?: (tools: UserTool[]) => void;
 }
 
 export default function ToolLabelField({
   value,
   onChange,
   compact = false,
+  tools: toolsProp,
+  toolsLoading: toolsLoadingProp,
+  onToolsChange,
 }: ToolLabelFieldProps) {
-  const [tools, setTools] = useState<UserTool[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [localTools, setLocalTools] = useState<UserTool[]>([]);
+  const [localLoading, setLocalLoading] = useState(toolsProp === undefined);
+  const useExternal = toolsProp !== undefined;
+  const tools = useExternal ? toolsProp : localTools;
+  const loading = useExternal ? (toolsLoadingProp ?? false) : localLoading;
+
+  const setTools = useCallback(
+    (next: UserTool[] | ((prev: UserTool[]) => UserTool[])) => {
+      if (useExternal) {
+        const resolved = typeof next === 'function' ? next(toolsProp ?? []) : next;
+        onToolsChange?.(resolved);
+      } else {
+        setLocalTools(next);
+      }
+    },
+    [useExternal, onToolsChange, toolsProp]
+  );
+
+  const fetchTools = useCallback(async () => {
+    if (useExternal) return;
+    setLocalLoading(true);
+    try {
+      const res = await fetch('/api/v2/tools');
+      const data = await res.json();
+      if (res.ok) setLocalTools(data.data ?? []);
+    } catch {
+      setLocalTools([]);
+    } finally {
+      setLocalLoading(false);
+    }
+  }, [useExternal]);
+
+  useEffect(() => {
+    if (useExternal) return;
+    void fetchTools();
+  }, [fetchTools, useExternal]);
+
   const [creating, setCreating] = useState(false);
   const [createText, setCreateText] = useState('');
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-
-  const fetchTools = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/v2/tools');
-      const data = await res.json();
-      if (res.ok) setTools(data.data ?? []);
-    } catch {
-      setTools([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void fetchTools();
-  }, [fetchTools]);
 
   const toolTitles = tools.map((t) => t.title);
   const hasOrphanValue = Boolean(value && !toolTitles.includes(value));

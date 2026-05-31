@@ -13,6 +13,7 @@ interface SwitchActivityBody {
   content?: string;
   item_id?: string | null;
   sub_item_id?: string | null;
+  phase_id?: string | null;
   tool_label?: string | null;
   tag_ids?: string[];
 }
@@ -30,6 +31,9 @@ export async function POST(request: NextRequest) {
     if (body.sub_item_id && !UUID_REGEX.test(body.sub_item_id)) {
       return apiError(ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED, 'sub_item_id 格式无效', ctx.traceId);
     }
+    if (body.phase_id && !UUID_REGEX.test(body.phase_id)) {
+      return apiError(ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED, 'phase_id 格式无效', ctx.traceId);
+    }
     if (body.tag_ids) {
       if (!Array.isArray(body.tag_ids)) {
         return apiError(ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED, 'tag_ids 必须为数组', ctx.traceId);
@@ -46,6 +50,7 @@ export async function POST(request: NextRequest) {
       content: body.content,
       item_id: body.item_id,
       sub_item_id: body.sub_item_id,
+      phase_id: body.phase_id,
       tool_label: body.tool_label,
       tag_ids: body.tag_ids,
       supabase,
