@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { getPhaseById } from '@/lib/db/phases';
+import { getPhaseSubItemStats } from '@/lib/db/records';
 import { updatePhaseSafely, deletePhaseSafely } from '@/lib/domain/phase-service';
 import { createClient } from '@/lib/supabase/server';
 import { handleApiError } from '@/lib/api/error-handler';
@@ -22,7 +23,9 @@ export async function GET(
       return apiError(ERROR_CODES.PHASE_NOT_FOUND, '阶段不存在或不属于当前用户', ctx.traceId, 404);
     }
 
-    return apiSuccess(phase, ctx.traceId);
+    const sub_item_breakdown = await getPhaseSubItemStats(userId, id, phase.item_id);
+
+    return apiSuccess({ ...phase, sub_item_breakdown }, ctx.traceId);
   } catch (error) {
     return handleApiError(error);
   }

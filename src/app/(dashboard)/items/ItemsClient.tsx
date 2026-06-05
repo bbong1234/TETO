@@ -18,6 +18,7 @@ import {
   getChildItems,
   getOrphanItems,
   isActiveItem,
+  isBoardVisibleItem,
 } from '@/lib/activity/item-tree';
 import { ensureCategoryItems, needsCategorySeed } from '@/lib/activity/ensure-categories';
 import ParentCategorySelect from './components/ParentCategorySelect';
@@ -48,6 +49,14 @@ function pickIcon(title: string) {
 const STALE_DAYS = 14;
 const ACTIVE_BOARD_STATUSES = new Set<ItemStatus>(['活跃', '推进中', '放缓', '停滞']);
 const SHOW_COMPLETED_KEY = 'teto-items-show-completed';
+const BOARD_LENS_KEY = 'teto-items-board-lens';
+
+type BoardLens = 'project' | 'function';
+
+interface FunctionGroup {
+  functionTitle: string;
+  projectItems: ItemWithStats[];
+}
 
 function daysSince(iso: string): number {
   return Math.floor((Date.now() - Date.parse(iso)) / 86400000);
@@ -101,10 +110,13 @@ export default function ItemsClient() {
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [subItems, setSubItems] = useState<SubItem[]>([]);
   const [showCompleted, setShowCompleted] = useState(false);
+  const [boardLens, setBoardLens] = useState<BoardLens>('project');
 
   useEffect(() => {
     try {
       setShowCompleted(localStorage.getItem(SHOW_COMPLETED_KEY) === 'true');
+      const stored = localStorage.getItem(BOARD_LENS_KEY);
+      if (stored === 'function' || stored === 'project') setBoardLens(stored);
     } catch {
       /* ignore */
     }
@@ -117,6 +129,14 @@ export default function ItemsClient() {
       /* ignore */
     }
   }, [showCompleted]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(BOARD_LENS_KEY, boardLens);
+    } catch {
+      /* ignore */
+    }
+  }, [boardLens]);
 
   const fetchItems = useCallback(async () => {
     setLoading(true);
@@ -224,9 +244,36 @@ export default function ItemsClient() {
     return result;
   }, [categoryGroups, orphanBoardItems]);
 
-  const hasContent =
+  const functionGroups = useMemo((): FunctionGroup[] => {
+    const byTitle = new Map<string, SubItem[]>();
+    for (const sub of subItems) {
+      const title = sub.title;
+      const list = byTitle.get(title) ?? [];
+      list.push(sub);
+      byTitle.set(title, list);
+    }
+    const itemById = new Map(items.map((i) => [i.id, i]));
+    return [...byTitle.entries()]
+      .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
+      .map(([functionTitle, subs]) => {
+        const projectIds = [...new Set(subs.map((s) => s.item_id))];
+        const projectItems = projectIds
+          .map((id) => itemById.get(id))
+          .filter(
+            (i): i is ItemWithStats =>
+              !!i && isBoardVisibleItem(i, showCompleted)
+          );
+        return { functionTitle, projectItems };
+      })
+      .filter((g) => g.projectItems.length > 0);
+  }, [subItems, items, showCompleted]);
+
+  const hasProjectContent =
     categoryGroups.some((g) => g.children.length > 0 || g.catRecordCount > 0) ||
     orphanBoardItems.length > 0;
+
+  const hasContent =
+    boardLens === 'function' ? functionGroups.length > 0 : hasProjectContent;
 
   const handleCreate = async () => {
     if (!newTitle.trim()) return;
@@ -323,6 +370,30 @@ export default function ItemsClient() {
                 className="w-36 glass rounded-xl pl-8 pr-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400/50 placeholder:text-slate-300 border-0"
               />
             </div>
+            <div className="flex rounded-xl glass p-0.5 text-[10px] font-medium">
+              <button
+                type="button"
+                onClick={() => setBoardLens('project')}
+                className={`rounded-lg px-2.5 py-1 transition-colors ${
+                  boardLens === 'project'
+                    ? 'bg-indigo-500 text-white shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                按项目
+              </button>
+              <button
+                type="button"
+                onClick={() => setBoardLens('function')}
+                className={`rounded-lg px-2.5 py-1 transition-colors ${
+                  boardLens === 'function'
+                    ? 'bg-purple-500 text-white shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                按职能
+              </button>
+            </div>
             <label className="flex items-center gap-1.5 rounded-xl glass px-2.5 py-1.5 text-[10px] text-slate-500 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -387,8 +458,50 @@ export default function ItemsClient() {
           <ItemsDesktopSkeleton />
         ) : hasContent ? (
           <div className="space-y-5">
-            {!searchQuery && <AttentionPanel items={boardItems} />}
-            {categoryGroups.map(({ category, children, totalMinutes, catRecordCount, catStats }) => {
+            {boardLens === 'project' && !searchQuery && <AttentionPanel items={boardItems} />}
+            {boardLens === 'function' &&
+              functionGroups.map(({ functionTitle, projectItems }) => {
+                const filtered = projectItems.filter(matchesSearch);
+                if (filtered.length === 0) return null;
+                return (
+                  <section
+                    key={functionTitle}
+                    className="glass rounded-2xl p-4 md:p-5 shadow-soft border border-purple-100/60"
+                  >
+                    <div className="flex items-center justify-between mb-4">
+                      <h2 className="text-sm font-bold text-purple-800">{functionTitle}</h2>
+                      <span className="text-[10px] text-slate-400">
+                        {filtered.length} 个项目
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4 auto-rows-[148px]">
+                      {filtered.map((child) => {
+                        const subForFn = subItems.find(
+                          (s) => s.item_id === child.id && s.title === functionTitle
+                        );
+                        return (
+                          <div key={child.id} className="flex flex-col min-h-[148px]">
+                            <WidgetCard
+                              item={child}
+                              onMove={() => openMoveDialog(child)}
+                            />
+                            {subForFn && (
+                              <Link
+                                href={`/items/${child.id}?sub=${subForFn.id}`}
+                                className="mt-1.5 text-center text-[10px] text-purple-600 hover:text-purple-800 truncate px-0.5"
+                              >
+                                进入 {functionTitle}
+                              </Link>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              })}
+            {boardLens === 'project' &&
+              categoryGroups.map(({ category, children, totalMinutes, catRecordCount, catStats }) => {
               const displayItems: ItemWithStats[] =
                 children.length > 0
                   ? children
@@ -442,7 +555,7 @@ export default function ItemsClient() {
                 </section>
               );
             })}
-            {orphanBoardItems.length > 0 && (
+            {boardLens === 'project' && orphanBoardItems.length > 0 && (
               <section className="glass rounded-2xl p-4 md:p-5 shadow-soft border border-dashed border-slate-200/80">
                 <div className="flex items-center justify-between mb-1">
                   <h2 className="text-sm font-bold text-slate-600">未归类</h2>
@@ -474,8 +587,19 @@ export default function ItemsClient() {
             <div className="w-20 h-20 rounded-3xl glass shadow-soft flex items-center justify-center mb-4">
               <Plus className="h-8 w-8 text-slate-300" />
             </div>
-            <p className="text-sm font-medium mb-1">还没有事项</p>
-            <p className="text-xs text-slate-300">点击「新事项」创建，或等待大类预设同步</p>
+            {boardLens === 'function' ? (
+              <>
+                <p className="text-sm font-medium mb-1">职能视角暂无数据</p>
+                <p className="text-xs text-slate-300 text-center max-w-sm">
+                  请在各项目下创建三类 SubItem（名称需跨项目完全一致，如「风控」），并在记录时选到职能与阶段。
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-medium mb-1">还没有事项</p>
+                <p className="text-xs text-slate-300">点击「新事项」创建，或等待大类预设同步</p>
+              </>
+            )}
           </div>
         )}
       </div>

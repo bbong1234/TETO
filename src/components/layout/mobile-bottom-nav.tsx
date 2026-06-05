@@ -1,19 +1,22 @@
 'use client';
 
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { BookOpen, ListChecks, BarChart3, MoreHorizontal } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState, useTransition, type MouseEvent } from 'react';
+import Link from 'next/link';
+import {
+  getMobileTabRoot,
+  MOBILE_TAB_ROOTS,
+  type MobileTabRoot,
+} from '@/components/layout/mobile-tab-routes';
 
-const primaryNavItems = [
+const primaryNavItems: { label: string; href: MobileTabRoot; icon: typeof BookOpen }[] = [
   { label: '记录', href: '/records', icon: BookOpen },
   { label: '事项', href: '/items', icon: ListChecks },
   { label: '洞察', href: '/insights', icon: BarChart3 },
 ];
 
-const moreNavItems = [
-  { label: '诊断', href: '/debug' },
-];
+const moreNavItems = [{ label: '诊断', href: '/debug' }];
 
 function isActivePath(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
@@ -21,8 +24,30 @@ function isActivePath(pathname: string, href: string) {
 
 export default function MobileBottomNav() {
   const pathname = usePathname();
+  const router = useRouter();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
   const moreActive = moreNavItems.some((item) => isActivePath(pathname, item.href));
+
+  useEffect(() => {
+    for (const href of MOBILE_TAB_ROOTS) {
+      router.prefetch(href);
+    }
+  }, [router]);
+
+  useEffect(() => {
+    if (!isPending) setPendingHref(null);
+  }, [isPending, pathname]);
+
+  const navigateTab = (e: MouseEvent, href: MobileTabRoot) => {
+    e.preventDefault();
+    if (getMobileTabRoot(pathname) === href) return;
+    setPendingHref(href);
+    startTransition(() => {
+      router.push(href);
+    });
+  };
 
   return (
     <>
@@ -66,22 +91,26 @@ export default function MobileBottomNav() {
 
         <div className="mx-auto flex h-14 max-w-lg items-stretch justify-around px-2">
           {primaryNavItems.map((item) => {
-            const active = isActivePath(pathname, item.href);
+            const active =
+              pendingHref === item.href ||
+              (pendingHref === null && isActivePath(pathname, item.href));
             const Icon = item.icon;
             return (
-              <Link
+              <a
                 key={item.href}
                 href={item.href}
+                onClick={(e) => navigateTab(e, item.href)}
                 className={[
-                  'flex min-w-[4.5rem] flex-1 flex-col items-center justify-center gap-0.5 rounded-xl transition-colors',
+                  'flex min-w-[4.5rem] flex-1 flex-col items-center justify-center gap-0.5 rounded-xl transition-colors duration-150',
                   active ? 'text-blue-400' : 'text-teto-neutral-400 active:text-white',
+                  isPending && pendingHref === item.href ? 'opacity-80' : '',
                 ].join(' ')}
               >
                 <Icon className={['h-5 w-5', active ? 'stroke-[2.5]' : 'stroke-2'].join(' ')} />
                 <span className={['text-[10px] font-medium', active ? 'text-blue-300' : ''].join(' ')}>
                   {item.label}
                 </span>
-              </Link>
+              </a>
             );
           })}
 
@@ -89,7 +118,7 @@ export default function MobileBottomNav() {
             type="button"
             onClick={() => setMoreOpen((open) => !open)}
             className={[
-              'flex min-w-[4.5rem] flex-1 flex-col items-center justify-center gap-0.5 rounded-xl transition-colors',
+              'flex min-w-[4.5rem] flex-1 flex-col items-center justify-center gap-0.5 rounded-xl transition-colors duration-150',
               moreActive || moreOpen ? 'text-blue-400' : 'text-teto-neutral-400 active:text-white',
             ].join(' ')}
             aria-label="更多"

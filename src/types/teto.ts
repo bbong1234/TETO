@@ -757,6 +757,8 @@ export interface Phase {
   updated_at: string;
   // 动态附加（API 返回时计算）
   aggregation?: PhaseAggregation | null;
+  /** 阶段内职能分布（record.phase_id 精确匹配） */
+  sub_item_breakdown?: PhaseSubItemBreakdown[];
   goals?: Goal[];  // 该阶段下的目标列表
 }
 
@@ -994,6 +996,14 @@ export interface ParsedGoal {
   confidence: number;
 }
 
+/** 阶段内按 SubItem（职能）分组统计；仅含显式 phase_id 的记录 */
+export interface PhaseSubItemBreakdown {
+  sub_item_id: string | null;
+  sub_item_title: string | null;
+  record_count: number;
+  total_duration_minutes: number;
+}
+
 // 阶段聚合数据（阶段时间范围内的汇总）
 export interface PhaseAggregation {
   total_cost: number;
@@ -1004,4 +1014,5 @@ export interface PhaseAggregation {
     metric_unit: string;
   }[];
   record_count: number;
+  sub_item_breakdown?: PhaseSubItemBreakdown[];
 }

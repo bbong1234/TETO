@@ -1,13 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, startTransition } from 'react';
 import { ChevronRight, Loader2, Plus } from 'lucide-react';
 import type { Item, Phase, SubItem } from '@/types/teto';
 import {
-  getCategoryItems,
+  buildItemTreeIndex,
+  getCategoryItemsFromIndex,
   getChildItems,
-  getItemDepth,
-  getItemsForCategory,
+  getItemDepthFromIndex,
+  getItemsForCategoryFromIndex,
   resolveSubItemHostItemId,
   resolveTargetItemId,
 } from '@/lib/activity/item-tree';
@@ -76,7 +77,46 @@ const PLACEHOLDER_SUB_ITEM_OPTION = '__pick_sub_item__';
 const CREATE_SUB_ITEM_OPTION = '__create_sub_item__';
 const PLACEHOLDER_PHASE_OPTION = '__no_phase__';
 
-export default function ActivityContextPicker({
+const subItemsCache = new Map<string, SubItem[]>();
+const phasesCache = new Map<string, Phase[]>();
+const subItemsInflight = new Set<string>();
+const phasesInflight = new Set<string>();
+
+function prefetchSubItems(hostId: string): void {
+  if (subItemsCache.has(hostId) || subItemsInflight.has(hostId)) return;
+  subItemsInflight.add(hostId);
+  fetch(`/api/v2/sub-items?item_id=${hostId}`)
+    .then((res) => res.json())
+    .then((data) => {
+      subItemsCache.set(hostId, (data.data as SubItem[]) ?? []);
+    })
+    .catch(() => {
+      subItemsCache.set(hostId, []);
+    })
+    .finally(() => {
+      subItemsInflight.delete(hostId);
+    });
+}
+
+function prefetchPhases(hostId: string): void {
+  if (phasesCache.has(hostId) || phasesInflight.has(hostId)) return;
+  phasesInflight.add(hostId);
+  fetch(
+    `/api/v2/phases?item_id=${encodeURIComponent(hostId)}&status=${encodeURIComponent('进行中')}`
+  )
+    .then((res) => res.json())
+    .then((data) => {
+      phasesCache.set(hostId, (data.data as Phase[]) ?? []);
+    })
+    .catch(() => {
+      phasesCache.set(hostId, []);
+    })
+    .finally(() => {
+      phasesInflight.delete(hostId);
+    });
+}
+
+function ActivityContextPicker({
   items,
   value,
   onChange,
@@ -96,7 +136,15 @@ export default function ActivityContextPicker({
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [userCategoryIds, setUserCategoryIds] = useState<Set<string>>(() => new Set());
+  /** 本地即时高亮，避免等待父级 state 提交才切换 chip */
+  const [activeCategoryId, setActiveCategoryId] = useState(value.categoryItemId);
   const scopedUserId = items[0]?.user_id;
+  const onSubItemsLoadedRef = useRef(onSubItemsLoaded);
+  onSubItemsLoadedRef.current = onSubItemsLoaded;
+
+  useEffect(() => {
+    setActiveCategoryId(value.categoryItemId);
+  }, [value.categoryItemId]);
 
   useEffect(() => {
     if (!scopedUserId) return;
@@ -108,36 +156,37 @@ export default function ActivityContextPicker({
     saveUserCategoryIds(scopedUserId, userCategoryIds);
   }, [scopedUserId, userCategoryIds]);
 
+  const itemIndex = useMemo(() => buildItemTreeIndex(items), [items]);
+
   const categoryItems = useMemo(
-    () => getCategoryItems(items, value.categoryItemId || undefined, userCategoryIds),
-    [items, value.categoryItemId, userCategoryIds]
+    () => getCategoryItemsFromIndex(items, itemIndex, activeCategoryId || undefined, userCategoryIds),
+    [items, itemIndex, activeCategoryId, userCategoryIds]
   );
   const childItems = useMemo(
     () =>
-      value.categoryItemId
-        ? getItemsForCategory(items, value.categoryItemId, value.categoryItemId)
+      activeCategoryId
+        ? getItemsForCategoryFromIndex(items, itemIndex, activeCategoryId, activeCategoryId)
         : [],
-    [items, value.categoryItemId]
+    [items, itemIndex, activeCategoryId]
   );
 
   /** 二类下挂的三类 Item */
   const level3Items = useMemo(() => {
     if (!value.itemId || value.subItemId) return [];
-    if (getItemDepth(items, value.itemId) !== 1) return [];
+    if (getItemDepthFromIndex(itemIndex, value.itemId) !== 1) return [];
     return getChildItems(items, value.itemId);
-  }, [items, value.itemId, value.subItemId]);
+  }, [items, itemIndex, value.itemId, value.subItemId]);
 
   const subItemHostId = useMemo(() => {
     if (!value.itemId) return null;
     if (value.subItemId) return resolveSubItemHostItemId(value);
-    const depth = getItemDepth(items, value.itemId);
+    const depth = getItemDepthFromIndex(itemIndex, value.itemId);
     if (depth === 2) {
-      const item = items.find((i) => i.id === value.itemId);
-      return item?.parent_item_id ?? null;
+      return itemIndex.itemById.get(value.itemId)?.parent_item_id ?? null;
     }
     if (depth === 1) return value.itemId;
     return null;
-  }, [value, items]);
+  }, [value, itemIndex]);
 
   const phaseHostItemId = useMemo(() => resolveTargetItemId(value), [value]);
 
@@ -171,59 +220,127 @@ export default function ActivityContextPicker({
     });
   }, []);
 
+  /** 选中大类后立即预取该大类下各二类的三类 / 阶段 */
+  useEffect(() => {
+    if (!activeCategoryId || childItems.length === 0) return;
+    for (const child of childItems) {
+      prefetchSubItems(child.id);
+      prefetchPhases(child.id);
+    }
+  }, [activeCategoryId, childItems]);
+
+  const notifySubItemsLoaded = useCallback((list: SubItem[]) => {
+    queueMicrotask(() => onSubItemsLoadedRef.current?.(list));
+  }, []);
+
+  const applyCachedSubItemsForHost = useCallback((hostId: string) => {
+    const cached = subItemsCache.get(hostId);
+    if (cached) {
+      setSubItems(cached);
+      setSubLoading(false);
+      notifySubItemsLoaded(cached);
+      return true;
+    }
+    setSubLoading(true);
+    return false;
+  }, [notifySubItemsLoaded]);
+
+  const applyCachedPhasesForHost = useCallback((hostId: string) => {
+    const cached = phasesCache.get(hostId);
+    if (cached) {
+      setPhases(cached);
+      setPhaseLoading(false);
+      return true;
+    }
+    setPhaseLoading(true);
+    return false;
+  }, []);
+
   useEffect(() => {
     if (!subItemHostId) {
       setSubItems([]);
-      onSubItemsLoaded?.([]);
+      setSubLoading(false);
+      notifySubItemsLoaded([]);
       return;
     }
+
+    const cached = subItemsCache.get(subItemHostId);
+    if (cached) {
+      setSubItems(cached);
+      setSubLoading(false);
+      notifySubItemsLoaded(cached);
+      return;
+    }
+
     let cancelled = false;
-    setSubLoading(true);
+    const loadingTimer = window.setTimeout(() => {
+      if (!cancelled) setSubLoading(true);
+    }, 120);
+
     fetch(`/api/v2/sub-items?item_id=${subItemHostId}`)
       .then((res) => res.json())
       .then((data) => {
         if (cancelled) return;
         const list: SubItem[] = data.data ?? [];
+        subItemsCache.set(subItemHostId, list);
         setSubItems(list);
-        onSubItemsLoaded?.(list);
+        notifySubItemsLoaded(list);
       })
       .catch(() => {
         if (!cancelled) {
           setSubItems([]);
-          onSubItemsLoaded?.([]);
+          notifySubItemsLoaded([]);
         }
       })
       .finally(() => {
+        window.clearTimeout(loadingTimer);
         if (!cancelled) setSubLoading(false);
       });
     return () => {
       cancelled = true;
+      window.clearTimeout(loadingTimer);
     };
-  }, [subItemHostId, onSubItemsLoaded]);
+  }, [subItemHostId, notifySubItemsLoaded]);
 
   useEffect(() => {
     if (!phaseHostItemId) {
       setPhases([]);
+      setPhaseLoading(false);
       return;
     }
+
+    const cached = phasesCache.get(phaseHostItemId);
+    if (cached) {
+      setPhases(cached);
+      setPhaseLoading(false);
+      return;
+    }
+
     let cancelled = false;
-    setPhaseLoading(true);
+    const loadingTimer = window.setTimeout(() => {
+      if (!cancelled) setPhaseLoading(true);
+    }, 120);
+
     fetch(
       `/api/v2/phases?item_id=${encodeURIComponent(phaseHostItemId)}&status=${encodeURIComponent('进行中')}`
     )
       .then((res) => res.json())
       .then((data) => {
         if (cancelled) return;
-        setPhases(data.data ?? []);
+        const list: Phase[] = data.data ?? [];
+        phasesCache.set(phaseHostItemId, list);
+        setPhases(list);
       })
       .catch(() => {
         if (!cancelled) setPhases([]);
       })
       .finally(() => {
+        window.clearTimeout(loadingTimer);
         if (!cancelled) setPhaseLoading(false);
       });
     return () => {
       cancelled = true;
+      window.clearTimeout(loadingTimer);
     };
   }, [phaseHostItemId]);
 
@@ -240,34 +357,43 @@ export default function ActivityContextPicker({
   });
 
   const setCategory = (categoryItemId: string, categoryTitle?: string) => {
-    onChange({
-      categoryItemId,
-      categoryTitle,
-      itemId: '',
-      itemTitle: undefined,
-      subItemId: '',
-      subItemTitle: undefined,
-      ...clearPhase(),
+    setActiveCategoryId(categoryItemId);
+    startTransition(() => {
+      onChange({
+        categoryItemId,
+        categoryTitle,
+        itemId: '',
+        itemTitle: undefined,
+        subItemId: '',
+        subItemTitle: undefined,
+        ...clearPhase(),
+      });
     });
   };
 
   const setItem = (itemId: string, itemTitle?: string) => {
-    onChange({
-      ...value,
-      itemId,
-      itemTitle,
-      subItemId: '',
-      subItemTitle: undefined,
-      ...clearPhase(),
+    startTransition(() => {
+      onChange({
+        ...value,
+        itemId,
+        itemTitle,
+        subItemId: '',
+        subItemTitle: undefined,
+        ...clearPhase(),
+      });
     });
   };
 
   const setSubItem = (subItemId: string, subItemTitle?: string) => {
-    onChange({ ...value, subItemId, subItemTitle });
+    startTransition(() => {
+      onChange({ ...value, subItemId, subItemTitle });
+    });
   };
 
   const setPhase = (phaseId: string, phaseTitle?: string) => {
-    onChange({ ...value, phaseId, phaseTitle });
+    startTransition(() => {
+      onChange({ ...value, phaseId, phaseTitle });
+    });
   };
 
   const startCreate = (level: CreateLevel) => {
@@ -293,7 +419,7 @@ export default function ActivityContextPicker({
   const submitCreate = async () => {
     const title = createText.trim();
     if (!title || !creating) return;
-    if (creating === 'item' && !value.categoryItemId) {
+    if (creating === 'item' && !activeCategoryId) {
       const msg = '请先选择一类';
       setCreateError(msg);
       onCreateError?.(msg);
@@ -327,7 +453,7 @@ export default function ActivityContextPicker({
         const res = await fetch('/api/v2/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title, parent_item_id: value.categoryItemId }),
+          body: JSON.stringify({ title, parent_item_id: activeCategoryId }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(parseCreateError(res, data));
@@ -347,8 +473,9 @@ export default function ActivityContextPicker({
         const sub: SubItem | null = data.data ?? null;
         if (!sub?.id) throw new Error('创建成功但未返回数据');
         const next = [...subItems, sub];
+        if (subItemHostId) subItemsCache.set(subItemHostId, next);
         setSubItems(next);
-        onSubItemsLoaded?.(next);
+        notifySubItemsLoaded(next);
         setSubItem(sub.id, sub.title);
       }
       cancelCreate();
@@ -397,14 +524,17 @@ export default function ActivityContextPicker({
   );
 
   const pathParts = [value.categoryTitle, value.itemTitle, value.subItemTitle].filter(Boolean);
-  const showPhaseRow =
-    !!phaseHostItemId &&
-    (phaseLoading || phaseOptions.length > 0 || !!value.phaseId);
 
-  const isL2Selected =
-    !!value.itemId && getItemDepth(items, value.itemId) === 1;
-
+  const itemDepth = value.itemId ? getItemDepthFromIndex(itemIndex, value.itemId) : -1;
+  const isL2Selected = itemDepth === 1;
   const showL3Row = isL2Selected;
+  /** 选中二类/三类且能解析到阶段宿主时，始终展示阶段行（显式 phase_id，不做日期推算） */
+  const showPhaseRow = !!phaseHostItemId && !!value.itemId && itemDepth >= 1;
+  const showSubItemHint =
+    isL2Selected &&
+    !value.subItemId &&
+    !subLoading &&
+    (subItems.length > 0 || level3Items.length > 0);
 
   return (
     <div className="space-y-2">
@@ -429,12 +559,12 @@ export default function ActivityContextPicker({
                 type="button"
                 onClick={() =>
                   setCategory(
-                    value.categoryItemId === cat.id ? '' : cat.id,
-                    value.categoryItemId === cat.id ? undefined : cat.title
+                    activeCategoryId === cat.id ? '' : cat.id,
+                    activeCategoryId === cat.id ? undefined : cat.title
                   )
                 }
                 className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                  value.categoryItemId === cat.id
+                  activeCategoryId === cat.id
                     ? 'bg-blue-500 text-white'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
@@ -453,7 +583,7 @@ export default function ActivityContextPicker({
           </div>
         )}
 
-        {value.categoryItemId && (
+        {activeCategoryId && (
           <div className="flex items-center gap-1.5 min-w-0">
             <ChevronRight className="h-3 w-3 text-slate-300 shrink-0" aria-hidden />
             {creating === 'item' ? (
@@ -472,6 +602,8 @@ export default function ActivityContextPicker({
                       return;
                     }
                     const child = childItems.find((i) => i.id === e.target.value);
+                    applyCachedSubItemsForHost(e.target.value);
+                    applyCachedPhasesForHost(e.target.value);
                     setItem(e.target.value, child?.title);
                   }}
                   className={selectClass}
@@ -503,7 +635,12 @@ export default function ActivityContextPicker({
           <div className="flex items-center gap-1.5 min-w-0">
             <ChevronRight className="h-3 w-3 text-slate-300 shrink-0" aria-hidden />
             {subLoading ? (
-              <span className="text-[11px] text-slate-400">加载三类…</span>
+              <>
+                <select disabled className={`${selectClass} opacity-60`}>
+                  <option>不选三类</option>
+                </select>
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-slate-300" aria-hidden />
+              </>
             ) : subItems.length === 0 && level3Items.length === 0 ? (
               <div className="flex flex-1 items-center gap-1.5 min-w-0">
                 <span className="text-[11px] text-slate-400">无三类（可不选）</span>
@@ -571,36 +708,52 @@ export default function ActivityContextPicker({
             {renderCreateRow('新三类名称')}
           </div>
         )}
-      </div>
 
-      {showPhaseRow && (
-        <div className="flex items-center gap-2">
-          <span className={labelClass}>阶段</span>
-          {phaseLoading ? (
-            <span className="text-[11px] text-slate-400">加载阶段…</span>
-          ) : (
-            <select
-              value={value.phaseId || PLACEHOLDER_PHASE_OPTION}
-              onChange={(e) => {
-                if (e.target.value === PLACEHOLDER_PHASE_OPTION) {
-                  setPhase('', undefined);
-                  return;
-                }
-                const phase = phaseOptions.find((p) => p.id === e.target.value);
-                setPhase(e.target.value, phase?.title);
-              }}
-              className={selectClass}
-            >
-              <option value={PLACEHOLDER_PHASE_OPTION}>不选阶段</option>
-              {phaseOptions.map((phase) => (
-                <option key={phase.id} value={phase.id}>
-                  {phase.title}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-      )}
+        {showSubItemHint && (
+          <p className="text-[10px] text-amber-600 pl-4">
+            选择职能（三类）以支持职能视角统计；跨项目请保持 SubItem 名称完全一致。
+          </p>
+        )}
+
+        {showPhaseRow && (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <ChevronRight className="h-3 w-3 text-slate-300 shrink-0" aria-hidden />
+            <span className={labelClass}>阶段</span>
+            {phaseLoading ? (
+              <>
+                <select disabled className={`${selectClass} opacity-60`}>
+                  <option>不关联阶段</option>
+                </select>
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-slate-300" aria-hidden />
+              </>
+            ) : phaseOptions.length === 0 ? (
+              <span className="text-[11px] text-slate-400 flex-1">
+                暂无进行中阶段（可在事项详情创建）
+              </span>
+            ) : (
+              <select
+                value={value.phaseId || PLACEHOLDER_PHASE_OPTION}
+                onChange={(e) => {
+                  if (e.target.value === PLACEHOLDER_PHASE_OPTION) {
+                    setPhase('', undefined);
+                    return;
+                  }
+                  const phase = phaseOptions.find((p) => p.id === e.target.value);
+                  setPhase(e.target.value, phase?.title);
+                }}
+                className={selectClass}
+              >
+                <option value={PLACEHOLDER_PHASE_OPTION}>不关联阶段</option>
+                {phaseOptions.map((phase) => (
+                  <option key={phase.id} value={phase.id}>
+                    {phase.title}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+      </div>
 
       {(pathParts.length > 0 || value.phaseTitle) && (
         <p className="text-[10px] text-slate-400">
@@ -610,3 +763,5 @@ export default function ActivityContextPicker({
     </div>
   );
 }
+
+export default memo(ActivityContextPicker);

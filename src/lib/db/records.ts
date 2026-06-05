@@ -1,5 +1,12 @@
 import { createClient } from '@/lib/supabase/server';
-import type { Record, CreateRecordPayload, UpdateRecordPayload, RecordsQuery, Tag } from '@/types/teto';
+import type {
+  Record,
+  CreateRecordPayload,
+  UpdateRecordPayload,
+  RecordsQuery,
+  Tag,
+  PhaseSubItemBreakdown,
+} from '@/types/teto';
 import { getOrCreateRecordDay } from './record-days';
 import { attachTagsToRecord, replaceRecordTags } from './tags';
 import { computeTrustLevel } from '@/lib/trust/compute-trust';
@@ -567,4 +574,96 @@ export async function batchCreateRecords(
 /** 转义 PostgREST .or() 过滤值中的特殊字符 */
 function escapeOrValue(value: string): string {
   return value.replace(/[,()]/g, '\\$&');
+}
+
+type PhaseSubItemAggRow = {
+  phase_id: string;
+  sub_item_id: string | null;
+  duration_minutes: number | null;
+};
+
+/**
+ * 某阶段内按 sub_item_id 分组统计（仅 record.phase_id = phaseId，不做日期推算）
+ */
+export async function getPhaseSubItemStats(
+  userId: string,
+  phaseId: string,
+  itemId: string
+): Promise<PhaseSubItemBreakdown[]> {
+  const map = await getPhaseSubItemBreakdownsByItem(userId, itemId);
+  return map.get(phaseId) ?? [];
+}
+
+/**
+ * 某事项下各阶段的 SubItem 职能分布（phase_id 精确匹配）
+ */
+export async function getPhaseSubItemBreakdownsByItem(
+  userId: string,
+  itemId: string
+): Promise<Map<string, PhaseSubItemBreakdown[]>> {
+  const supabase = await createClient();
+  const result = new Map<string, PhaseSubItemBreakdown[]>();
+
+  const { data, error } = await supabase
+    .from('records')
+    .select('phase_id, sub_item_id, duration_minutes')
+    .eq('user_id', userId)
+    .eq('item_id', itemId)
+    .not('phase_id', 'is', null);
+
+  if (error) {
+    throw new Error(`获取阶段职能统计失败: ${error.message}`);
+  }
+
+  const rows = (data ?? []) as PhaseSubItemAggRow[];
+  if (rows.length === 0) return result;
+
+  const bucket = new Map<
+    string,
+    Map<string | null, { count: number; minutes: number }>
+  >();
+
+  for (const row of rows) {
+    const phaseId = row.phase_id;
+    const subKey = row.sub_item_id ?? null;
+    if (!bucket.has(phaseId)) bucket.set(phaseId, new Map());
+    const subMap = bucket.get(phaseId)!;
+    const cur = subMap.get(subKey) ?? { count: 0, minutes: 0 };
+    cur.count += 1;
+    if (row.duration_minutes != null) cur.minutes += Number(row.duration_minutes);
+    subMap.set(subKey, cur);
+  }
+
+  const subIds = [
+    ...new Set(
+      rows.map((r) => r.sub_item_id).filter((id): id is string => id != null)
+    ),
+  ];
+  const titleBySubId = new Map<string, string>();
+  if (subIds.length > 0) {
+    const { data: subRows } = await supabase
+      .from('sub_items')
+      .select('id, title')
+      .eq('user_id', userId)
+      .in('id', subIds);
+    for (const s of subRows ?? []) {
+      titleBySubId.set(s.id as string, s.title as string);
+    }
+  }
+
+  for (const [phaseId, subMap] of bucket) {
+    const breakdown: PhaseSubItemBreakdown[] = [];
+    for (const [subItemId, agg] of subMap) {
+      breakdown.push({
+        sub_item_id: subItemId,
+        sub_item_title: subItemId ? titleBySubId.get(subItemId) ?? null : null,
+        record_count: agg.count,
+        total_duration_minutes: agg.minutes,
+      });
+    }
+    breakdown.sort((a, b) => b.record_count - a.record_count);
+    result.set(phaseId, breakdown);
+  }
+
+  return result;
 }

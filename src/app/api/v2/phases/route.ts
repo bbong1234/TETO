@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { getPhases } from '@/lib/db/phases';
+import { getPhaseSubItemBreakdownsByItem } from '@/lib/db/records';
 import { createPhaseSafely } from '@/lib/domain/phase-service';
 import { createClient } from '@/lib/supabase/server';
 import { handleApiError } from '@/lib/api/error-handler';
@@ -23,6 +24,17 @@ export async function GET(request: NextRequest) {
     if (is_historical !== null) query.is_historical = is_historical === 'true';
 
     const result = await getPhases(userId, query);
+    const includeBreakdown = searchParams.get('include_sub_item_breakdown') === 'true';
+
+    if (includeBreakdown && query.item_id) {
+      const breakdownMap = await getPhaseSubItemBreakdownsByItem(userId, query.item_id);
+      const enriched = result.map((phase) => ({
+        ...phase,
+        sub_item_breakdown: breakdownMap.get(phase.id) ?? [],
+      }));
+      return apiSuccess(enriched, ctx.traceId);
+    }
+
     return apiSuccess(result, ctx.traceId);
   } catch (error) {
     return handleApiError(error);

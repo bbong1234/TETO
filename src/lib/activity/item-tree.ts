@@ -123,6 +123,86 @@ export function getCategoryItems(
   });
 }
 
+/** 一次遍历构建索引，供 ActivityContextPicker 等高频组件复用 */
+export interface ItemTreeIndex {
+  itemById: Map<string, Item>;
+  childrenByParent: Map<string, Item[]>;
+  activeChildCountByParent: Map<string, number>;
+}
+
+export function buildItemTreeIndex(items: Item[]): ItemTreeIndex {
+  const itemById = new Map<string, Item>();
+  const childrenByParent = new Map<string, Item[]>();
+  const activeChildCountByParent = new Map<string, number>();
+
+  for (const item of items) {
+    itemById.set(item.id, item);
+    const pid = item.parent_item_id;
+    if (!pid || !isBoardVisibleItem(item)) continue;
+    const list = childrenByParent.get(pid) ?? [];
+    list.push(item);
+    childrenByParent.set(pid, list);
+    if (isActiveItem(item)) {
+      activeChildCountByParent.set(pid, (activeChildCountByParent.get(pid) ?? 0) + 1);
+    }
+  }
+
+  return { itemById, childrenByParent, activeChildCountByParent };
+}
+
+/** 基于索引的 depth，避免每次 getItemPath 分配数组 */
+export function getItemDepthFromIndex(index: ItemTreeIndex, itemId: string): number {
+  let depth = 0;
+  let current = index.itemById.get(itemId);
+  const seen = new Set<string>();
+  while (current?.parent_item_id && !seen.has(current.id)) {
+    seen.add(current.id);
+    depth++;
+    current = index.itemById.get(current.parent_item_id);
+  }
+  return current ? depth : -1;
+}
+
+/** 基于索引的大类 chips（O(n) 单次过滤） */
+export function getCategoryItemsFromIndex(
+  items: Item[],
+  index: ItemTreeIndex,
+  selectedCategoryId?: string,
+  userCategoryIds?: ReadonlySet<string>
+): Item[] {
+  const cats = items.filter((i) => {
+    if (i.parent_item_id) return false;
+    if (!isActiveItem(i)) return false;
+    if (userCategoryIds?.has(i.id)) return true;
+    if (selectedCategoryId && i.id === selectedCategoryId) return true;
+    return (index.activeChildCountByParent.get(i.id) ?? 0) > 0;
+  });
+  return cats.sort((a, b) => {
+    const aPreset = PRESET_SET.has(a.title) ? 0 : 1;
+    const bPreset = PRESET_SET.has(b.title) ? 0 : 1;
+    if (aPreset !== bPreset) return aPreset - bPreset;
+    const aIdx = ACTIVITY_CATEGORY_PRESETS.indexOf(a.title as (typeof ACTIVITY_CATEGORY_PRESETS)[number]);
+    const bIdx = ACTIVITY_CATEGORY_PRESETS.indexOf(b.title as (typeof ACTIVITY_CATEGORY_PRESETS)[number]);
+    if (aIdx >= 0 && bIdx >= 0) return aIdx - bIdx;
+    return a.title.localeCompare(b.title, 'zh-CN');
+  });
+}
+
+/** 基于索引的大类子项 */
+export function getItemsForCategoryFromIndex(
+  items: Item[],
+  index: ItemTreeIndex,
+  categoryItemId: string,
+  selectedCategoryId?: string
+): Item[] {
+  const category = index.itemById.get(categoryItemId);
+  const children = index.childrenByParent.get(categoryItemId) ?? [];
+  if (category?.title === '其他') {
+    return getItemsForCategory(items, categoryItemId, selectedCategoryId);
+  }
+  return children;
+}
+
 /** 某大类下的子事项 */
 export function isBoardVisibleItem(item: Item, includeCompleted = false): boolean {
   return isActiveItem(item) || (includeCompleted && item.status === '已完成');

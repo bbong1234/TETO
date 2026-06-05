@@ -6,6 +6,7 @@ import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import AppSidebar from "@/components/layout/app-sidebar";
 import MobileBottomNav from "@/components/layout/mobile-bottom-nav";
 import MobileTopbar from "@/components/layout/mobile-topbar";
+import MobileTabShell from "@/components/layout/mobile-tab-shell";
 import { isDevMode } from '@/lib/auth/get-current-user-id';
 import { createClient } from '@/lib/supabase/client';
 import { initClientErrorReporter } from '@/lib/observability/client-error-reporter';
@@ -104,7 +105,7 @@ export default function AppLayout({
       ].join(" ")}>
         <MobileTopbar user={user} />
         <main className="flex-1 flex flex-col overflow-hidden bg-slate-100 pb-[calc(3.5rem+env(safe-area-inset-bottom,0px))] lg:pb-0">
-            {children}
+          <MobileTabShell>{children}</MobileTabShell>
         </main>
         <MobileBottomNav />
       </div>

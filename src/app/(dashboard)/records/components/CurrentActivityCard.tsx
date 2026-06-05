@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Square, ArrowRightLeft, StickyNote, Loader2, ChevronDown, ChevronUp, Plus, Check } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, memo } from 'react';
+import { Play, Square, ArrowRightLeft, StickyNote, Loader2, ChevronDown, ChevronUp, Plus, Check, History, X } from 'lucide-react';
 import type { Item, Record as TetoRecord, RecordType, CreateRecordPayload, UserTool } from '@/types/teto';
 import { formatDurationMinutes } from '@/lib/activity/stats-utils';
 import { DIARY_ITEM_TITLE } from '@/lib/activity/constants';
@@ -108,6 +108,9 @@ export default function CurrentActivityCard({
   const [idleMode, setIdleMode] = useState<IdleMode>('发生');
   const [idleContext, setIdleContext] = useState<ActivityContextValue>(EMPTY_ACTIVITY_CONTEXT);
   const [idleSubItemsCount, setIdleSubItemsCount] = useState(0);
+  const handleIdleSubItemsLoaded = useCallback((subs: import('@/types/teto').SubItem[]) => {
+    setIdleSubItemsCount(subs.length);
+  }, []);
   const [idleToolLabel, setIdleToolLabel] = useState('');
   const [idleSubmitting, setIdleSubmitting] = useState(false);
   const [panelInitialContent, setPanelInitialContent] = useState('');
@@ -440,7 +443,7 @@ export default function CurrentActivityCard({
             onModeChange={setIdleMode}
             onContextChange={setIdleContext}
             onToolLabelChange={setIdleToolLabel}
-            onSubItemsLoaded={(subs) => setIdleSubItemsCount(subs.length)}
+            onSubItemsLoaded={handleIdleSubItemsLoaded}
             onSubmit={handleIdleSubmit}
             onBackfill={() => setPanelMode('backfill')}
           />
@@ -664,7 +667,7 @@ function ActiveState({
   );
 }
 
-function IdleUnifiedInput({
+const IdleUnifiedInput = memo(function IdleUnifiedInput({
   items,
   itemsLoading = false,
   userTools,
@@ -708,7 +711,7 @@ function IdleUnifiedInput({
   onBackfill: () => void;
 }) {
   const placeholders: { [K in IdleMode]: string } = {
-    发生: '具体做了什么？例如：背了 30 个单词…',
+    发生: '具体做了什么？例如：背了 30 个单词…（可不填，仅开启计时）',
     计划: '记下要做的事…',
     想法: '随手记一条想法…',
   };
@@ -716,6 +719,20 @@ function IdleUnifiedInput({
   const hasDiaryItem = items.some((i) => i.title === DIARY_ITEM_TITLE);
 
   const [subItemsCount, setSubItemsCount] = useState(0);
+  const [toolExpanded, setToolExpanded] = useState(false);
+
+  const handleSubItemsLoaded = useCallback(
+    (subs: import('@/types/teto').SubItem[]) => {
+      setSubItemsCount(subs.length);
+      onSubItemsLoaded?.(subs);
+    },
+    [onSubItemsLoaded]
+  );
+
+  const handleToolLabelChange = (v: string) => {
+    onToolLabelChange(v);
+    if (!v) setToolExpanded(false);
+  };
 
   const canSubmit =
     mode === '发生'
@@ -723,8 +740,16 @@ function IdleUnifiedInput({
       : Boolean(content.trim()) &&
         !validateActivityContext(context, items, subItemsCount);
 
+  const submitBg =
+    mode === '发生'
+      ? 'bg-blue-500 hover:bg-blue-600'
+      : mode === '计划'
+        ? 'bg-indigo-500 hover:bg-indigo-600'
+        : 'bg-purple-500 hover:bg-purple-600';
+
   return (
     <div className="space-y-3 px-4 py-4">
+      {/* 归属选择 */}
       <ActivityContextPicker
         items={items}
         itemsLoading={itemsLoading}
@@ -733,20 +758,33 @@ function IdleUnifiedInput({
         onItemsChange={onItemsChange}
         onItemCreated={onItemCreated}
         onCreateError={onCreateError}
-        onSubItemsLoaded={(subs) => {
-          setSubItemsCount(subs.length);
-          onSubItemsLoaded?.(subs);
-        }}
+        onSubItemsLoaded={handleSubItemsLoaded}
         compact
       />
-      <ToolLabelField
-        value={toolLabel}
-        onChange={onToolLabelChange}
-        compact
-        tools={userTools}
-        toolsLoading={toolsLoading}
-        onToolsChange={onToolsChange}
-      />
+
+      {/* 模式切换：先定意图，再填内容 */}
+      <div className="flex rounded-lg border border-slate-200 overflow-hidden w-fit">
+        {(['发生', '想法', '计划'] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => onModeChange(t)}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+              mode === t
+                ? t === '发生'
+                  ? 'bg-blue-500 text-white'
+                  : t === '计划'
+                    ? 'bg-indigo-500 text-white'
+                    : 'bg-purple-500 text-white'
+                : 'bg-white text-slate-500 hover:bg-slate-50'
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {/* 输入框 */}
       <input
         type="text"
         value={content}
@@ -755,6 +793,7 @@ function IdleUnifiedInput({
         placeholder={placeholders[mode]}
         className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
       />
+
       {mode === '想法' && (
         <p className="text-[10px] text-slate-400 leading-snug">
           {hasDiaryItem
@@ -762,32 +801,50 @@ function IdleUnifiedInput({
             : `建议新建「${DIARY_ITEM_TITLE}」事项作为日复盘入口；项目复盘写在对应子项下。`}
         </p>
       )}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex rounded-lg border border-slate-200 overflow-hidden">
-          {(['发生', '想法', '计划'] as const).map((t) => (
+
+      {/* 工具（默认折叠，选中后显示 chip） */}
+      {toolLabel ? (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-slate-400">工具</span>
+          <span className="flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] text-violet-700">
+            {toolLabel}
             <button
-              key={t}
               type="button"
-              onClick={() => onModeChange(t)}
-              className={`px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                mode === t
-                  ? t === '发生'
-                    ? 'bg-blue-500 text-white'
-                    : t === '计划'
-                      ? 'bg-indigo-500 text-white'
-                      : 'bg-purple-500 text-white'
-                  : 'bg-white text-slate-500 hover:bg-slate-50'
-              }`}
+              aria-label="移除工具"
+              onClick={() => handleToolLabelChange('')}
+              className="ml-0.5 hover:text-red-500 transition-colors"
             >
-              {t}
+              <X className="h-2.5 w-2.5" />
             </button>
-          ))}
+          </span>
         </div>
+      ) : toolExpanded ? (
+        <ToolLabelField
+          value={toolLabel}
+          onChange={handleToolLabelChange}
+          compact
+          tools={userTools}
+          toolsLoading={toolsLoading}
+          onToolsChange={onToolsChange}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setToolExpanded(true)}
+          className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-violet-500 transition-colors"
+        >
+          <Plus className="h-3 w-3" />
+          添加工具
+        </button>
+      )}
+
+      {/* 提交行 */}
+      <div className="flex items-center gap-2">
         <button
           type="button"
           disabled={submitting || !canSubmit}
           onClick={onSubmit}
-          className="flex items-center gap-1.5 rounded-lg bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50"
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-50 ${submitBg}`}
         >
           {submitting ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -800,12 +857,13 @@ function IdleUnifiedInput({
           <button
             type="button"
             onClick={onBackfill}
-            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-500 hover:bg-slate-50"
+            className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-500 hover:bg-slate-50"
           >
+            <History className="h-3 w-3" />
             补记
           </button>
         </div>
       </div>
     </div>
   );
-}
+});

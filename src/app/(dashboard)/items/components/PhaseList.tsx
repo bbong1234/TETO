@@ -26,7 +26,9 @@ export default function PhaseList({ itemId, onEditPhase, onCreatePhase, onPromot
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/v2/phases?item_id=${itemId}`);
+      const res = await fetch(
+        `/api/v2/phases?item_id=${encodeURIComponent(itemId)}&include_sub_item_breakdown=true`
+      );
       const data = await res.json();
       if (data.data) {
         // 按 start_date 升序排序（最早的在上面）

@@ -1,7 +1,8 @@
 'use client';
 
 import { Pencil, Trash2, History, Target, ArrowUpRight } from 'lucide-react';
-import type { Phase, PhaseStatus } from '@/types/teto';
+import type { Phase, PhaseStatus, PhaseSubItemBreakdown } from '@/types/teto';
+import { formatDurationMinutes } from '@/lib/activity/stats-utils';
 
 interface PhaseCardProps {
   phase: Phase;
@@ -25,7 +26,39 @@ const STATUS_COLORS: Record<PhaseStatus, string> = {
   '停滞': 'bg-orange-100 text-orange-700',
 };
 
+function SubItemBreakdownBar({ rows }: { rows: PhaseSubItemBreakdown[] }) {
+  const total = rows.reduce((s, r) => s + r.record_count, 0);
+  if (total === 0) return null;
+
+  return (
+    <div className="mt-2 pt-2 border-t border-slate-100/80">
+      <p className="text-[10px] font-medium text-slate-500 mb-1.5">职能分布（本阶段）</p>
+      <div className="flex flex-wrap gap-1">
+        {rows.map((row) => {
+          const key = row.sub_item_id ?? '__none__';
+          const label = row.sub_item_title ?? '未选职能';
+          return (
+            <span
+              key={key}
+              className="inline-flex items-center gap-1 rounded-md bg-purple-50/80 px-2 py-0.5 text-[10px] text-purple-700"
+              title={
+                row.total_duration_minutes > 0
+                  ? formatDurationMinutes(row.total_duration_minutes)
+                  : undefined
+              }
+            >
+              {label}
+              <span className="text-purple-400 tabular-nums">{row.record_count}</span>
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function PhaseCard({ phase, goalTitle, onEdit, onDelete, onPromoteToItem }: PhaseCardProps) {
+  const breakdown = phase.sub_item_breakdown ?? phase.aggregation?.sub_item_breakdown;
   // 格式化日期显示
   const formatDate = (dateStr: string | null): string => {
     if (!dateStr) return '未设置';
@@ -90,6 +123,8 @@ export default function PhaseCard({ phase, goalTitle, onEdit, onDelete, onPromot
               <span className="text-[10px] text-purple-600 truncate">{goalTitle}</span>
             </div>
           )}
+
+          {breakdown && breakdown.length > 0 && <SubItemBreakdownBar rows={breakdown} />}
         </div>
         
         {/* 操作 */}
