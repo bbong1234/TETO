@@ -10,6 +10,7 @@ import type {
 import { getOrCreateRecordDay } from './record-days';
 import { attachTagsToRecord, replaceRecordTags } from './tags';
 import { computeTrustLevel } from '@/lib/trust/compute-trust';
+import { generateDisplayNoForDate } from '@/lib/activity/format-record-display-no';
 
 /**
  * 创建记录
@@ -28,6 +29,10 @@ export async function createRecord(
   const recordDate = payload.time_anchor_date || payload.date;
   const recordDay = await getOrCreateRecordDay(userId, recordDate);
 
+  const displayNo =
+    (payload as { display_no?: string }).display_no ??
+    (await generateDisplayNoForDate(supabase, userId, recordDate));
+
   const { tag_ids, date, ...recordData } = payload;
 
   const { data, error } = await supabase
@@ -35,6 +40,7 @@ export async function createRecord(
     .insert({
       user_id: userId,
       record_day_id: recordDay.id,
+      display_no: displayNo,
       ...recordData,
       type: recordData.type ?? '发生',
       sort_order: recordData.sort_order ?? 0,

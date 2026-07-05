@@ -10,7 +10,7 @@ export function CompactInput({
   placeholder,
   type = 'text',
 }: {
-  icon: ReactNode;
+  icon?: ReactNode;
   label: string;
   value: string;
   onChange: (v: string) => void;
@@ -19,7 +19,7 @@ export function CompactInput({
 }) {
   return (
     <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 focus-within:border-blue-400 focus-within:bg-white transition-colors">
-      <span className="text-slate-400 shrink-0">{icon}</span>
+      {icon && <span className="text-slate-400 shrink-0">{icon}</span>}
       <div className="flex-1 min-w-0">
         <span className="block text-[9px] text-slate-400 leading-none mb-0.5">{label}</span>
         <input

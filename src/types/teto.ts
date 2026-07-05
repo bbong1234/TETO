@@ -31,6 +31,38 @@ export type RecordLinkType = typeof RECORD_LINK_TYPES[number];
 export const LIFECYCLE_STATUSES = ['active', 'completed', 'postponed', 'cancelled'] as const;
 export type LifecycleStatus = typeof LIFECYCLE_STATUSES[number];
 
+/** 活动会话状态（计时中 record 专用） */
+export const SESSION_STATES = ['running', 'paused', 'nested_paused'] as const;
+export type SessionState = typeof SESSION_STATES[number];
+
+/** 活动事件类型 */
+export const ACTIVITY_EVENT_TYPES = [
+  'progress', 'idea', 'plan', 'milestone',
+  'ai_user', 'ai_reply',
+  'pause', 'resume', 'sub_start', 'sub_end',
+  'structured',
+] as const;
+export type ActivityEventType = typeof ACTIVITY_EVENT_TYPES[number];
+
+export interface ActivityEvent {
+  id: string;
+  user_id: string;
+  session_id: string;
+  event_type: ActivityEventType;
+  content: string;
+  payload: { [key: string]: unknown };
+  occurred_at: string;
+  created_at: string;
+}
+
+export interface CreateActivityEventPayload {
+  session_id: string;
+  event_type: ActivityEventType;
+  content?: string;
+  payload?: { [key: string]: unknown };
+  occurred_at?: string;
+}
+
 export const ITEM_STATUSES = ['活跃', '推进中', '放缓', '停滞', '已完成', '已搁置'] as const;
 export type ItemStatus = typeof ITEM_STATUSES[number];
 
@@ -116,7 +148,16 @@ export interface Record {
   batch_id?: string | null;              // 同源拆分批次 ID
   input_id?: string | null;             // 用户输入编号（TETO 1.6）
   parent_input_id?: string | null;      // 复合句父输入编号
+  /** 用户可见展示编号 YYYYMMDD + 序号 */
+  display_no?: string | null;
   lifecycle_status?: LifecycleStatus;    // 生命周期状态
+  // === 活动会话字段 ===
+  paused_total_seconds?: number;
+  paused_at?: string | null;
+  parent_session_id?: string | null;
+  session_state?: SessionState;
+  /** 查询时附带的活动事件 */
+  activity_events?: ActivityEvent[];
   // 规律/历史字段
   data_nature?: 'fact' | 'inferred';      // 数据性质：fact=原始事实, inferred=推断条目
   is_period_rule?: boolean;              // 是否为概括性规律记录
@@ -157,6 +198,8 @@ export interface Record {
   // === TETO 1.6 录入与计算重构 新增 ===
   input_unit_id?: string | null;          // 反向追溯：本 record 来自哪个 input_unit
   record_quality_tag?: RecordQualityTag | null; // 前端色条标签
+  /** 弱关联对象线索：公司名、人名、客户名等，可升级为正式事项 */
+  related_objects?: string[] | null;
   created_at: string;
   updated_at: string;
   // 关联数据（查询时可能附带）
@@ -387,6 +430,8 @@ export interface CreateRecordPayload {
   // === TETO 1.6 录入与计算重构 新增 ===
   input_unit_id?: string | null;
   record_quality_tag?: RecordQualityTag | null;
+  /** 弱关联对象线索 */
+  related_objects?: string[] | null;
 }
 
 /** 更新记录载荷。所有字段可选。`occurred_at`、`item_id` 可传 `null` 清除。详见 {@link CreateRecordPayload}。 */

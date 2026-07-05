@@ -325,7 +325,8 @@ export function validateActivityContext(
 export function resolveActivityContextFromRecord(
   items: Item[],
   itemId: string | null | undefined,
-  subItemId?: string | null
+  subItemId?: string | null,
+  hints?: { itemTitle?: string; subItemTitle?: string }
 ): ActivityContextShape {
   const base: ActivityContextShape = {
     categoryItemId: '',
@@ -336,7 +337,14 @@ export function resolveActivityContextFromRecord(
 
   const path = getItemPath(items, itemId);
   const item = path[path.length - 1];
-  if (!item) return { ...base, itemId };
+  if (!item) {
+    return {
+      ...base,
+      itemId,
+      itemTitle: hints?.itemTitle,
+      subItemTitle: hints?.subItemTitle,
+    };
+  }
 
   if (subItemId) {
     const l1 = path[0];

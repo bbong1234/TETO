@@ -5,6 +5,11 @@ import type { ParsedSemantic } from '@/types/semantic';
 import type { Item, Record as TetoRecord, RecordType, UpdateRecordPayload, UserRecordType } from '@/types/teto';
 import { USER_RECORD_TYPES } from '@/types/teto';
 import { generateContentSummary } from '@/lib/utils/generate-content-summary';
+import {
+  mergeToolLabelForSave,
+  recordHasFinance,
+  splitToolLabelForForm,
+} from '@/lib/activity/finance-account';
 
 export interface RecordEditFormState {
   content: string;
@@ -38,8 +43,11 @@ export interface RecordEditFormState {
   relationRolesStr: string;
   bodyState: string;
   moneyCurrency: string;
+  relatedObjectsStr: string;
   resultText: string;
   toolLabel: string;
+  /** 收支账户（v1 落库 tool_label；与属性·工具分离展示） */
+  financeAccount: string;
   rawInput: string;
   goalId: string;
 }
@@ -85,18 +93,24 @@ export function isLegacyRecordType(type: string): boolean {
 
 export function recordToFormState(record: TetoRecord, items: Item[]): RecordEditFormState {
   const anchorDate = resolveRecordAnchorDate(record);
+  const hasFinance = recordHasFinance(record.cost, record.money_direction);
+  const { financeAccount, toolLabel } = splitToolLabelForForm(record.tool_label, hasFinance);
+  const moodTag = record.tags?.find((t) => t.type === 'mood');
+  const moodFromTag = moodTag?.name ?? '';
   return {
     content: record.content ?? '',
     type: record.type,
     tagIds: record.tags?.map((t) => t.id) ?? [],
     activityContext: {
-      ...resolveActivityContextFromRecord(items, record.item_id, record.sub_item_id),
+      ...resolveActivityContextFromRecord(items, record.item_id, record.sub_item_id, {
+        itemTitle: record.item?.title ?? undefined,
+      }),
       phaseId: record.phase_id || '',
     },
     recordDate: anchorDate,
     occurredAt: isoToTimeHHMM(record.occurred_at),
     occurredAtEnd: isoToTimeHHMM(record.occurred_at_end),
-    mood: record.mood || '',
+    mood: record.mood || moodFromTag || '',
     energy: record.energy || '',
     status: record.status || '',
     note: record.note || '',
@@ -120,8 +134,10 @@ export function recordToFormState(record: TetoRecord, items: Item[]): RecordEdit
     relationRolesStr: (record.relation_roles || []).join(', '),
     bodyState: record.body_state || '',
     moneyCurrency: record.money_currency || 'CNY',
+    relatedObjectsStr: (record.related_objects || []).join(', '),
     resultText: record.result || '',
-    toolLabel: record.tool_label || '',
+    toolLabel,
+    financeAccount,
     rawInput: record.raw_input || '',
     goalId: record.goal_id || '',
   };
@@ -172,8 +188,16 @@ export function formStateToUpdatePayload(
     item_id: resolveTargetItemId(form.activityContext) || null,
     sub_item_id: form.activityContext.subItemId || null,
     phase_id: form.activityContext.phaseId || null,
-    tool_label: form.toolLabel.trim() || null,
+    tool_label: mergeToolLabelForSave(
+      form.financeAccount,
+      form.toolLabel,
+      recordHasFinance(
+        form.cost ? parseFloat(form.cost) : null,
+        form.moneyDirection || null
+      )
+    ),
     goal_id: form.goalId.trim() || null,
+    related_objects: splitList(form.relatedObjectsStr) ?? null,
     occurred_at: form.occurredAt
       ? dateAndTimeToIso(form.recordDate, form.occurredAt)
       : null,
