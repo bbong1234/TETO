@@ -59,6 +59,12 @@ function buildCreateItemRow(
   if (includeParent) {
     row.parent_item_id = payload.parent_item_id ?? null;
   }
+  if (payload.default_function_tag_id !== undefined) {
+    row.default_function_tag_id = payload.default_function_tag_id;
+  }
+  if (payload.default_tool_label !== undefined) {
+    row.default_tool_label = payload.default_tool_label;
+  }
   return row;
 }
 
@@ -141,6 +147,8 @@ export async function updateItem(
   if (payload.started_at !== undefined) updateData.started_at = payload.started_at;
   if (payload.ended_at !== undefined) updateData.ended_at = payload.ended_at;
   if (payload.folder_id !== undefined) updateData.folder_id = payload.folder_id;
+  if (payload.default_function_tag_id !== undefined) updateData.default_function_tag_id = payload.default_function_tag_id;
+  if (payload.default_tool_label !== undefined) updateData.default_tool_label = payload.default_tool_label;
   const includeParent = await supportsParentItemId(supabase);
   if (payload.parent_item_id !== undefined) {
     if (!includeParent && payload.parent_item_id) {
@@ -361,7 +369,16 @@ const ITEM_LITE_COLUMNS_BASE =
   'id, user_id, title, description, status, color, icon, is_pinned, started_at, ended_at, folder_id, created_at, updated_at';
 
 const ITEM_LITE_COLUMNS =
+  'id, user_id, title, description, status, color, icon, is_pinned, started_at, ended_at, folder_id, parent_item_id, default_function_tag_id, default_tool_label, created_at, updated_at';
+
+/** 未执行 sql/034 时，default_* 列缺失的回退列集 */
+const ITEM_LITE_COLUMNS_NO_DEFAULTS =
   'id, user_id, title, description, status, color, icon, is_pinned, started_at, ended_at, folder_id, parent_item_id, created_at, updated_at';
+
+function isMissingDefaultsColumnError(message: string): boolean {
+  // 兼容 PostgREST（"schema cache"）与 Postgres（"does not exist"）两类报错
+  return message.includes('default_function_tag_id') || message.includes('default_tool_label');
+}
 
 /**
  * 轻量事项列表（记录页选择器用）：无 phase/record 计数与时长聚合
@@ -395,6 +412,19 @@ export async function listItemsLite(
   const { data, error } = await q.order('created_at', { ascending: false });
 
   if (error) {
+    // 034 迁移未执行时回退到不含 default_* 列的查询
+    if (includeParent && isMissingDefaultsColumnError(error.message)) {
+      let fb = supabase.from('items').select(ITEM_LITE_COLUMNS_NO_DEFAULTS).eq('user_id', userId);
+      if (query.status) fb = fb.eq('status', query.status);
+      if (query.is_pinned !== undefined) fb = fb.eq('is_pinned', query.is_pinned);
+      if (query.folder_id !== undefined) {
+        fb = query.folder_id === null ? fb.is('folder_id', null) : fb.eq('folder_id', query.folder_id);
+      }
+      fb = applyParentItemIdQuery(fb, query, includeParent);
+      const fallback = await fb.order('created_at', { ascending: false });
+      if (fallback.error) throw mapItemDbError('列出事项失败', fallback.error.message);
+      return fallback.data ?? [];
+    }
     throw mapItemDbError('列出事项失败', error.message);
   }
 

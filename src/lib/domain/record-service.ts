@@ -414,8 +414,10 @@ export async function completeRecordSafely(params: {
   const occurredAt = body.occurred_at || nowISO
   const recordDate = body.date || occurredAt.split('T')[0] || todayStr
 
+  const completionText = body.completion_content?.trim()
   const newPayload = copyRecordFields(original, {
-    content: body.completion_content?.trim() || original.content,
+    content: completionText || original.content,
+    result: completionText || original.result || undefined,
     date: recordDate,
     type: '发生',
     occurred_at: occurredAt,

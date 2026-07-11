@@ -11,7 +11,9 @@ export async function GET(request: NextRequest) {
   try {
     const ctx = withTrace(request);
     const userId = await getCurrentUserId();
-    const result = await listTags(userId);
+    const q = request.nextUrl.searchParams.get('q') ?? undefined;
+    const type = request.nextUrl.searchParams.get('type') ?? undefined;
+    const result = await listTags(userId, q, type);
     return apiSuccess(result, ctx.traceId);
   } catch (error) {
     return handleApiError(error);

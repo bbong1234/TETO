@@ -20,7 +20,9 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 
 /** 校验记录 payload，返回错误消息字符串，通过则返回 null */
 function validateRecordPayload(body: CreateRecordPayload): string | null {
-  if (!body.content) return 'content 为必填字段';
+  if (!body.content?.trim() && !body.raw_input?.trim()) {
+    return 'content 或 raw_input 为必填字段';
+  }
   if (!body.date) return 'date 为必填字段';
   if (!DATE_REGEX.test(body.date)) return 'date 格式无效，应为 YYYY-MM-DD';
   // 旧类型归一化（情绪/花费/结果 → 发生）
@@ -78,6 +80,9 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get('search');
     const limit = searchParams.get('limit');
     const order = searchParams.get('order');
+    const unassigned = searchParams.get('unassigned');
+    const review_status = searchParams.get('review_status');
+    const has_item_id = searchParams.get('has_item_id');
 
     if (date && !DATE_REGEX.test(date)) {
       return apiError(ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED, 'date 格式无效，应为 YYYY-MM-DD', ctx.traceId);
@@ -115,6 +120,19 @@ export async function GET(request: NextRequest) {
     }
     if (order === 'asc' || order === 'desc') {
       query.order = order;
+    }
+    if (unassigned === 'true') {
+      query.unassigned = true;
+    }
+    const VALID_REVIEW_STATUSES = ['unchecked', 'confirmed', 'corrected', 'disputed'] as const;
+    if (review_status) {
+      if (!VALID_REVIEW_STATUSES.includes(review_status as typeof VALID_REVIEW_STATUSES[number])) {
+        return apiError(ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED, 'review_status 无效', ctx.traceId, 400);
+      }
+      query.review_status = review_status as typeof VALID_REVIEW_STATUSES[number];
+    }
+    if (has_item_id === 'true') {
+      query.has_item_id = true;
     }
 
     const result = await listRecords(userId, query);

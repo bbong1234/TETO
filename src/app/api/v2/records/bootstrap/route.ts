@@ -4,6 +4,8 @@ import { listItemsLite } from '@/lib/db/items';
 import { listRecords } from '@/lib/db/records';
 import { getCurrentActivity } from '@/lib/db/activities';
 import { listUserTools } from '@/lib/db/user-tools';
+import { listTags } from '@/lib/db/tags';
+import { getUserRules } from '@/lib/db/user-rules';
 import type { RecordsQuery } from '@/types/teto';
 import { handleApiError } from '@/lib/api/error-handler';
 import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
@@ -28,6 +30,7 @@ export async function GET(request: NextRequest) {
     const item_id = searchParams.get('item_id');
     const type = searchParams.get('type');
     const tag_id = searchParams.get('tag_id');
+    const search = searchParams.get('search');
     const limit = searchParams.get('limit');
 
     if (date && !DATE_REGEX.test(date)) {
@@ -39,16 +42,19 @@ export async function GET(request: NextRequest) {
     if (item_id) query.item_id = item_id;
     if (type) query.type = type as RecordsQuery['type'];
     if (tag_id) query.tag_id = tag_id;
+    if (search?.trim()) query.search = search.trim();
     if (limit) {
       const n = parseInt(limit, 10);
       if (!Number.isNaN(n) && n > 0) query.limit = n;
     }
 
-    const [items, records, current_activity, tools] = await Promise.all([
+    const [items, records, current_activity, tools, tags, user_rules] = await Promise.all([
       listItemsLite(userId, {}),
       listRecords(userId, query),
       getCurrentActivity(userId),
       listUserTools(userId),
+      listTags(userId),
+      getUserRules(userId, { is_active: true }),
     ]);
 
     return apiSuccess(
@@ -57,6 +63,8 @@ export async function GET(request: NextRequest) {
         records,
         current_activity,
         tools,
+        tags,
+        user_rules,
       },
       ctx.traceId
     );

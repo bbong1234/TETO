@@ -1,14 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { X, Save, Target, Loader2, AlertTriangle, Lightbulb, Pencil } from 'lucide-react';
-import type { Goal, GoalStatus, GoalRuleType, GoalOperator, GoalPeriod, CreateGoalPayload, UpdateGoalPayload, SubItem, ParsedGoal, ParsedGoalSuggestion } from '@/types/teto';
+import type { Goal, GoalStatus, GoalRuleType, GoalOperator, GoalPeriod, CreateGoalPayload, UpdateGoalPayload, SubItem, Phase, ParsedGoal, ParsedGoalSuggestion } from '@/types/teto';
 import { GOAL_STATUSES, GOAL_RULE_TYPES, GOAL_OPERATORS, GOAL_PERIODS } from '@/types/teto';
 
 interface GoalFormProps {
   goal?: Goal | null;
   /** 预设归属事项ID */
   itemId?: string | null;
+  /** 可选事项列表（未预设 itemId 时用于选择） */
+  items?: { id: string; title: string }[];
   /** 预设归属阶段ID */
   phaseId?: string | null;
   /** 可选阶段列表 */
@@ -28,9 +30,67 @@ const RULE_TYPE_LABELS: Record<GoalRuleType, { label: string; icon: string; colo
   '周期性限制': { label: '周期性限制', icon: '🚫', color: 'bg-red-50 text-red-700 border-red-200' },
 };
 
-export default function GoalForm({ goal, itemId, phaseId, phases, subItems, preselectedSubItemId, onClose, onSaved, onError }: GoalFormProps) {
+export default function GoalForm({
+  goal,
+  itemId: presetItemId,
+  items = [],
+  phaseId,
+  phases: phasesProp,
+  subItems: subItemsProp,
+  preselectedSubItemId,
+  onClose,
+  onSaved,
+  onError,
+}: GoalFormProps) {
   const isEditing = !!goal;
   const isCompleted = isEditing && goal?.status === '已完成';
+
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(
+    goal?.item_id ?? presetItemId ?? null
+  );
+  const [loadedSubItems, setLoadedSubItems] = useState<SubItem[]>(subItemsProp ?? []);
+  const [loadedPhases, setLoadedPhases] = useState<{ id: string; title: string }[]>(
+    phasesProp ?? []
+  );
+  const [loadingItemMeta, setLoadingItemMeta] = useState(false);
+
+  const effectiveItemId = presetItemId ?? selectedItemId;
+  const subItems = subItemsProp ?? loadedSubItems;
+  const phases = phasesProp ?? loadedPhases;
+  const showItemPicker = !presetItemId && !isEditing && items.length > 0;
+
+  const loadItemMeta = useCallback(async (id: string) => {
+    setLoadingItemMeta(true);
+    try {
+      const [subRes, phaseRes] = await Promise.all([
+        fetch(`/api/v2/sub-items?item_id=${encodeURIComponent(id)}`),
+        fetch(
+          `/api/v2/phases?item_id=${encodeURIComponent(id)}&status=${encodeURIComponent('进行中')}`
+        ),
+      ]);
+      const subJson = await subRes.json();
+      const phaseJson = await phaseRes.json();
+      if (subRes.ok) setLoadedSubItems(subJson.data ?? []);
+      if (phaseRes.ok) {
+        const list: Phase[] = phaseJson.data ?? [];
+        setLoadedPhases(list.map((p) => ({ id: p.id, title: p.title })));
+      }
+    } catch {
+      /* 非致命 */
+    } finally {
+      setLoadingItemMeta(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (subItemsProp || phasesProp) return;
+    if (!effectiveItemId) {
+      setLoadedSubItems([]);
+      setLoadedPhases([]);
+      return;
+    }
+    void loadItemMeta(effectiveItemId);
+  }, [effectiveItemId, subItemsProp, phasesProp, loadItemMeta]);
 
   // ── 自然语言输入状态 ──
   const [inputText, setInputText] = useState('');
@@ -51,12 +111,21 @@ export default function GoalForm({ goal, itemId, phaseId, phases, subItems, pres
   const [unit, setUnit] = useState(goal?.unit || '');
   const [deadline, setDeadline] = useState(goal?.deadline || '');
   const [startDate, setStartDate] = useState(goal?.start_date || '');
-  const [selectedSubItemId, setSelectedSubItemId] = useState<string | null>(goal?.sub_item_id ?? preselectedSubItemId ?? null);
-  const [selectedPhaseId, setSelectedPhaseId] = useState<string | null>(goal?.phase_id ?? phaseId ?? null);
+  const [selectedSubItemId, setSelectedSubItemId] = useState<string | null>(
+    goal?.sub_item_id ?? preselectedSubItemId ?? null
+  );
+  const [selectedPhaseId, setSelectedPhaseId] = useState<string | null>(
+    goal?.phase_id ?? phaseId ?? null
+  );
   const [status, setStatus] = useState<GoalStatus>(goal?.status || '进行中');
   const [saving, setSaving] = useState(false);
 
-  // 编辑已有目标时，直接显示规则卡片并展开编辑面板
+  const handleItemChange = (id: string) => {
+    setSelectedItemId(id || null);
+    setSelectedSubItemId(null);
+    setSelectedPhaseId(null);
+  };
+
   if (isEditing && !showRuleCard && !parseResult) {
     setShowRuleCard(true);
     setEditingRule(true);
@@ -73,7 +142,7 @@ export default function GoalForm({ goal, itemId, phaseId, phases, subItems, pres
       const res = await fetch('/api/v2/goals/parse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal_text: inputText.trim(), item_id: itemId }),
+        body: JSON.stringify({ goal_text: inputText.trim(), item_id: effectiveItemId }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || '解析失败');
@@ -148,7 +217,7 @@ export default function GoalForm({ goal, itemId, phaseId, phases, subItems, pres
           title: goalText,
           goal_text: goalText,
           status: '进行中',
-          item_id: itemId ?? undefined,
+          item_id: effectiveItemId ?? undefined,
           phase_id: selectedPhaseId ?? undefined,
           sub_item_id: selectedSubItemId ?? undefined,
           rule_type: ruleType,
@@ -216,7 +285,35 @@ export default function GoalForm({ goal, itemId, phaseId, phases, subItems, pres
           {/* 已完成目标提示 */}
           {isCompleted && (
             <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3">
-              <p className="text-xs font-medium text-amber-700">此目标已完成，数据已锁定不可修改。仅可将状态回退为「放弃」或「暂停」。</p>
+              <p className="text-xs font-medium text-amber-700">
+                此目标已完成，数据已锁定不可修改。仅可将状态回退为「放弃」或「暂停」。
+              </p>
+            </div>
+          )}
+
+          {showItemPicker && (
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-slate-500">
+                关联事项
+              </label>
+              <select
+                value={selectedItemId ?? ''}
+                onChange={(e) => handleItemChange(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">不关联事项</option>
+                {items.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+              </select>
+              {loadingItemMeta && (
+                <p className="mt-1 flex items-center gap-1 text-[10px] text-slate-400">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  加载子项与阶段…
+                </p>
+              )}
             </div>
           )}
 

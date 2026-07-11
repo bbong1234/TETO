@@ -133,6 +133,14 @@ export function useRecordEditForm({
     }, AUTO_SAVE_MS);
   }, []);
 
+  const flushSave = useCallback(async () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    await saveRef.current();
+  }, []);
+
   const patchForm = useCallback(
     (patch: Partial<RecordEditFormState>) => {
       setForm((prev) => ({ ...prev, ...patch }));
@@ -143,7 +151,11 @@ export function useRecordEditForm({
 
   useEffect(() => {
     return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+        void saveRef.current();
+      }
       if (savedFadeRef.current) clearTimeout(savedFadeRef.current);
     };
   }, []);
@@ -188,6 +200,7 @@ export function useRecordEditForm({
     form,
     patchForm,
     save,
+    flushSave,
     remove,
     saving,
     deleting,

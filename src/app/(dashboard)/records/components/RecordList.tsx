@@ -1,6 +1,6 @@
 'use client';
 
-import type { Record } from '@/types/teto';
+import type { Item, Record } from '@/types/teto';
 import RecordItem from './RecordItem';
 
 function formatTimeShort(dateStr: string | null | undefined): string {
@@ -56,6 +56,7 @@ function adjustPlanTimeText(timeText: string, anchorDate: string | null | undefi
 
 interface RecordListProps {
   records: Record[];
+  allItems?: Item[];
   onRecordClick: (record: Record) => void;
   onStarToggle: (record: Record) => void;
   compact?: boolean;
@@ -72,9 +73,11 @@ interface RecordListProps {
   onConvertToItem?: (record: Record) => void;
   /** 记录转目标 */
   onConvertToGoal?: (record: Record) => void;
+  /** 确认 AI 分类建议 */
+  onConfirmClassification?: (record: Record) => void;
 }
 
-export default function RecordList({ records, onRecordClick, onStarToggle, compact, aiPendingIds, onComplete, onPostpone, onCancel, onConvertToPlan, onConvertToItem, onConvertToGoal }: RecordListProps) {
+export default function RecordList({ records, allItems, onRecordClick, onStarToggle, compact, aiPendingIds, onComplete, onPostpone, onCancel, onConvertToPlan, onConvertToItem, onConvertToGoal, onConfirmClassification }: RecordListProps) {
   if (records.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-slate-400">
@@ -204,6 +207,7 @@ export default function RecordList({ records, onRecordClick, onStarToggle, compa
               <div className="flex-1 min-w-0">
                 <RecordItem
                   record={record}
+                  allItems={allItems}
                   onClick={() => onRecordClick(record)}
                   onStarToggle={() => onStarToggle(record)}
                   compact={compact}
@@ -214,6 +218,7 @@ export default function RecordList({ records, onRecordClick, onStarToggle, compa
                   onConvertToPlan={() => onConvertToPlan?.(record)}
                   onConvertToItem={() => onConvertToItem?.(record)}
                   onConvertToGoal={() => onConvertToGoal?.(record)}
+                  onConfirmClassification={onConfirmClassification ? () => onConfirmClassification(record) : undefined}
                 />
               </div>
             </div>

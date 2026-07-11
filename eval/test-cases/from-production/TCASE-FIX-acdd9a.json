@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-acdd9a",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260628-3my1wy",
+  "sourceDecisionId": "DEC-CORR-32d184bd",
+  "description": "用户将 \"item_id\" 从 \"a3abddc4-4769-491b-b0dd-5312fe5e8876\" 修正为 \"a3abddc4-4769-491b-b0dd-5312fe5e8876\"",
+  "input": {
+    "recordId": "32d184bd-4e61-4166-82b9-38d3577bb731",
+    "userInput": null
+  },
+  "expected": {
+    "item_id": "a3abddc4-4769-491b-b0dd-5312fe5e8876"
+  },
+  "actualProduction": {
+    "item_id": "a3abddc4-4769-491b-b0dd-5312fe5e8876"
+  },
+  "generatedAt": "2026-06-28T03:18:39.335Z"
+}

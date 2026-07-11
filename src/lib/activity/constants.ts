@@ -4,6 +4,9 @@
  */
 export const GAP_THRESHOLD_MINUTES = 5;
 
+/** 块时间 / 活动切换后撤销窗口时长（毫秒） */
+export const CANCEL_WINDOW_MS = 5000;
+
 export const GAP_THRESHOLD_HINT =
   `相邻活动间隔不足 ${GAP_THRESHOLD_MINUTES} 分钟不会标为空白；仅提示可补记，不要求填满 24 小时。`;
 
@@ -32,6 +35,18 @@ export const ACTIVITY_CATEGORY_PRESETS = [
 ] as const;
 
 export type ActivityCategoryPreset = (typeof ACTIVITY_CATEGORY_PRESETS)[number];
+
+/** 快速开始气泡兜底标签（历史不足时补齐，最多展示 6 个） */
+export const DEFAULT_QUICK_START_LABELS = [
+  '吃饭',
+  '睡觉',
+  '工作',
+  '学习',
+  '编程',
+  '运动',
+] as const;
+
+export type DefaultQuickStartLabel = (typeof DEFAULT_QUICK_START_LABELS)[number];
 
 /** 技能型大类：须建默认事项，记录挂在事项上 */
 export const SKILL_CATEGORY_PRESETS = [

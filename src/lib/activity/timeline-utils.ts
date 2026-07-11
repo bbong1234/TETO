@@ -1,6 +1,7 @@
 import type { Record, DayTimeline, TimelineEntry, Item, RecordType } from '@/types/teto';
 import { GAP_THRESHOLD_MINUTES } from '@/lib/activity/constants';
-import { buildRecordDisplayLabel } from './item-tree';
+import { buildTimelineEntryParts } from './item-tree';
+import { calcNetDurationMinutes, calcNetElapsedSeconds, isSessionPaused } from './session-utils';
 
 /** 记录是否归属某日（与记录页分组、feed 构建共用） */
 export function recordBelongsToDay(record: Record, date: string): boolean {
@@ -57,20 +58,98 @@ function formatTimeHHMM(iso: string | null | undefined): string | undefined {
   return `${h}:${m}`;
 }
 
-function buildEntryText(record: Record, items?: Item[]): string {
-  const label = buildRecordDisplayLabel(record, items);
-  if (label) return label;
-  const semantic = [record.action_text, record.event_text].filter(Boolean);
-  if (semantic.length > 0) return semantic.join('、');
-  return record.content;
+function buildEntryFields(
+  record: Record,
+  items?: Item[],
+  isCurrent = false,
+  subItemTitles?: ReadonlyMap<string, string>
+): Pick<TimelineEntry, 'text' | 'tag_path' | 'action_label' | 'detail_text'> {
+  const parts = buildTimelineEntryParts(record, items, { isCurrent, subItemTitles });
+  const detail = [parts.timeText, parts.detail].filter(Boolean).join(' ');
+  return {
+    text: parts.text,
+    tag_path: parts.tagPath || undefined,
+    action_label: parts.action || undefined,
+    detail_text: detail || undefined,
+  };
 }
 
 function isTimedActivityRecord(record: Record): boolean {
   return record.type === '发生' && !!record.occurred_at;
 }
 
+function isActiveOccurrence(record: Record): boolean {
+  return record.type === '发生' && record.lifecycle_status === 'active' && !record.occurred_at_end;
+}
+
+/** 时间线中唯一「进行中」条目的 id（与 CurrentActivityCard 一致） */
+export function resolveTimelineCurrentId(
+  records: Record[],
+  currentActivityId?: string | null
+): string | null {
+  if (currentActivityId) {
+    const match = records.find((r) => r.id === currentActivityId);
+    if (match && isActiveOccurrence(match)) {
+      return currentActivityId;
+    }
+  }
+  const actives = records.filter(isActiveOccurrence);
+  const running = actives.find((r) => {
+    const state = r.session_state;
+    if (state === 'paused' || state === 'nested_paused') return false;
+    return state === 'running' || !state;
+  });
+  if (running) return running.id;
+  if (actives.length === 1) return actives[0].id;
+  return null;
+}
+
+function resolveDisplayEndIso(record: Record, isCurrent: boolean): string | null | undefined {
+  if (isCurrent) return null;
+  if (record.occurred_at_end) return record.occurred_at_end;
+  if (isSessionPaused(record.session_state) && record.paused_at) {
+    return record.paused_at;
+  }
+  if (
+    record.lifecycle_status !== 'active' &&
+    record.occurred_at &&
+    record.duration_minutes != null
+  ) {
+    return new Date(
+      Date.parse(record.occurred_at) + record.duration_minutes * 60000
+    ).toISOString();
+  }
+  return null;
+}
+
 function calcMinutesBetween(startIso: string, endIso: string): number {
   return Math.max(0, Math.round((Date.parse(endIso) - Date.parse(startIso)) / 60000));
+}
+
+function calcSecondsBetween(startIso: string, endIso: string): number {
+  return Math.max(0, Math.round((Date.parse(endIso) - Date.parse(startIso)) / 1000));
+}
+
+function resolveDurationSeconds(
+  record: Record,
+  isCurrent: boolean,
+  endIso: string | null | undefined
+): number | undefined {
+  if (isCurrent) {
+    const secs = calcNetElapsedSeconds(record);
+    return secs > 0 ? secs : undefined;
+  }
+  if (endIso && record.occurred_at) {
+    const hasPause = (record.paused_total_seconds ?? 0) > 0 || !!record.paused_at;
+    const secs = hasPause
+      ? calcNetElapsedSeconds({ ...record, occurred_at_end: endIso })
+      : calcSecondsBetween(record.occurred_at, endIso);
+    return secs > 0 ? secs : undefined;
+  }
+  if (record.duration_minutes != null && record.duration_minutes > 0) {
+    return record.duration_minutes * 60;
+  }
+  return undefined;
 }
 
 function recordOnDate(record: Record, date: string): boolean {
@@ -107,22 +186,26 @@ function buildActivityEntries(
   records: Record[],
   date: string,
   items: Item[] = [],
-  includeGaps = true
+  includeGaps = true,
+  currentActivityId?: string | null,
+  subItemTitles?: ReadonlyMap<string, string>
 ): TimelineEntry[] {
   const timed = records
     .filter(isTimedActivityRecord)
     .filter((r) => occurredOnDate(r, date))
     .sort((a, b) => (a.occurred_at ?? '').localeCompare(b.occurred_at ?? ''));
 
+  const currentId = resolveTimelineCurrentId(timed, currentActivityId);
   const entries: TimelineEntry[] = [];
   let prevEndIso: string | null = null;
 
   for (const record of timed) {
     const startIso = record.occurred_at!;
-    const isCurrent = record.lifecycle_status === 'active' && !record.occurred_at_end;
+    const isCurrent = record.id === currentId;
 
-    if (includeGaps && prevEndIso) {
-      const gapMinutes = calcMinutesBetween(prevEndIso, startIso);
+    if (includeGaps && prevEndIso && Date.parse(startIso) > Date.parse(prevEndIso)) {
+      const gapSeconds = calcSecondsBetween(prevEndIso, startIso);
+      const gapMinutes = Math.round(gapSeconds / 60);
       if (gapMinutes >= GAP_THRESHOLD_MINUTES) {
         entries.push({
           id: `gap:${prevEndIso}:${startIso}`,
@@ -132,18 +215,29 @@ function buildActivityEntries(
           text: '空白时间',
           is_gap: true,
           duration_minutes: gapMinutes,
+          duration_seconds: gapSeconds,
         });
       }
     }
 
-    const endIso = record.occurred_at_end;
+    const displayEndIso = resolveDisplayEndIso(record, isCurrent);
+    const endIso = displayEndIso ?? record.occurred_at_end;
+    const hasPause = (record.paused_total_seconds ?? 0) > 0 || !!record.paused_at;
     let duration: number | undefined;
-    if (record.duration_minutes != null) {
+    if (record.duration_minutes != null && !isCurrent) {
       duration = record.duration_minutes;
-    } else if (record.occurred_at_end) {
-      duration = calcMinutesBetween(record.occurred_at!, record.occurred_at_end);
+    } else if (endIso) {
+      duration = hasPause
+        ? calcNetDurationMinutes({ ...record, occurred_at_end: endIso })
+        : calcMinutesBetween(record.occurred_at!, endIso);
     } else if (isCurrent) {
-      duration = calcMinutesBetween(record.occurred_at!, new Date().toISOString());
+      duration = hasPause
+        ? calcNetDurationMinutes(record)
+        : calcMinutesBetween(record.occurred_at!, new Date().toISOString());
+    }
+    const durationSeconds = resolveDurationSeconds(record, isCurrent, endIso ?? undefined);
+    if (durationSeconds != null && (duration == null || duration === 0)) {
+      duration = Math.max(0, Math.round(durationSeconds / 60));
     }
 
     entries.push({
@@ -152,24 +246,34 @@ function buildActivityEntries(
       record_type: '发生',
       start_time: formatTimeHHMM(startIso),
       end_time: isCurrent ? undefined : formatTimeHHMM(endIso),
-      text: buildEntryText(record, items),
+      ...buildEntryFields(record, items, isCurrent, subItemTitles),
       is_current: isCurrent,
       occurred_at: isCurrent ? startIso : undefined,
       duration_minutes: duration,
+      duration_seconds: durationSeconds,
       item_title: record.item?.title,
+      is_unassigned: !record.item_id,
     });
 
-    if (record.occurred_at_end) {
-      prevEndIso = record.occurred_at_end;
+    const chainEndIso = endIso ?? null;
+    if (chainEndIso) {
+      prevEndIso = chainEndIso;
     } else if (isCurrent) {
       prevEndIso = null;
+    } else if (!prevEndIso || Date.parse(startIso) > Date.parse(prevEndIso)) {
+      // 瞬时记录（无结束时间）：用开始时间推进链，避免重复空白段
+      prevEndIso = startIso;
     }
   }
 
   return entries;
 }
 
-function buildTimedFeedEntry(record: Record, items?: Item[]): TimelineEntry | null {
+function buildTimedFeedEntry(
+  record: Record,
+  items?: Item[],
+  subItemTitles?: ReadonlyMap<string, string>
+): TimelineEntry | null {
   if (!record.occurred_at) return null;
   const kind = feedKindForType(record.type);
   const start = formatTimeHHMM(record.occurred_at);
@@ -180,21 +284,27 @@ function buildTimedFeedEntry(record: Record, items?: Item[]): TimelineEntry | nu
     record_type: record.type,
     start_time: start,
     end_time: end,
-    text: buildEntryText(record, items),
+    ...buildEntryFields(record, items, false, subItemTitles),
     item_title: record.item?.title,
     time_label: record.time_text ?? undefined,
+    is_unassigned: !record.item_id,
   };
 }
 
-function buildUntimedFeedEntry(record: Record, items?: Item[]): TimelineEntry {
+function buildUntimedFeedEntry(
+  record: Record,
+  items?: Item[],
+  subItemTitles?: ReadonlyMap<string, string>
+): TimelineEntry {
   const kind = feedKindForType(record.type);
   return {
     id: record.id,
     kind,
     record_type: record.type,
-    text: buildEntryText(record, items),
+    ...buildEntryFields(record, items, false, subItemTitles),
     item_title: record.item?.title,
     time_label: record.time_text ?? undefined,
+    is_unassigned: !record.item_id,
   };
 }
 
@@ -207,9 +317,14 @@ export function buildDayFeedFromRecords(
   date: string,
   label = '今天',
   items: Item[] = [],
-  options?: { includeGaps?: boolean }
+  options?: {
+    includeGaps?: boolean;
+    currentActivityId?: string | null;
+    subItemTitles?: ReadonlyMap<string, string>;
+  }
 ): DayTimeline {
   const includeGaps = options?.includeGaps !== false;
+  const subItemTitles = options?.subItemTitles;
   const dayRecords = records.filter((r) => recordOnDate(r, date));
 
   const pinnedPlans = dayRecords.filter(
@@ -218,14 +333,21 @@ export function buildDayFeedFromRecords(
 
   const pinnedIds = new Set(pinnedPlans.map((r) => r.id));
 
-  const activityEntries = buildActivityEntries(dayRecords, date, items, includeGaps);
+  const activityEntries = buildActivityEntries(
+    dayRecords,
+    date,
+    items,
+    includeGaps,
+    options?.currentActivityId,
+    subItemTitles
+  );
 
   const timedOthers: TimelineEntry[] = [];
   for (const record of dayRecords) {
     if (pinnedIds.has(record.id)) continue;
     if (record.type === '发生') continue;
     if (!occurredOnDate(record, date)) continue;
-    const entry = buildTimedFeedEntry(record, items);
+    const entry = buildTimedFeedEntry(record, items, subItemTitles);
     if (entry) timedOthers.push(entry);
   }
 
@@ -236,7 +358,7 @@ export function buildDayFeedFromRecords(
   });
 
   const pinnedEntries: TimelineEntry[] = pinnedPlans.map((record) => ({
-    ...buildUntimedFeedEntry(record, items),
+    ...buildUntimedFeedEntry(record, items, subItemTitles),
     is_pinned: true,
     kind: 'plan',
     record_type: '计划',
@@ -248,7 +370,7 @@ export function buildDayFeedFromRecords(
     if (record.type === '发生') continue;
     if (occurredOnDate(record, date)) continue;
     if (record.type === '计划' && !isActivePlan(record)) continue;
-    untimed.push(buildUntimedFeedEntry(record, items));
+    untimed.push(buildUntimedFeedEntry(record, items, subItemTitles));
   }
 
   const allEntries = [...pinnedEntries, ...mergedTimed, ...untimed];
@@ -284,3 +406,33 @@ export function buildDayTimelineFromRecords(
 }
 
 export { GAP_THRESHOLD_MINUTES };
+
+/** 今日时间线多选：可批量删除的真实记录条目（非空白、非投影段；进行中记录也可选） */
+export function getTimelineEntrySelectRejectReason(entry: TimelineEntry): string | null {
+  if (entry.is_gap) return 'is_gap';
+  if (entry.is_pinned) return 'is_pinned';
+  if (entry.id.startsWith('gap:')) return 'id_gap';
+  if (entry.id.startsWith('block-seg-')) return 'id_block_seg';
+  if (entry.id.startsWith('optimistic-block-seg-')) {
+    // 块时间停止拆段：已完成的乐观记录与真实记录同等可选
+    if (!entry.is_current && entry.end_time) return null;
+    return 'id_optimistic_block_seg';
+  }
+  if (entry.id.startsWith('session:')) return 'id_session';
+  if (entry.id.startsWith('optimistic-')) {
+    if (!entry.is_current && entry.end_time) return null;
+    return 'id_optimistic';
+  }
+  if (
+    entry.kind === 'activity' ||
+    entry.record_type === '发生' ||
+    Boolean(entry.start_time && entry.end_time)
+  ) {
+    return null;
+  }
+  return 'kind_mismatch';
+}
+
+export function isTimelineEntrySelectable(entry: TimelineEntry): boolean {
+  return getTimelineEntrySelectRejectReason(entry) === null;
+}

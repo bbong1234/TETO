@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Goal, Item } from '@/types/teto';
 import { resolveTargetItemId } from '@/lib/activity/item-tree';
 import type { RecordEditFormState } from '@/lib/activity/record-form';
-import { SectionLabel } from './EditableChipRow';
+import RecordDetailSection from './RecordDetailSection';
 
 interface RecordGoalSectionProps {
   form: RecordEditFormState;
@@ -64,8 +64,7 @@ export default function RecordGoalSection({
   const title = selected?.goal_text || selected?.title || goalBadge?.title;
 
   return (
-    <section>
-      <SectionLabel>目标</SectionLabel>
+    <RecordDetailSection title="目标">
       <div className="flex flex-wrap items-center gap-1.5">
         {form.goalId && title ? (
           <button
@@ -114,6 +113,6 @@ export default function RecordGoalSection({
           )}
         </div>
       )}
-    </section>
+    </RecordDetailSection>
   );
 }

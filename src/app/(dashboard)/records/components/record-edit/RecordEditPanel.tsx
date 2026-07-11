@@ -9,9 +9,8 @@ import RecordGoalSection from './RecordGoalSection';
 import RecordFinanceSection from './RecordFinanceSection';
 import RecordAttributesSection from './RecordAttributesSection';
 import RecordNoteSection from './RecordNoteSection';
-import RecordContextSection from './RecordContextSection';
 import RecordEditLinksSection from './RecordEditLinksSection';
-import { SectionLabel } from './EditableChipRow';
+import RecordDetailSection from './RecordDetailSection';
 
 interface RecordEditPanelProps {
   record: Record;
@@ -25,6 +24,7 @@ interface RecordEditPanelProps {
   onItemCreated?: (item: Item) => void;
   onTagCreated?: (tag: Tag) => void;
   onCreateError?: (message: string) => void;
+  onRecordPatched?: (record: Record) => void;
 }
 
 export default function RecordEditPanel({
@@ -39,12 +39,12 @@ export default function RecordEditPanel({
   onItemCreated,
   onTagCreated,
   onCreateError,
+  onRecordPatched,
 }: RecordEditPanelProps) {
   const hasLinks = !!(record.linked_records && record.linked_records.length > 0);
-  const eventInMore = !!form.eventText.trim();
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <RecordSourceSection record={record} form={form} onPatch={onPatch} />
       <RecordMetaSection form={form} originalRecord={record} onPatch={onPatch} />
       <RecordAttributionSection
@@ -66,14 +66,19 @@ export default function RecordEditPanel({
         onPatch={onPatch}
       />
       <RecordFinanceSection form={form} onPatch={onPatch} />
-      <RecordAttributesSection form={form} onPatch={onPatch} />
+      <RecordAttributesSection
+        record={record}
+        form={form}
+        items={items}
+        onPatch={onPatch}
+        onRecordPatched={onRecordPatched}
+        onError={onCreateError}
+      />
       <RecordNoteSection form={form} onPatch={onPatch} />
-      <RecordContextSection form={form} onPatch={onPatch} hideEventInContext={eventInMore} />
       {hasLinks && (
-        <section>
-          <SectionLabel>关联记录 ({record.linked_records!.length})</SectionLabel>
+        <RecordDetailSection title={`关联记录 (${record.linked_records!.length})`}>
           <RecordEditLinksSection recordId={record.id} />
-        </section>
+        </RecordDetailSection>
       )}
     </div>
   );

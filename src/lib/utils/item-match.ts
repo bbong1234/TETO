@@ -23,6 +23,110 @@ export interface ItemMatchResult {
   explain?: string;
 }
 
+export interface UserRuleForMatch {
+  trigger_pattern: string;
+  target_id: string | null;
+  is_active?: boolean;
+  rule_type?: string;
+  metadata?: { function_tag_id?: string | null; tool_label?: string | null; no_assign?: boolean } | null;
+}
+
+/**
+ * 用户关键词规则优先匹配（在 LLM item_hint 之前）
+ */
+export function matchByUserRules(
+  text: string,
+  rules: UserRuleForMatch[]
+): string | null {
+  const trimmed = text.trim();
+  if (!trimmed || rules.length === 0) return null;
+
+  const lower = trimmed.toLowerCase();
+  for (const rule of rules) {
+    if (rule.is_active === false) continue;
+    if (rule.rule_type && rule.rule_type !== 'item_mapping') continue;
+    const pattern = rule.trigger_pattern?.trim();
+    if (!pattern || !rule.target_id) continue;
+    if (lower.includes(pattern.toLowerCase())) {
+      return rule.target_id;
+    }
+  }
+  return null;
+}
+
+export interface PresetMatchResult {
+  itemId: string | null;
+  functionTagId: string | null;
+  toolLabel: string | null;
+  /** 命中 no_assign 规则时为 true，应跳过所有分类建议 */
+  isNoAssign: boolean;
+}
+
+/**
+ * 从关键词规则匹配预设：归属事项 + 职能标签 + 工具。
+ * 规则携带 metadata（function_tag_id / tool_label）时一并带出。
+ * 命中 no_assign 规则时返回 isNoAssign: true。
+ */
+export function matchPresetsByText(
+  text: string,
+  rules: UserRuleForMatch[]
+): PresetMatchResult {
+  const result: PresetMatchResult = { itemId: null, functionTagId: null, toolLabel: null, isNoAssign: false };
+  const trimmed = text.trim();
+  if (!trimmed || rules.length === 0) return result;
+
+  const lower = trimmed.toLowerCase();
+  const matched = rules
+    .filter((rule) => {
+      if (rule.is_active === false) return false;
+      const pattern = rule.trigger_pattern?.trim();
+      if (!pattern) return false;
+      return lower.includes(pattern.toLowerCase());
+    })
+    .sort((a, b) => b.trigger_pattern.length - a.trigger_pattern.length);
+
+  for (const rule of matched) {
+
+    if (rule.rule_type === 'no_assign' ||
+        (rule.rule_type === 'fuzzy_resolution' && rule.metadata?.no_assign)) {
+      result.isNoAssign = true;
+      return result; // no_assign 优先，直接返回
+    }
+    if ((rule.rule_type === 'item_mapping' || !rule.rule_type) && rule.target_id && !result.itemId) {
+      result.itemId = rule.target_id;
+    }
+    if (
+      rule.rule_type === 'function_mapping' &&
+      !result.functionTagId
+    ) {
+      result.functionTagId =
+        rule.metadata?.function_tag_id ?? rule.target_id ?? null;
+    }
+    if (rule.metadata?.function_tag_id && !result.functionTagId) {
+      result.functionTagId = rule.metadata.function_tag_id;
+    }
+    if (rule.metadata?.tool_label && !result.toolLabel) {
+      result.toolLabel = rule.metadata.tool_label;
+    }
+  }
+  return result;
+}
+
+/**
+ * 解析选定事项的默认预设（职能 / 工具）。
+ */
+export function resolveItemDefaults(
+  items: Array<{ id: string; default_function_tag_id?: string | null; default_tool_label?: string | null }>,
+  itemId: string | null | undefined
+): { functionTagId: string | null; toolLabel: string | null } {
+  if (!itemId) return { functionTagId: null, toolLabel: null };
+  const item = items.find((i) => i.id === itemId);
+  return {
+    functionTagId: item?.default_function_tag_id ?? null,
+    toolLabel: item?.default_tool_label ?? null,
+  };
+}
+
 import { genBehaviorId, genDecisionId } from '@/lib/observability/id-registry';
 import { logItemMatch } from '@/lib/observability/decision-logger';
 

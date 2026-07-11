@@ -11,10 +11,11 @@ import {
 import { handleApiError } from '@/lib/api/error-handler';
 import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
 import { ERROR_CODES } from '@/lib/observability/id-registry';
+import { RULE_TYPES, RULE_SOURCES } from '@/lib/db/user-rules';
 import type { RuleType, RuleSource } from '@/lib/db/user-rules';
 
-const VALID_RULE_TYPES: RuleType[] = ['item_mapping', 'sub_item_mapping', 'type_routing', 'fuzzy_resolution'];
-const VALID_SOURCES: RuleSource[] = ['ai_learned', 'user_set', 'system_default'];
+const VALID_RULE_TYPES: RuleType[] = [...RULE_TYPES];
+const VALID_SOURCES: RuleSource[] = [...RULE_SOURCES];
 
 /**
  * GET /api/v2/user-rules
@@ -60,13 +61,14 @@ export async function POST(request: NextRequest) {
     const ctx = withTrace(request);
     const userId = await getCurrentUserId();
     const body = await request.json();
-    const { rule_type, trigger_pattern, target_id, target_type, confidence, source } = body as {
+    const { rule_type, trigger_pattern, target_id, target_type, confidence, source, metadata } = body as {
       rule_type?: string;
       trigger_pattern?: string;
       target_id?: string | null;
       target_type?: string | null;
       confidence?: string;
       source?: string;
+      metadata?: { function_tag_id?: string | null; tool_label?: string | null; no_assign?: boolean } | null;
     };
 
     if (!rule_type || !trigger_pattern) {
@@ -92,6 +94,7 @@ export async function POST(request: NextRequest) {
       target_type: (target_type as 'item' | 'sub_item') ?? null,
       confidence: (confidence as 'high' | 'medium' | 'low') ?? 'high',
       source: (source as RuleSource) ?? 'ai_learned',
+      metadata: metadata ?? undefined,
     });
 
     return apiSuccess(rule, ctx.traceId, 201);

@@ -4,10 +4,17 @@ import { createClient } from '@/lib/supabase/server';
 // 类型定义
 // ================================
 
-export const RULE_TYPES = ['item_mapping', 'sub_item_mapping', 'type_routing', 'fuzzy_resolution'] as const;
+export const RULE_TYPES = ['item_mapping', 'sub_item_mapping', 'type_routing', 'fuzzy_resolution', 'function_mapping', 'tool_mapping', 'no_assign'] as const;
 export type RuleType = typeof RULE_TYPES[number];
 
-export const RULE_SOURCES = ['ai_learned', 'user_set', 'system_default'] as const;
+export interface UserRuleMetadata {
+  function_tag_id?: string | null;
+  tool_label?: string | null;
+  /** 标记为「不归类」规则（兼容未跑 036 迁移时用 fuzzy_resolution 存储） */
+  no_assign?: boolean;
+}
+
+export const RULE_SOURCES = ['ai_learned', 'user_set', 'system_default', 'user_confirm', 'preset'] as const;
 export type RuleSource = typeof RULE_SOURCES[number];
 
 export const RULE_CONFIDENCES = ['high', 'medium', 'low'] as const;
@@ -23,6 +30,7 @@ export interface UserRule {
   confidence: RuleConfidence;
   source: RuleSource;
   is_active: boolean;
+  metadata?: UserRuleMetadata | null;
   created_at: string;
   updated_at: string;
 }
@@ -35,6 +43,7 @@ export interface CreateUserRulePayload {
   confidence?: RuleConfidence;
   source?: RuleSource;
   is_active?: boolean;
+  metadata?: UserRuleMetadata | null;
 }
 
 export interface UpdateUserRulePayload {
@@ -45,6 +54,7 @@ export interface UpdateUserRulePayload {
   confidence?: RuleConfidence;
   source?: RuleSource;
   is_active?: boolean;
+  metadata?: UserRuleMetadata | null;
 }
 
 export interface UserRulesQuery {
@@ -175,6 +185,7 @@ export async function createUserRule(
       confidence: payload.confidence ?? 'high',
       source: payload.source ?? 'ai_learned',
       is_active: payload.is_active ?? true,
+      metadata: payload.metadata ?? {},
     })
     .select()
     .single();
@@ -204,6 +215,7 @@ export async function updateUserRule(
   if (payload.confidence !== undefined) updateData.confidence = payload.confidence;
   if (payload.source !== undefined) updateData.source = payload.source;
   if (payload.is_active !== undefined) updateData.is_active = payload.is_active;
+  if (payload.metadata !== undefined) updateData.metadata = payload.metadata;
 
   const { data, error } = await supabase
     .from('user_rules')

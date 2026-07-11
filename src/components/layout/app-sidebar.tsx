@@ -1,6 +1,8 @@
 'use client';
 
-import { useState } from "react";
+import { useState } from 'react';
+import { useUnassignedCount } from '@/hooks/use-unassigned-count';
+import UnassignedBadge from '@/components/layout/UnassignedBadge';
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createClient } from '@/lib/supabase/client';
@@ -10,13 +12,17 @@ import {
   BookOpen, 
   ListChecks, 
   BarChart3,
-  Shield
+  Moon,
+  Shield,
+  Target,
 } from 'lucide-react';
 
 // 主导航
 const navItems = [
   { label: "记录", href: "/records", icon: BookOpen },
   { label: "事项", href: "/items", icon: ListChecks },
+  { label: "目标", href: "/goals", icon: Target },
+  { label: "复盘", href: "/review", icon: Moon },
   { label: "洞察", href: "/insights", icon: BarChart3 },
   { label: "诊断", href: "/debug", icon: Shield },
 ];
@@ -33,6 +39,7 @@ interface AppSidebarProps {
 
 export default function AppSidebar({ user, collapsed = false, onToggle }: AppSidebarProps) {
   const pathname = usePathname();
+  const { count: unassignedCount } = useUnassignedCount();
 
   const handleLogout = async () => {
     const supabase = createClient();
@@ -101,7 +108,15 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
                   ].join(" ")}
                   title={collapsed ? item.label : undefined}
                 >
-                  <IconComponent className="h-5 w-5 shrink-0" />
+                  <span className="relative shrink-0">
+                    <IconComponent className="h-5 w-5" />
+                    {item.href === '/review' && (
+                      <UnassignedBadge
+                        count={unassignedCount}
+                        className={collapsed ? '-top-0.5 -right-1' : '-top-1 -right-1.5'}
+                      />
+                    )}
+                  </span>
                   {!collapsed && <span className="truncate ml-3">{item.label}</span>}
                 </Link>
               );
@@ -129,7 +144,7 @@ export default function AppSidebar({ user, collapsed = false, onToggle }: AppSid
         )}
         {!collapsed && (
           <div className="rounded-xl bg-teto-neutral-800/80 p-2">
-            <p className="text-xs font-medium text-teto-neutral-300">TETO 1.4</p>
+            <p className="text-xs font-medium text-teto-neutral-300">TETO 2.0</p>
             <p className="mt-1 text-xs leading-4 text-teto-neutral-400">
               记录 / 事项 / 洞察
             </p>

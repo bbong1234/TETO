@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { PAYMENT_SOURCES } from '@/lib/activity/recent-context';
 import { MONEY_DIRECTION_LABELS } from '@/types/teto';
 import type { RecordEditFormState } from '@/lib/activity/record-form';
-import { SectionLabel } from './EditableChipRow';
+import RecordDetailSection from './RecordDetailSection';
 
 interface RecordFinanceSectionProps {
   form: RecordEditFormState;
@@ -28,8 +28,7 @@ export default function RecordFinanceSection({ form, onPatch }: RecordFinanceSec
     : '';
 
   return (
-    <section>
-      <SectionLabel>收支</SectionLabel>
+    <RecordDetailSection title="收支">
       <div className="flex flex-wrap items-center gap-1.5">
         {hasFinance ? (
           <button
@@ -126,6 +125,6 @@ export default function RecordFinanceSection({ form, onPatch }: RecordFinanceSec
           </button>
         </div>
       )}
-    </section>
+    </RecordDetailSection>
   );
 }

@@ -391,7 +391,7 @@ export default function ItemsClient() {
                     : 'text-slate-500 hover:text-slate-700'
                 }`}
               >
-                按职能
+                按动作
               </button>
             </div>
             <label className="flex items-center gap-1.5 rounded-xl glass px-2.5 py-1.5 text-[10px] text-slate-500 cursor-pointer select-none">
@@ -589,9 +589,9 @@ export default function ItemsClient() {
             </div>
             {boardLens === 'function' ? (
               <>
-                <p className="text-sm font-medium mb-1">职能视角暂无数据</p>
+                <p className="text-sm font-medium mb-1">动作视角暂无数据</p>
                 <p className="text-xs text-slate-300 text-center max-w-sm">
-                  请在各项目下创建三类 SubItem（名称需跨项目完全一致，如「风控」），并在记录时选到职能与阶段。
+                  请在各项目下创建三类 SubItem（名称需跨项目完全一致，如「风控」），并在记录时选到动作与阶段。
                 </p>
               </>
             ) : (

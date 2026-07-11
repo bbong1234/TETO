@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-m4tmeu",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260705-gkj4df",
+  "sourceDecisionId": "DEC-CORR-f14fc997",
+  "description": "用户将 \"mood\" 从 \"开心\" 修正为 \"开心\"",
+  "input": {
+    "recordId": "f14fc997-7f70-44ba-b8f0-f9c11546cd0a",
+    "userInput": null
+  },
+  "expected": {
+    "mood": "开心"
+  },
+  "actualProduction": {
+    "mood": "开心"
+  },
+  "generatedAt": "2026-07-05T12:30:52.789Z"
+}

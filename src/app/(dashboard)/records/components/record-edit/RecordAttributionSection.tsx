@@ -6,7 +6,7 @@ import ContextualFunctionTagRow from '@/components/records/ContextualFunctionTag
 import { resolveTargetItemId } from '@/lib/activity/item-tree';
 import type { RecordEditFormState } from '@/lib/activity/record-form';
 import type { Item, Tag } from '@/types/teto';
-import { SectionLabel } from './EditableChipRow';
+import RecordDetailSection from './RecordDetailSection';
 
 interface RecordAttributionSectionProps {
   form: RecordEditFormState;
@@ -70,8 +70,7 @@ export default function RecordAttributionSection({
   };
 
   return (
-    <section>
-      <SectionLabel>归属</SectionLabel>
+    <RecordDetailSection title="归属">
       <div className="flex flex-wrap items-center gap-1.5">
         {path.length > 0 ? (
           path.map((part, i) => (
@@ -141,6 +140,6 @@ export default function RecordAttributionSection({
           />
         </div>
       )}
-    </section>
+    </RecordDetailSection>
   );
 }

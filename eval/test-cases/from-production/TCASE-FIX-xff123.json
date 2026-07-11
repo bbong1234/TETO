@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-xff123",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260705-bfck5r",
+  "sourceDecisionId": "DEC-CORR-f14fc997",
+  "description": "用户将 \"energy\" 从 \"gao\" 修正为 \"gao\"",
+  "input": {
+    "recordId": "f14fc997-7f70-44ba-b8f0-f9c11546cd0a",
+    "userInput": null
+  },
+  "expected": {
+    "energy": "gao"
+  },
+  "actualProduction": {
+    "energy": "gao"
+  },
+  "generatedAt": "2026-07-05T12:31:05.017Z"
+}

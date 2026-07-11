@@ -5,6 +5,10 @@ import { Zap, Loader2, X } from 'lucide-react';
 import type { Item, Record as TetoRecord, UserTool } from '@/types/teto';
 import { buildRecentSwitchEntries, type QuickSwitchEntry } from '@/lib/activity/quick-switch-utils';
 import { buildOptimisticActiveRecord, type ActivitySwitchPayload } from '@/lib/activity/records-mutation';
+import {
+  markActivitySwitchPending,
+  settleActivitySwitch,
+} from '@/lib/activity/activity-switch-pending';
 import { shouldPromptQuickSwitchToolPicker } from '@/lib/activity/item-tree';
 import { persistToolOptionIfNeeded } from '@/components/records/ToolLabelField';
 import QuickSwitchToolPicker from './QuickSwitchToolPicker';
@@ -19,6 +23,25 @@ const QUICK_SWITCH_MAX_VISIBLE = 9;
 /** 候选池：删几条后还能补满 */
 const QUICK_SWITCH_POOL = 24;
 const DISMISS_STORAGE_KEY = 'teto_quick_switch_dismissed';
+/** 7 日历史缓存：避免块时间结束 remount 后标签空白再弹出 */
+const HISTORY_CACHE_MS = 5 * 60 * 1000;
+
+type HistoryCache = { records: TetoRecord[]; fetchedAt: number };
+let historyCache: HistoryCache | null = null;
+
+function readHistoryCache(): TetoRecord[] | null {
+  if (!historyCache) return null;
+  if (Date.now() - historyCache.fetchedAt > HISTORY_CACHE_MS) return null;
+  return historyCache.records;
+}
+
+function writeHistoryCache(records: TetoRecord[]) {
+  historyCache = { records, fetchedAt: Date.now() };
+}
+
+function countSupplementEntries(records: TetoRecord[], items: Item[]): number {
+  return buildRecentSwitchEntries(records, items, 1, new Map()).length;
+}
 
 function loadDismissedKeys(): Set<string> {
   if (typeof window === 'undefined') return new Set();
@@ -47,7 +70,13 @@ interface QuickSwitchPanelProps {
   userTools?: UserTool[];
   toolsLoading?: boolean;
   onSwitched?: (data: ActivitySwitchResult) => void;
+  /** 选择模式：点击后只把条目交给父级填入当前选择，不直接开始计时 */
+  onEntrySelect?: (entry: QuickSwitchEntry, toolLabel: string | null) => void;
   onError?: (message: string) => void;
+  /** switch 请求进行中（含乐观更新后等待服务端） */
+  onSwitchStateChange?: (loading: boolean) => void;
+  /** embedded：嵌在主卡片底部；idle-top：空闲态顶部 chips 行 */
+  variant?: 'card' | 'embedded' | 'idle-top';
 }
 
 function formatDate(d: Date): string {
@@ -63,11 +92,17 @@ export default function QuickSwitchPanel({
   userTools: userToolsProp,
   toolsLoading: toolsLoadingProp,
   onSwitched,
+  onEntrySelect,
   onError,
+  onSwitchStateChange,
+  variant = 'card',
 }: QuickSwitchPanelProps) {
   const useExternalTools = userToolsProp !== undefined;
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyRecords, setHistoryRecords] = useState<TetoRecord[]>([]);
+  const cachedHistory = readHistoryCache();
+  const [historyLoading, setHistoryLoading] = useState(
+    () => !cachedHistory && countSupplementEntries(supplementRecords, items) === 0
+  );
+  const [historyRecords, setHistoryRecords] = useState<TetoRecord[]>(() => cachedHistory ?? []);
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(() => loadDismissedKeys());
   const [subItemTitles, setSubItemTitles] = useState<Map<string, string>>(new Map());
   const [localUserTools, setLocalUserTools] = useState<UserTool[]>([]);
@@ -156,9 +191,13 @@ export default function QuickSwitchPanel({
   }, []);
 
   useEffect(() => {
+    if (readHistoryCache()) return;
+
     let cancelled = false;
-    const timer = window.setTimeout(async () => {
-      setHistoryLoading(true);
+    const needsSpinner = countSupplementEntries(supplementRecords, items) === 0;
+    if (needsSpinner) setHistoryLoading(true);
+
+    void (async () => {
       try {
         const end = formatDate(new Date());
         const start = new Date();
@@ -172,18 +211,27 @@ export default function QuickSwitchPanel({
         const res = await fetch(`/api/v2/records?${params.toString()}`);
         if (cancelled) return;
         const data = await res.json();
-        setHistoryRecords(data.data ?? []);
+        const loaded: TetoRecord[] = data.data ?? [];
+        writeHistoryCache(loaded);
+        setHistoryRecords(loaded);
       } catch {
         if (!cancelled) setHistoryRecords([]);
       } finally {
         if (!cancelled) setHistoryLoading(false);
       }
-    }, 1500);
+    })();
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
+    // 仅 mount 时拉取；remount 走模块缓存，避免块时间结束后标签空白
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    return () => {
+      onSwitchStateChange?.(false);
+    };
+  }, [onSwitchStateChange]);
 
   const handleSwitch = (payload: {
     item_id?: string | null;
@@ -191,6 +239,8 @@ export default function QuickSwitchPanel({
     tool_label?: string | null;
   }) => {
     const today = formatDate(new Date());
+    markActivitySwitchPending();
+    onSwitchStateChange?.(true);
     const optimistic = buildOptimisticActiveRecord({
       item_id: payload.item_id,
       sub_item_id: payload.sub_item_id,
@@ -214,14 +264,23 @@ export default function QuickSwitchPanel({
         if (payload.tool_label?.trim()) {
           void persistToolOptionIfNeeded(payload.tool_label);
         }
-        onSwitched?.(d.data as ActivitySwitchResult);
+        const result = d.data as ActivitySwitchResult;
+        onSwitched?.(result);
+        settleActivitySwitch(result.record);
       } catch (e) {
+        settleActivitySwitch(null);
         onError?.(e instanceof Error ? e.message : '切换失败');
+      } finally {
+        onSwitchStateChange?.(false);
       }
     })();
   };
 
   const runSwitch = (entry: QuickSwitchEntry, toolLabel: string | null) => {
+    if (onEntrySelect) {
+      onEntrySelect(entry, toolLabel);
+      return;
+    }
     handleSwitch({
       item_id: entry.item_id,
       sub_item_id: entry.sub_item_id,
@@ -245,46 +304,98 @@ export default function QuickSwitchPanel({
   }
 
   const userToolTitles = userTools.map((t) => t.title);
+  const isEmbedded = variant === 'embedded';
+  const isIdleTop = variant === 'idle-top';
+
+  const chips = historyLoading && visibleEntries.length === 0 ? (
+    <div className="flex items-center gap-2 text-xs text-slate-400">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      加载最近…
+    </div>
+  ) : (
+    <div className="flex flex-wrap gap-1.5">
+      {visibleEntries.map((entry) => (
+        <div
+          key={entry.key}
+          className={
+            isIdleTop
+              ? 'flex max-w-full items-center rounded-full border border-slate-200 bg-slate-50 pl-2.5 pr-1 py-1 hover:border-blue-300 hover:bg-blue-50'
+              : 'flex max-w-full items-center gap-0.5 rounded-full border border-slate-200 bg-white pl-3 pr-1 py-1.5 shadow-sm hover:border-blue-300 hover:bg-blue-50'
+          }
+        >
+          <button
+            type="button"
+            onClick={() => handleQuickSwitch(entry)}
+            className="flex min-w-0 items-center gap-1.5 text-xs text-slate-700"
+          >
+            <span className="max-w-[12rem] truncate">{entry.label}</span>
+          </button>
+          {!isIdleTop && (
+            <button
+              type="button"
+              onClick={() => dismissEntry(entry.key)}
+              className="shrink-0 rounded-full p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-500"
+              aria-label="从快速切换移除"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  if (isIdleTop) {
+    if (!historyLoading && visibleEntries.length === 0) return null;
+    return (
+      <>
+        {chips}
+        {pendingEntry && (
+          <QuickSwitchToolPicker
+            entryLabel={pendingEntry.label}
+            contextTools={pendingEntry.contextToolLabels}
+            allTools={userToolTitles}
+            loading={toolsLoading}
+            onSelect={(tool) => {
+              const entry = pendingEntry;
+              setPendingEntry(null);
+              runSwitch(entry, tool);
+            }}
+            onClose={() => setPendingEntry(null)}
+          />
+        )}
+      </>
+    );
+  }
 
   return (
     <>
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-3">
+      <div
+        className={
+          isEmbedded
+            ? 'border-t border-slate-100 px-4 pb-3 pt-3 space-y-2'
+            : 'rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-3'
+        }
+      >
         <div className="flex items-center gap-2">
-          <Zap className="h-4 w-4 text-amber-500" />
-          <h2 className="text-sm font-semibold text-slate-800">快速切换</h2>
+          <Zap className={isEmbedded ? 'h-3.5 w-3.5 text-amber-500' : 'h-4 w-4 text-amber-500'} />
+          <h2
+            className={
+              isEmbedded
+                ? 'text-[11px] font-medium text-slate-500'
+                : 'text-sm font-semibold text-slate-800'
+            }
+          >
+            快速切换
+          </h2>
+          {isEmbedded && (
+            <span className="text-[10px] text-slate-400">点一下填入选择</span>
+          )}
+          {isIdleTop && (
+            <span className="text-[10px] text-slate-400">点一下填入选择</span>
+          )}
         </div>
-
-        {historyLoading && visibleEntries.length === 0 ? (
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            加载最近使用…
-          </div>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {visibleEntries.map((entry) => (
-                <div
-                  key={entry.key}
-                  className="flex max-w-full items-center gap-0.5 rounded-full border border-slate-200 bg-white pl-3 pr-1 py-1.5 shadow-sm hover:border-blue-300 hover:bg-blue-50"
-                >
-                  <button
-                    type="button"
-                    onClick={() => handleQuickSwitch(entry)}
-                    className="flex min-w-0 items-center gap-1.5 text-xs text-slate-700"
-                  >
-                    <span className="max-w-[12rem] truncate">{entry.label}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => dismissEntry(entry.key)}
-                    className="shrink-0 rounded-full p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-500"
-                    aria-label="从快速切换移除"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-          </div>
-        )}
+        {chips}
       </div>
 
       {pendingEntry && (

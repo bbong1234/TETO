@@ -11,6 +11,7 @@ interface ToolLabelFieldProps {
   value: string;
   onChange: (value: string) => void;
   compact?: boolean;
+  hideLabel?: boolean;
   /** 父级已加载工具列表时传入，避免重复请求 */
   tools?: UserTool[];
   toolsLoading?: boolean;
@@ -21,6 +22,7 @@ export default function ToolLabelField({
   value,
   onChange,
   compact = false,
+  hideLabel = false,
   tools: toolsProp,
   toolsLoading: toolsLoadingProp,
   onToolsChange,
@@ -102,11 +104,11 @@ export default function ToolLabelField({
   if (creating) {
     return (
       <div className={compact ? 'flex items-center gap-2' : 'space-y-1'}>
-        {compact ? (
+        {compact && !hideLabel ? (
           <span className="text-[10px] text-slate-400 w-10 shrink-0">工具</span>
-        ) : (
+        ) : !compact ? (
           <label className="text-[10px] text-slate-400">工具/载体</label>
-        )}
+        ) : null}
         <div className="flex flex-1 items-center gap-1.5 min-w-0">
           <input
             type="text"
@@ -153,7 +155,9 @@ export default function ToolLabelField({
     <div className={compact ? 'flex items-center gap-2' : 'space-y-1'}>
       {!compact && <label className="text-[10px] text-slate-400">工具/载体</label>}
       <div className="flex flex-1 items-center gap-1.5 min-w-0">
-        {compact && <span className="text-[10px] text-slate-400 w-10 shrink-0">工具</span>}
+        {compact && !hideLabel && (
+          <span className="text-[10px] text-slate-400 w-10 shrink-0">工具</span>
+        )}
         <select
           value={value || NO_TOOL_OPTION}
           onChange={(e) => {

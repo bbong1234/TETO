@@ -1,6 +1,7 @@
 import type { Record, TodayActivityStats, Item } from '@/types/teto';
 import { buildDayTimelineFromRecords } from './timeline-utils';
 import { buildItemPathLabel, resolveCategoryTitleForItem } from './item-tree';
+import { calcNetElapsedSeconds } from './session-utils';
 
 /** 统计：未挂大类的记录/事项 */
 export const STATS_UNCATEGORIZED_LABEL = '未归类';
@@ -14,9 +15,8 @@ function recordDurationSeconds(record: Record, nowIso: string): number {
     }
     return 0;
   }
-  const end = record.occurred_at_end ?? nowIso;
-  const ms = Date.parse(end) - Date.parse(record.occurred_at);
-  if (ms > 0) return Math.max(1, Math.round(ms / 1000));
+  const netSecs = calcNetElapsedSeconds(record, nowIso);
+  if (netSecs > 0) return netSecs;
   if (record.duration_minutes != null && record.duration_minutes > 0) {
     return record.duration_minutes * 60;
   }
@@ -79,7 +79,10 @@ export function computeTodayActivityStats(
   const timeline = buildDayTimelineFromRecords(records, date, '今天', items);
   const gapSeconds = timeline.records
     .filter((e) => e.is_gap)
-    .reduce((sum, e) => sum + (e.duration_minutes ?? 0) * 60, 0);
+    .reduce(
+      (sum, e) => sum + (e.duration_seconds ?? (e.duration_minutes ?? 0) * 60),
+      0
+    );
 
   let currentElapsedSeconds = 0;
   if (currentActivity?.occurred_at) {
@@ -116,21 +119,35 @@ export function computeTodayActivityStats(
   };
 }
 
-/** 统计展示：不足 1 分钟显示「不足1分钟」，否则按分/秒/小时 */
+/** 时间线/统计：秒级时长文案（秒 / 分+秒 / 时+分+秒） */
+export function formatTimelineDuration(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  if (safe <= 0) return '0秒';
+
+  const h = Math.floor(safe / 3600);
+  const m = Math.floor((safe % 3600) / 60);
+  const s = safe % 60;
+
+  if (h > 0) return `${h}小时${m}分钟${s}秒`;
+  if (m > 0) return `${m}分${s}秒`;
+  return `${s}秒`;
+}
+
+/** 统计展示：与时间线一致的秒级时长 */
 export function formatStatDuration(totalSeconds: number): string {
-  if (totalSeconds <= 0) return '0分钟';
-  if (totalSeconds < 60) return '不足1分钟';
-  const h = Math.floor(totalSeconds / 3600);
-  const rem = totalSeconds % 3600;
-  const m = Math.floor(rem / 60);
-  const s = rem % 60;
-  if (h > 0) {
-    if (s > 0) return `${h}小时${m}分${s}秒`;
-    if (m > 0) return `${h}小时${m}分`;
-    return `${h}小时`;
-  }
-  if (s > 0) return `${m}分${s}秒`;
-  return `${m}分钟`;
+  return formatTimelineDuration(totalSeconds);
+}
+
+/** 进行中活动时钟：不足 1 小时 MM:SS，否则 H:MM:SS */
+export function formatElapsedClock(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(safe / 3600);
+  const m = Math.floor((safe % 3600) / 60);
+  const s = safe % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  if (h > 0) return `${h}:${mm}:${ss}`;
+  return `${mm}:${ss}`;
 }
 
 export function formatDurationMinutes(totalMinutes: number): string {

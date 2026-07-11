@@ -4,7 +4,8 @@ import type { RecordEditFormState } from '@/lib/activity/record-form';
 import { isLegacyRecordType } from '@/lib/activity/record-form';
 import type { Record as TetoRecord, RecordType } from '@/types/teto';
 import { USER_RECORD_TYPES } from '@/types/teto';
-import EditableChipRow, { SectionLabel } from './EditableChipRow';
+import EditableChipRow from './EditableChipRow';
+import RecordDetailSection from './RecordDetailSection';
 
 const LIFECYCLE_LABEL: Record<string, string> = {
   completed: '已完成',
@@ -55,8 +56,7 @@ export default function RecordMetaSection({ form, originalRecord, onPatch }: Rec
     lifecycle && lifecycle !== 'active' ? LIFECYCLE_LABEL[lifecycle] ?? lifecycle : '';
 
   return (
-    <section>
-      <SectionLabel>元信息</SectionLabel>
+    <RecordDetailSection title="元信息">
       <div className="flex flex-wrap items-center gap-1.5">
         <EditableChipRow value={form.type ?? '发生'}>
           <div className="flex flex-wrap gap-1">
@@ -116,6 +116,15 @@ export default function RecordMetaSection({ form, originalRecord, onPatch }: Rec
               placeholder="时长(分钟)"
               className="w-full rounded border border-slate-200 px-2 py-1 text-xs"
             />
+            {form.timeText.trim() && (
+              <input
+                type="text"
+                value={form.timeText}
+                onChange={(e) => onPatch({ timeText: e.target.value })}
+                placeholder="模糊时间原文"
+                className="w-full rounded border border-slate-200 px-2 py-1 text-xs"
+              />
+            )}
           </div>
         </EditableChipRow>
 
@@ -131,6 +140,6 @@ export default function RecordMetaSection({ form, originalRecord, onPatch }: Rec
           </span>
         )}
       </div>
-    </section>
+    </RecordDetailSection>
   );
 }

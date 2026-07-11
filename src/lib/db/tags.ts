@@ -78,20 +78,137 @@ export async function deleteTag(userId: string, id: string): Promise<void> {
 /**
  * 列出用户所有标签
  */
-export async function listTags(userId: string): Promise<Tag[]> {
+export async function listTags(
+  userId: string,
+  search?: string,
+  type?: string
+): Promise<Tag[]> {
   const supabase = await createClient();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('tags')
     .select('*')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: true });
+    .eq('user_id', userId);
+
+  const q = search?.trim();
+  if (q) {
+    const escaped = q.replace(/[%_\\]/g, '\\$&');
+    query = query.ilike('name', `%${escaped}%`);
+  }
+
+  if (type) {
+    query = query.eq('type', type);
+  }
+
+  const { data, error } = await query.order('created_at', { ascending: true });
 
   if (error) {
     throw new Error(`列出标签失败: ${error.message}`);
   }
 
   return (data as Tag[]) ?? [];
+}
+
+export interface FunctionTagWithStats extends Tag {
+  record_count: number;
+  total_minutes: number;
+  last_record_at: string | null;
+}
+
+export interface ItemFunctionTagsResult {
+  frequent: FunctionTagWithStats[];
+  all: Tag[];
+}
+
+/**
+ * 某事项历史用过的职能标签（含使用次数、累计时长、最近记录时间） + 全局职能池
+ */
+export async function listFunctionTagsForItem(
+  userId: string,
+  itemId: string
+): Promise<ItemFunctionTagsResult> {
+  const supabase = await createClient();
+  const all = await listTags(userId, undefined, 'function');
+
+  const scopedItemIds = new Set<string>([itemId]);
+  const { data: children } = await supabase
+    .from('items')
+    .select('id, parent_item_id')
+    .eq('user_id', userId)
+    .or(`id.eq.${itemId},parent_item_id.eq.${itemId}`);
+
+  const childIds = (children ?? [])
+    .filter((row: { id: string; parent_item_id: string | null }) => row.parent_item_id === itemId)
+    .map((row: { id: string }) => row.id);
+  for (const id of childIds) scopedItemIds.add(id);
+
+  if (childIds.length > 0) {
+    const { data: grandchildren } = await supabase
+      .from('items')
+      .select('id')
+      .eq('user_id', userId)
+      .in('parent_item_id', childIds);
+    for (const row of grandchildren ?? []) {
+      scopedItemIds.add((row as { id: string }).id);
+    }
+  }
+
+  const { data: records, error: recordsError } = await supabase
+    .from('records')
+    .select('id, duration_minutes, occurred_at')
+    .eq('user_id', userId)
+    .in('item_id', [...scopedItemIds]);
+
+  if (recordsError) {
+    throw new Error(`查询事项记录失败: ${recordsError.message}`);
+  }
+
+  const recordRows = (records ?? []) as { id: string; duration_minutes: number | null; occurred_at: string | null }[];
+  const recordIds = recordRows.map((r) => r.id);
+  if (recordIds.length === 0) {
+    return { frequent: [], all };
+  }
+
+  const recordMetaById = new Map(recordRows.map((r) => [r.id, r]));
+
+  const { data: links, error: linksError } = await supabase
+    .from('record_tags')
+    .select('tag_id, record_id, tags(*)')
+    .eq('user_id', userId)
+    .in('record_id', recordIds);
+
+  if (linksError) {
+    throw new Error(`查询事项职能标签失败: ${linksError.message}`);
+  }
+
+  const statsMap = new Map<string, { tag: Tag; count: number; totalMinutes: number; lastAt: string | null }>();
+  for (const row of links ?? []) {
+    const raw = row as { tag_id: string; record_id: string; tags: Tag | Tag[] | null };
+    const tag = Array.isArray(raw.tags) ? raw.tags[0] : raw.tags;
+    if (!tag || tag.type !== 'function') continue;
+    const recMeta = recordMetaById.get(raw.record_id);
+    const mins = recMeta?.duration_minutes ?? 0;
+    const at = recMeta?.occurred_at ?? null;
+    const prev = statsMap.get(tag.id);
+    if (prev) {
+      prev.count += 1;
+      prev.totalMinutes += mins;
+      if (at && (!prev.lastAt || at > prev.lastAt)) prev.lastAt = at;
+    } else {
+      statsMap.set(tag.id, { tag, count: 1, totalMinutes: mins, lastAt: at });
+    }
+  }
+
+  const frequent: FunctionTagWithStats[] = [...statsMap.values()]
+    .sort((a, b) => b.count - a.count)
+    .map((x) => ({
+      ...x.tag,
+      record_count: x.count,
+      total_minutes: x.totalMinutes,
+      last_record_at: x.lastAt,
+    }));
+
+  return { frequent, all };
 }
 
 /**

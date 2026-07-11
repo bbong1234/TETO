@@ -1,12 +1,13 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import type { Record } from '@/types/teto';
+import type { Item, Record } from '@/types/teto';
 import RecordList from './RecordList';
 
 interface DayRecordGroupProps {
   date: string;
   records: Record[];
+  allItems?: Item[];
   layout?: 'stacked' | 'column';
   /** 列模式顶部插槽（如 QuickInput），仅 layout=column 时渲染 */
   headerSlot?: ReactNode;
@@ -20,6 +21,8 @@ interface DayRecordGroupProps {
   onConvertToItem?: (record: Record) => void;
   /** 记录转目标 */
   onConvertToGoal?: (record: Record) => void;
+  /** 确认 AI 分类建议 */
+  onConfirmClassification?: (record: Record) => void;
   onError: (message: string) => void;
 }
 
@@ -41,6 +44,7 @@ function formatDisplayDate(dateStr: string, short?: boolean): string {
 export default function DayRecordGroup({
   date,
   records,
+  allItems,
   layout = 'stacked',
   headerSlot,
   aiPendingIds,
@@ -52,6 +56,7 @@ export default function DayRecordGroup({
   onConvertToPlan,
   onConvertToItem,
   onConvertToGoal,
+  onConfirmClassification,
   onError,
 }: DayRecordGroupProps) {
   // 列模式：固定头 + 可滚动记录区 + 底部总结
@@ -83,6 +88,7 @@ export default function DayRecordGroup({
           {records.length > 0 ? (
             <RecordList
               records={records}
+              allItems={allItems}
               onRecordClick={onRecordClick}
               onStarToggle={onStarToggle}
               aiPendingIds={aiPendingIds}
@@ -92,6 +98,7 @@ export default function DayRecordGroup({
               onConvertToPlan={onConvertToPlan}
               onConvertToItem={onConvertToItem}
               onConvertToGoal={onConvertToGoal}
+              onConfirmClassification={onConfirmClassification}
               compact
             />
           ) : (
@@ -122,6 +129,7 @@ export default function DayRecordGroup({
       {records.length > 0 ? (
         <RecordList
           records={records}
+          allItems={allItems}
           onRecordClick={onRecordClick}
           onStarToggle={onStarToggle}
           aiPendingIds={aiPendingIds}
@@ -131,6 +139,7 @@ export default function DayRecordGroup({
           onConvertToPlan={onConvertToPlan}
           onConvertToItem={onConvertToItem}
           onConvertToGoal={onConvertToGoal}
+          onConfirmClassification={onConfirmClassification}
         />
       ) : (
         <div className="rounded-xl bg-white/50 p-4 text-center border border-dashed border-slate-200">

@@ -1,16 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import type { Item } from '@/types/teto';
 import {
+  buildItemTreeIndex,
   findSkillDefaultItem,
+  getAttributionPickerChildItems,
   getCategoryItems,
   getItemDepth,
   getItemPath,
+  getItemsForCategoryFromIndex,
   isSkillCategoryItem,
   isUsedCategoryItem,
   resolveTargetItemId,
   resolveSubItemHostItemId,
   validateActivityContext,
   resolveActivityContextFromRecord,
+  normalizeOrgLevels,
 } from '../item-tree';
 
 function item(partial: Partial<Item> & Pick<Item, 'id' | 'title'>): Item {
@@ -113,5 +117,63 @@ describe('item-tree hierarchy rules', () => {
     expect(ctx.categoryItemId).toBe('cat-sport');
     expect(ctx.itemId).toBe('item-am');
     expect(getItemPath(three, 'item-am').map((i) => i.title)).toEqual(['运动', '跑步', '晨跑']);
+  });
+
+  it('normalizeOrgLevels maps two-level path to L1+L2 only', () => {
+    const eat = item({ id: 'cat-eat', title: '吃饭' });
+    const breakfast = item({ id: 'item-breakfast', title: '早饭', parent_item_id: 'cat-eat' });
+    const levels = normalizeOrgLevels([eat, breakfast], 'item-breakfast');
+    expect(levels).toMatchObject({
+      categoryItemId: 'cat-eat',
+      l2ItemId: 'item-breakfast',
+      l3ItemId: '',
+      subItemId: '',
+      itemDepth: 1,
+    });
+  });
+
+  it('二类与一类同名时仍出现在记录页选择器', () => {
+    const eat = item({ id: 'cat-eat', title: '吃饭' });
+    const breakfast = item({ id: 'item-breakfast', title: '早饭', parent_item_id: 'cat-eat' });
+    const lunch = item({ id: 'item-lunch', title: '午饭', parent_item_id: 'cat-eat' });
+    const dinner = item({ id: 'item-dinner', title: '晚饭', parent_item_id: 'cat-eat' });
+    const eatL2 = item({ id: 'item-eat-dup', title: '吃饭', parent_item_id: 'cat-eat' });
+    const all = [eat, breakfast, lunch, dinner, eatL2];
+
+    const titles = (list: Item[]) =>
+      list.map((i) => i.title).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+
+    const index = buildItemTreeIndex(all);
+    const fromIndex = getItemsForCategoryFromIndex(all, index, 'cat-eat');
+    expect(fromIndex).toHaveLength(4);
+    expect(titles(fromIndex)).toEqual(titles(all.filter((i) => i.parent_item_id === 'cat-eat')));
+
+    const picker = getAttributionPickerChildItems(all, 'cat-eat');
+    expect(picker).toHaveLength(4);
+    expect(titles(picker)).toEqual(titles(all.filter((i) => i.parent_item_id === 'cat-eat')));
+  });
+
+  it('已完成二类不在记录页选择器展示', () => {
+    const eat = item({ id: 'cat-eat', title: '吃饭' });
+    const completedEatL2 = item({
+      id: 'item-eat-dup',
+      title: '吃饭',
+      parent_item_id: 'cat-eat',
+      status: '已完成',
+    });
+    const picker = getAttributionPickerChildItems([eat, completedEatL2], 'cat-eat');
+    expect(picker).toHaveLength(0);
+  });
+
+  it('已搁置二类不在记录页选择器展示', () => {
+    const eat = item({ id: 'cat-eat', title: '吃饭' });
+    const shelvedEatL2 = item({
+      id: 'item-eat-shelved',
+      title: '吃饭',
+      parent_item_id: 'cat-eat',
+      status: '已搁置',
+    });
+    const picker = getAttributionPickerChildItems([eat, shelvedEatL2], 'cat-eat');
+    expect(picker).toHaveLength(0);
   });
 });

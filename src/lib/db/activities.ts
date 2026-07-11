@@ -69,41 +69,10 @@ export async function listActiveActivities(userId: string): Promise<Record[]> {
 }
 
 /**
- * 获取当前进行中的事项（最新一条）
+ * 获取当前进行中的事项（优先 running 子会话，而非 nested_paused 父会话）
  */
 export async function getCurrentActivity(userId: string): Promise<Record | null> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from('records')
-    .select(`
-      *,
-      record_tags(tags(*)),
-      record_days(date)
-    `)
-    .eq('user_id', userId)
-    .eq('type', CURRENT_ACTIVITY_FILTER.type)
-    .eq('lifecycle_status', CURRENT_ACTIVITY_FILTER.lifecycle_status)
-    .is('occurred_at_end', null)
-    .order('occurred_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(`查询当前事项失败: ${error.message}`);
-  }
-  if (!data) return null;
-
-  let item: { id: string; title: string } | null = null;
-  if (data.item_id) {
-    const { data: itemData } = await supabase
-      .from('items')
-      .select('id, title')
-      .eq('id', data.item_id)
-      .eq('user_id', userId)
-      .maybeSingle();
-    if (itemData) item = itemData;
-  }
-
-  return enrichRow(data, item);
+  const actives = await listActiveActivities(userId);
+  const running = actives.find((a) => a.session_state === 'running' || !a.session_state);
+  return running ?? actives[0] ?? null;
 }

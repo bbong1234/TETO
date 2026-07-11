@@ -1,61 +1,16 @@
 'use client';
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, startTransition } from 'react';
-import { ChevronRight, Loader2, Plus } from 'lucide-react';
-import type { Item, Phase, SubItem } from '@/types/teto';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight, Loader2, Minus, Plus } from 'lucide-react';
+import type { Item, SubItem } from '@/types/teto';
 import {
-  buildItemTreeIndex,
-  getCategoryItemsFromIndex,
-  getChildItems,
-  getItemDepthFromIndex,
-  getItemsForCategoryFromIndex,
-  resolveSubItemHostItemId,
-  resolveTargetItemId,
-} from '@/lib/activity/item-tree';
+  type ActivityContextValue,
+  EMPTY_ACTIVITY_CONTEXT,
+} from '@/lib/activity/activity-context-types';
+import { useActivityContextData } from '@/hooks/use-activity-context-data';
 
-export interface ActivityContextValue {
-  categoryItemId: string;
-  categoryTitle?: string;
-  itemId: string;
-  itemTitle?: string;
-  subItemId: string;
-  subItemTitle?: string;
-  phaseId?: string;
-  phaseTitle?: string;
-}
-
-export const EMPTY_ACTIVITY_CONTEXT: ActivityContextValue = {
-  categoryItemId: '',
-  itemId: '',
-  subItemId: '',
-  phaseId: '',
-};
-
-const USER_CATEGORY_STORAGE_PREFIX = 'teto_user_category_ids';
-
-function userCategoryStorageKey(userId: string): string {
-  return `${USER_CATEGORY_STORAGE_PREFIX}:${userId}`;
-}
-
-function loadUserCategoryIds(userId?: string): Set<string> {
-  if (typeof window === 'undefined' || !userId) return new Set();
-  try {
-    const raw = sessionStorage.getItem(userCategoryStorageKey(userId));
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw) as string[];
-    return new Set(Array.isArray(parsed) ? parsed : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveUserCategoryIds(userId: string, ids: Set<string>) {
-  try {
-    sessionStorage.setItem(userCategoryStorageKey(userId), JSON.stringify([...ids]));
-  } catch {
-    /* ignore */
-  }
-}
+export type { ActivityContextValue };
+export { EMPTY_ACTIVITY_CONTEXT };
 
 interface ActivityContextPickerProps {
   items: Item[];
@@ -67,53 +22,133 @@ interface ActivityContextPickerProps {
   onSubItemsLoaded?: (subItems: SubItem[]) => void;
   compact?: boolean;
   itemsLoading?: boolean;
+  levelScope?: 'all' | 'category' | 'item';
+  /** 隐藏底部「编程 → 公司系统开发」路径摘要（编辑页控件已表达归属） */
+  hidePathSummary?: boolean;
 }
 
-type CreateLevel = 'category' | 'item' | 'subItem';
-
-const CREATE_ITEM_OPTION = '__create_item__';
-const PLACEHOLDER_ITEM_OPTION = '__pick_item__';
-const PLACEHOLDER_SUB_ITEM_OPTION = '__pick_sub_item__';
-const CREATE_SUB_ITEM_OPTION = '__create_sub_item__';
 const PLACEHOLDER_PHASE_OPTION = '__no_phase__';
 
-const subItemsCache = new Map<string, SubItem[]>();
-const phasesCache = new Map<string, Phase[]>();
-const subItemsInflight = new Set<string>();
-const phasesInflight = new Set<string>();
-
-function prefetchSubItems(hostId: string): void {
-  if (subItemsCache.has(hostId) || subItemsInflight.has(hostId)) return;
-  subItemsInflight.add(hostId);
-  fetch(`/api/v2/sub-items?item_id=${hostId}`)
-    .then((res) => res.json())
-    .then((data) => {
-      subItemsCache.set(hostId, (data.data as SubItem[]) ?? []);
-    })
-    .catch(() => {
-      subItemsCache.set(hostId, []);
-    })
-    .finally(() => {
-      subItemsInflight.delete(hostId);
-    });
+interface ContextLevelSelectOption {
+  id: string;
+  label: string;
 }
 
-function prefetchPhases(hostId: string): void {
-  if (phasesCache.has(hostId) || phasesInflight.has(hostId)) return;
-  phasesInflight.add(hostId);
-  fetch(
-    `/api/v2/phases?item_id=${encodeURIComponent(hostId)}&status=${encodeURIComponent('进行中')}`
-  )
-    .then((res) => res.json())
-    .then((data) => {
-      phasesCache.set(hostId, (data.data as Phase[]) ?? []);
-    })
-    .catch(() => {
-      phasesCache.set(hostId, []);
-    })
-    .finally(() => {
-      phasesInflight.delete(hostId);
-    });
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function ContextLevelSelect({
+  selectedId,
+  emptyLabel,
+  createLabel,
+  options,
+  onPick,
+  onClear,
+  onCreate,
+  triggerClassName,
+  ariaLabel,
+  fallbackLabel,
+  disabled = false,
+}: {
+  selectedId: string;
+  emptyLabel: string;
+  createLabel: string;
+  options: ContextLevelSelectOption[];
+  onPick: (id: string) => void;
+  onClear: () => void;
+  onCreate: () => void;
+  triggerClassName: string;
+  ariaLabel: string;
+  /** 选项列表尚未加载或未命中时，显示可读名称而非 UUID */
+  fallbackLabel?: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: globalThis.MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  useEffect(() => {
+    setOpen(false);
+  }, [selectedId, options.length]);
+
+  const selectedLabel = selectedId
+    ? (options.find((o) => o.id === selectedId)?.label ??
+        fallbackLabel ??
+        (UUID_RE.test(selectedId) ? '未知事项' : selectedId))
+    : emptyLabel;
+
+  const handleOptionClick = (id: string) => {
+    if (id === selectedId) {
+      onClear();
+    } else {
+      onPick(id);
+    }
+    setOpen(false);
+  };
+
+  return (
+    <div ref={rootRef} className="relative flex-1 min-w-0">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+        className={`${triggerClassName} flex w-full items-center justify-between gap-2 text-left`}
+        aria-label={ariaLabel}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+      >
+        <span className="truncate">{selectedLabel}</span>
+        <ChevronDown
+          className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
+          aria-hidden
+        />
+      </button>
+      {open && (
+        <ul
+          role="listbox"
+          className="absolute left-0 right-0 z-50 mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+        >
+          <li>
+            <button
+              type="button"
+              onClick={() => {
+                onCreate();
+                setOpen(false);
+              }}
+              className="w-full px-2.5 py-1.5 text-left text-xs text-blue-600 hover:bg-slate-50"
+            >
+              {createLabel}
+            </button>
+          </li>
+          {options.map((opt) => (
+            <li key={opt.id}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={opt.id === selectedId}
+                onClick={() => handleOptionClick(opt.id)}
+                className={[
+                  'w-full px-2.5 py-1.5 text-left text-xs hover:bg-slate-50',
+                  opt.id === selectedId ? 'bg-blue-50 font-medium text-blue-700' : 'text-slate-700',
+                ].join(' ')}
+              >
+                {opt.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 function ActivityContextPicker({
@@ -126,223 +161,52 @@ function ActivityContextPicker({
   onSubItemsLoaded,
   compact = false,
   itemsLoading = false,
+  levelScope = 'all',
+  hidePathSummary = false,
 }: ActivityContextPickerProps) {
-  const [subItems, setSubItems] = useState<SubItem[]>([]);
-  const [subLoading, setSubLoading] = useState(false);
-  const [phases, setPhases] = useState<Phase[]>([]);
-  const [phaseLoading, setPhaseLoading] = useState(false);
-  const [creating, setCreating] = useState<CreateLevel | null>(null);
-  const [createText, setCreateText] = useState('');
-  const [createSubmitting, setCreateSubmitting] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [userCategoryIds, setUserCategoryIds] = useState<Set<string>>(() => new Set());
-  /** 本地即时高亮，避免等待父级 state 提交才切换 chip */
-  const [activeCategoryId, setActiveCategoryId] = useState(value.categoryItemId);
-  const scopedUserId = items[0]?.user_id;
-  const onSubItemsLoadedRef = useRef(onSubItemsLoaded);
-  onSubItemsLoadedRef.current = onSubItemsLoaded;
+  const ctx = useActivityContextData({
+    items,
+    value,
+    onChange,
+    onItemsChange,
+    onItemCreated,
+    onCreateError,
+    onSubItemsLoaded,
+  });
 
-  useEffect(() => {
-    setActiveCategoryId(value.categoryItemId);
-  }, [value.categoryItemId]);
-
-  useEffect(() => {
-    if (!scopedUserId) return;
-    setUserCategoryIds(loadUserCategoryIds(scopedUserId));
-  }, [scopedUserId]);
-
-  useEffect(() => {
-    if (!scopedUserId) return;
-    saveUserCategoryIds(scopedUserId, userCategoryIds);
-  }, [scopedUserId, userCategoryIds]);
-
-  const itemIndex = useMemo(() => buildItemTreeIndex(items), [items]);
-
-  const categoryItems = useMemo(
-    () => getCategoryItemsFromIndex(items, itemIndex, activeCategoryId || undefined, userCategoryIds),
-    [items, itemIndex, activeCategoryId, userCategoryIds]
-  );
-  const childItems = useMemo(
-    () =>
-      activeCategoryId
-        ? getItemsForCategoryFromIndex(items, itemIndex, activeCategoryId, activeCategoryId)
-        : [],
-    [items, itemIndex, activeCategoryId]
-  );
-
-  /** 二类下挂的三类 Item */
-  const level3Items = useMemo(() => {
-    if (!value.itemId || value.subItemId) return [];
-    if (getItemDepthFromIndex(itemIndex, value.itemId) !== 1) return [];
-    return getChildItems(items, value.itemId);
-  }, [items, itemIndex, value.itemId, value.subItemId]);
-
-  const subItemHostId = useMemo(() => {
-    if (!value.itemId) return null;
-    if (value.subItemId) return resolveSubItemHostItemId(value);
-    const depth = getItemDepthFromIndex(itemIndex, value.itemId);
-    if (depth === 2) {
-      return itemIndex.itemById.get(value.itemId)?.parent_item_id ?? null;
-    }
-    if (depth === 1) return value.itemId;
-    return null;
-  }, [value, itemIndex]);
-
-  const phaseHostItemId = useMemo(() => resolveTargetItemId(value), [value]);
-
-  const phaseOptions = useMemo(() => {
-    const list = [...phases];
-    if (value.phaseId && !list.some((p) => p.id === value.phaseId)) {
-      list.unshift({
-        id: value.phaseId,
-        user_id: '',
-        item_id: phaseHostItemId || '',
-        title: value.phaseTitle || '已关联阶段',
-        description: null,
-        start_date: null,
-        end_date: null,
-        status: '进行中',
-        is_historical: false,
-        sort_order: 0,
-        created_at: '',
-        updated_at: '',
-      });
-    }
-    return list;
-  }, [phases, value.phaseId, value.phaseTitle, phaseHostItemId]);
-
-  const markUserCategory = useCallback((id: string) => {
-    setUserCategoryIds((prev) => {
-      if (prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
-  }, []);
-
-  /** 选中大类后立即预取该大类下各二类的三类 / 阶段 */
-  useEffect(() => {
-    if (!activeCategoryId || childItems.length === 0) return;
-    for (const child of childItems) {
-      prefetchSubItems(child.id);
-      prefetchPhases(child.id);
-    }
-  }, [activeCategoryId, childItems]);
-
-  const notifySubItemsLoaded = useCallback((list: SubItem[]) => {
-    queueMicrotask(() => onSubItemsLoadedRef.current?.(list));
-  }, []);
-
-  const applyCachedSubItemsForHost = useCallback((hostId: string) => {
-    const cached = subItemsCache.get(hostId);
-    if (cached) {
-      setSubItems(cached);
-      setSubLoading(false);
-      notifySubItemsLoaded(cached);
-      return true;
-    }
-    setSubLoading(true);
-    return false;
-  }, [notifySubItemsLoaded]);
-
-  const applyCachedPhasesForHost = useCallback((hostId: string) => {
-    const cached = phasesCache.get(hostId);
-    if (cached) {
-      setPhases(cached);
-      setPhaseLoading(false);
-      return true;
-    }
-    setPhaseLoading(true);
-    return false;
-  }, []);
-
-  useEffect(() => {
-    if (!subItemHostId) {
-      setSubItems([]);
-      setSubLoading(false);
-      notifySubItemsLoaded([]);
-      return;
-    }
-
-    const cached = subItemsCache.get(subItemHostId);
-    if (cached) {
-      setSubItems(cached);
-      setSubLoading(false);
-      notifySubItemsLoaded(cached);
-      return;
-    }
-
-    let cancelled = false;
-    const loadingTimer = window.setTimeout(() => {
-      if (!cancelled) setSubLoading(true);
-    }, 120);
-
-    fetch(`/api/v2/sub-items?item_id=${subItemHostId}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        const list: SubItem[] = data.data ?? [];
-        subItemsCache.set(subItemHostId, list);
-        setSubItems(list);
-        notifySubItemsLoaded(list);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSubItems([]);
-          notifySubItemsLoaded([]);
-        }
-      })
-      .finally(() => {
-        window.clearTimeout(loadingTimer);
-        if (!cancelled) setSubLoading(false);
-      });
-    return () => {
-      cancelled = true;
-      window.clearTimeout(loadingTimer);
-    };
-  }, [subItemHostId, notifySubItemsLoaded]);
-
-  useEffect(() => {
-    if (!phaseHostItemId) {
-      setPhases([]);
-      setPhaseLoading(false);
-      return;
-    }
-
-    const cached = phasesCache.get(phaseHostItemId);
-    if (cached) {
-      setPhases(cached);
-      setPhaseLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    const loadingTimer = window.setTimeout(() => {
-      if (!cancelled) setPhaseLoading(true);
-    }, 120);
-
-    fetch(
-      `/api/v2/phases?item_id=${encodeURIComponent(phaseHostItemId)}&status=${encodeURIComponent('进行中')}`
-    )
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        const list: Phase[] = data.data ?? [];
-        phasesCache.set(phaseHostItemId, list);
-        setPhases(list);
-      })
-      .catch(() => {
-        if (!cancelled) setPhases([]);
-      })
-      .finally(() => {
-        window.clearTimeout(loadingTimer);
-        if (!cancelled) setPhaseLoading(false);
-      });
-    return () => {
-      cancelled = true;
-      window.clearTimeout(loadingTimer);
-    };
-  }, [phaseHostItemId]);
+  const {
+    activeCategoryId,
+    categoryItems,
+    childItems,
+    level3Items,
+    subItems,
+    subLoading,
+    phaseLoading,
+    phaseOptions,
+    phaseHostItemId,
+    isL2Selected,
+    creating,
+    createText,
+    setCreateText,
+    createSubmitting,
+    createError,
+    pathParts,
+    l3SelectedId,
+    l3FallbackLabel,
+    l2SelectedId,
+    l2FallbackLabel,
+    hasL3Content,
+    setCategory,
+    setItem,
+    setPhase,
+    startCreate,
+    cancelCreate,
+    submitCreate,
+    clearL3Selection,
+    pickL2Item,
+    pickL3Option,
+    itemDepth,
+  } = ctx;
 
   const labelClass = compact
     ? 'text-[10px] text-slate-400 w-8 shrink-0'
@@ -350,143 +214,6 @@ function ActivityContextPicker({
 
   const selectClass =
     'flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-200 disabled:opacity-50 min-w-0';
-
-  const clearPhase = (): Pick<ActivityContextValue, 'phaseId' | 'phaseTitle'> => ({
-    phaseId: '',
-    phaseTitle: undefined,
-  });
-
-  const setCategory = (categoryItemId: string, categoryTitle?: string) => {
-    setActiveCategoryId(categoryItemId);
-    startTransition(() => {
-      onChange({
-        categoryItemId,
-        categoryTitle,
-        itemId: '',
-        itemTitle: undefined,
-        subItemId: '',
-        subItemTitle: undefined,
-        ...clearPhase(),
-      });
-    });
-  };
-
-  const setItem = (itemId: string, itemTitle?: string) => {
-    startTransition(() => {
-      onChange({
-        ...value,
-        itemId,
-        itemTitle,
-        subItemId: '',
-        subItemTitle: undefined,
-        ...clearPhase(),
-      });
-    });
-  };
-
-  const setSubItem = (subItemId: string, subItemTitle?: string) => {
-    startTransition(() => {
-      onChange({ ...value, subItemId, subItemTitle });
-    });
-  };
-
-  const setPhase = (phaseId: string, phaseTitle?: string) => {
-    startTransition(() => {
-      onChange({ ...value, phaseId, phaseTitle });
-    });
-  };
-
-  const startCreate = (level: CreateLevel) => {
-    setCreateError(null);
-    setCreating(level);
-    setCreateText('');
-  };
-
-  const cancelCreate = () => {
-    setCreating(null);
-    setCreateText('');
-    setCreateError(null);
-  };
-
-  const parseCreateError = (
-    res: Response,
-    data: { error?: { message?: string }; conflict?: { message?: string } }
-  ) => {
-    if (res.status === 409 && data.conflict?.message) return data.conflict.message;
-    return data.error?.message ?? '创建失败';
-  };
-
-  const submitCreate = async () => {
-    const title = createText.trim();
-    if (!title || !creating) return;
-    if (creating === 'item' && !activeCategoryId) {
-      const msg = '请先选择一类';
-      setCreateError(msg);
-      onCreateError?.(msg);
-      return;
-    }
-    if (creating === 'subItem' && !subItemHostId) {
-      const msg = '请先选择二类';
-      setCreateError(msg);
-      onCreateError?.(msg);
-      return;
-    }
-
-    setCreateSubmitting(true);
-    setCreateError(null);
-    try {
-      if (creating === 'category') {
-        const res = await fetch('/api/v2/items', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title, parent_item_id: null }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(parseCreateError(res, data));
-        const item: Item | null = data.data ?? null;
-        if (!item?.id) throw new Error('创建成功但未返回数据');
-        markUserCategory(item.id);
-        onItemCreated?.(item);
-        await onItemsChange?.();
-        setCategory(item.id, item.title);
-      } else if (creating === 'item') {
-        const res = await fetch('/api/v2/items', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title, parent_item_id: activeCategoryId }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(parseCreateError(res, data));
-        const item: Item | null = data.data ?? null;
-        if (!item?.id) throw new Error('创建成功但未返回数据');
-        onItemCreated?.(item);
-        await onItemsChange?.();
-        setItem(item.id, item.title);
-      } else if (creating === 'subItem') {
-        const res = await fetch('/api/v2/sub-items', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ item_id: subItemHostId, title }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(parseCreateError(res, data));
-        const sub: SubItem | null = data.data ?? null;
-        if (!sub?.id) throw new Error('创建成功但未返回数据');
-        const next = [...subItems, sub];
-        if (subItemHostId) subItemsCache.set(subItemHostId, next);
-        setSubItems(next);
-        notifySubItemsLoaded(next);
-        setSubItem(sub.id, sub.title);
-      }
-      cancelCreate();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : '创建失败';
-      setCreateError(msg);
-      onCreateError?.(msg);
-    } finally {
-      setCreateSubmitting(false);
-    }
-  };
 
   const renderCreateRow = (placeholder: string) => (
     <div className="flex flex-col gap-1 flex-1 min-w-0">
@@ -523,21 +250,22 @@ function ActivityContextPicker({
     </div>
   );
 
-  const pathParts = [value.categoryTitle, value.itemTitle, value.subItemTitle].filter(Boolean);
-
-  const itemDepth = value.itemId ? getItemDepthFromIndex(itemIndex, value.itemId) : -1;
-  const isL2Selected = itemDepth === 1;
-  const showL3Row = isL2Selected;
-  /** 选中二类/三类且能解析到阶段宿主时，始终展示阶段行（显式 phase_id，不做日期推算） */
+  const showL3Row = isL2Selected && hasL3Content;
   const showPhaseRow = !!phaseHostItemId && !!value.itemId && itemDepth >= 1;
-  const showSubItemHint =
-    isL2Selected &&
-    !value.subItemId &&
-    !subLoading &&
-    (subItems.length > 0 || level3Items.length > 0);
+  const showCategoryLevel = levelScope !== 'item';
+  const showItemLevels = levelScope !== 'category';
+
+  const l3Options = useMemo(
+    () => [
+      ...level3Items.map((l3) => ({ id: l3.id, label: l3.title })),
+      ...subItems.map((sub) => ({ id: sub.id, label: sub.title })),
+    ],
+    [level3Items, subItems]
+  );
 
   return (
     <div className="space-y-2">
+      {showCategoryLevel && (
       <div className="space-y-1.5">
         {!compact && (
           <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wide">一类</p>
@@ -583,52 +311,45 @@ function ActivityContextPicker({
           </div>
         )}
 
-        {activeCategoryId && (
+      </div>
+      )}
+
+      {showItemLevels && (
+      <div className="space-y-1.5">
+        {activeCategoryId ? (
           <div className="flex items-center gap-1.5 min-w-0">
-            <ChevronRight className="h-3 w-3 text-slate-300 shrink-0" aria-hidden />
+            {levelScope === 'all' && <ChevronRight className="h-3 w-3 text-slate-300 shrink-0" aria-hidden />}
             {creating === 'item' ? (
               renderCreateRow('新二类名称')
             ) : (
               <>
-                <select
-                  value={value.itemId || PLACEHOLDER_ITEM_OPTION}
-                  onChange={(e) => {
-                    if (e.target.value === CREATE_ITEM_OPTION) {
-                      startCreate('item');
-                      return;
-                    }
-                    if (e.target.value === PLACEHOLDER_ITEM_OPTION) {
-                      setItem('', undefined);
-                      return;
-                    }
-                    const child = childItems.find((i) => i.id === e.target.value);
-                    applyCachedSubItemsForHost(e.target.value);
-                    applyCachedPhasesForHost(e.target.value);
-                    setItem(e.target.value, child?.title);
-                  }}
-                  className={selectClass}
-                >
-                  <option value={PLACEHOLDER_ITEM_OPTION} disabled>
-                    选择二类
-                  </option>
-                  <option value={CREATE_ITEM_OPTION}>+ 新建二类</option>
-                  {childItems.map((child) => (
-                    <option key={child.id} value={child.id}>
-                      {child.title}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => startCreate('item')}
-                  className="shrink-0 flex items-center gap-0.5 rounded-lg border border-dashed border-slate-300 px-2 py-1.5 text-[10px] text-slate-400 hover:border-blue-300 hover:text-blue-500"
-                  aria-label="新建二类"
-                >
-                  <Plus className="h-3 w-3" />
-                </button>
+                <ContextLevelSelect
+                  selectedId={l2SelectedId}
+                  emptyLabel="不选二类"
+                  createLabel="+ 新建二类"
+                  options={childItems.map((child) => ({ id: child.id, label: child.title }))}
+                  fallbackLabel={l2FallbackLabel}
+                  onPick={pickL2Item}
+                  onClear={() => setItem('', undefined)}
+                  onCreate={() => startCreate('item')}
+                  triggerClassName={selectClass}
+                  ariaLabel="二类"
+                />
+                {l2SelectedId ? (
+                  <button
+                    type="button"
+                    onClick={() => setItem('', undefined)}
+                    className="shrink-0 flex items-center rounded-lg border border-slate-200 px-2 py-1.5 text-slate-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                    aria-label="取消二类"
+                  >
+                    <Minus className="h-3 w-3" />
+                  </button>
+                ) : null}
               </>
             )}
           </div>
+        ) : (
+          <p className="text-[11px] text-slate-400">请先选择一类</p>
         )}
 
         {isL2Selected && showL3Row && creating !== 'subItem' && (
@@ -636,67 +357,56 @@ function ActivityContextPicker({
             <ChevronRight className="h-3 w-3 text-slate-300 shrink-0" aria-hidden />
             {subLoading ? (
               <>
-                <select disabled className={`${selectClass} opacity-60`}>
-                  <option>不选三类</option>
-                </select>
+                <ContextLevelSelect
+                  selectedId=""
+                  emptyLabel="不选三类"
+                  createLabel="+ 新建三类"
+                  options={[]}
+                  onPick={() => {}}
+                  onClear={() => {}}
+                  onCreate={() => {}}
+                  triggerClassName={selectClass}
+                  ariaLabel="三类"
+                  disabled
+                />
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-slate-300" aria-hidden />
               </>
             ) : subItems.length === 0 && level3Items.length === 0 ? (
-              <div className="flex flex-1 items-center gap-1.5 min-w-0">
-                <span className="text-[11px] text-slate-400">无三类（可不选）</span>
-                <button
-                  type="button"
-                  onClick={() => startCreate('subItem')}
-                  className="shrink-0 flex items-center gap-0.5 rounded-lg border border-dashed border-slate-300 px-2 py-1.5 text-[10px] text-slate-400 hover:border-blue-300 hover:text-blue-500"
-                >
-                  <Plus className="h-3 w-3" />
-                  新建
-                </button>
-              </div>
+              <ContextLevelSelect
+                selectedId=""
+                emptyLabel="不选三类"
+                createLabel="+ 新建三类"
+                options={[]}
+                onPick={() => {}}
+                onClear={() => {}}
+                onCreate={() => startCreate('subItem')}
+                triggerClassName={selectClass}
+                ariaLabel="三类"
+              />
             ) : (
               <>
-                <select
-                  value={value.subItemId || PLACEHOLDER_SUB_ITEM_OPTION}
-                  onChange={(e) => {
-                    if (e.target.value === CREATE_SUB_ITEM_OPTION) {
-                      startCreate('subItem');
-                      return;
-                    }
-                    if (e.target.value === PLACEHOLDER_SUB_ITEM_OPTION) {
-                      setSubItem('', undefined);
-                      return;
-                    }
-                    const sub = subItems.find((s) => s.id === e.target.value);
-                    if (sub) {
-                      setSubItem(sub.id, sub.title);
-                      return;
-                    }
-                    const l3 = level3Items.find((i) => i.id === e.target.value);
-                    if (l3) setItem(l3.id, l3.title);
-                  }}
-                  className={selectClass}
-                >
-                  <option value={PLACEHOLDER_SUB_ITEM_OPTION}>不选三类</option>
-                  {level3Items.map((l3) => (
-                    <option key={l3.id} value={l3.id}>
-                      {l3.title}
-                    </option>
-                  ))}
-                  {subItems.map((sub) => (
-                    <option key={sub.id} value={sub.id}>
-                      {sub.title}
-                    </option>
-                  ))}
-                  <option value={CREATE_SUB_ITEM_OPTION}>+ 新建三类</option>
-                </select>
-                <button
-                  type="button"
-                  onClick={() => startCreate('subItem')}
-                  className="shrink-0 flex items-center gap-0.5 rounded-lg border border-dashed border-slate-300 px-2 py-1.5 text-[10px] text-slate-400 hover:border-blue-300 hover:text-blue-500"
-                  aria-label="新建三类"
-                >
-                  <Plus className="h-3 w-3" />
-                </button>
+                <ContextLevelSelect
+                  selectedId={l3SelectedId}
+                  emptyLabel="不选三类"
+                  createLabel="+ 新建三类"
+                  options={l3Options}
+                  fallbackLabel={l3FallbackLabel}
+                  onPick={pickL3Option}
+                  onClear={clearL3Selection}
+                  onCreate={() => startCreate('subItem')}
+                  triggerClassName={selectClass}
+                  ariaLabel="三类"
+                />
+                {l3SelectedId ? (
+                  <button
+                    type="button"
+                    onClick={clearL3Selection}
+                    className="shrink-0 flex items-center rounded-lg border border-slate-200 px-2 py-1.5 text-slate-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                    aria-label="取消三类"
+                  >
+                    <Minus className="h-3 w-3" />
+                  </button>
+                ) : null}
               </>
             )}
           </div>
@@ -707,12 +417,6 @@ function ActivityContextPicker({
             <ChevronRight className="h-3 w-3 text-slate-300 shrink-0" aria-hidden />
             {renderCreateRow('新三类名称')}
           </div>
-        )}
-
-        {showSubItemHint && (
-          <p className="text-[10px] text-amber-600 pl-4">
-            选择职能（三类）以支持职能视角统计；跨项目请保持 SubItem 名称完全一致。
-          </p>
         )}
 
         {showPhaseRow && (
@@ -754,8 +458,9 @@ function ActivityContextPicker({
           </div>
         )}
       </div>
+      )}
 
-      {(pathParts.length > 0 || value.phaseTitle) && (
+      {(pathParts.length > 0 || value.phaseTitle) && !hidePathSummary && (
         <p className="text-[10px] text-slate-400">
           {[pathParts.join(' → '), value.phaseTitle].filter(Boolean).join(' · ')}
         </p>

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { X, Save, Trash2 } from 'lucide-react';
 import type { Phase, CreatePhasePayload, UpdatePhasePayload } from '@/types/teto';
+import { getApiErrorMessage } from '@/lib/api/client-errors';
 
 interface PhaseFormProps {
   itemId: string;
@@ -54,7 +55,7 @@ export default function PhaseForm({ itemId, phase, defaultHistorical, onClose, o
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        if (res.ok) { onSaved(); } else { const e = await res.json(); onError(e.error || '保存失败'); }
+        if (res.ok) { onSaved(); } else { const e = await res.json(); onError(getApiErrorMessage(e, '保存失败')); }
       } else {
         const payload: CreatePhasePayload = {
           item_id: itemId,
@@ -70,7 +71,7 @@ export default function PhaseForm({ itemId, phase, defaultHistorical, onClose, o
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        if (res.ok) { onSaved(); } else { const e = await res.json(); onError(e.error || '创建失败'); }
+        if (res.ok) { onSaved(); } else { const e = await res.json(); onError(getApiErrorMessage(e, '创建失败')); }
       }
     } catch { onError('保存失败，请重试'); } finally { setSaving(false); }
   };
@@ -80,7 +81,7 @@ export default function PhaseForm({ itemId, phase, defaultHistorical, onClose, o
     setDeleting(true);
     try {
       const res = await fetch(`/api/v2/phases/${phase.id}`, { method: 'DELETE' });
-      if (res.ok) { onSaved(); } else { const e = await res.json(); onError(e.error || '删除失败'); }
+      if (res.ok) { onSaved(); } else { const e = await res.json(); onError(getApiErrorMessage(e, '删除失败')); }
     } catch { onError('删除失败，请重试'); } finally { setDeleting(false); }
   };
 

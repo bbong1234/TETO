@@ -22,7 +22,7 @@ export interface RecordEditFormState {
   mood: string;
   energy: string;
   status: string;
-  note: string;
+  notes: string[];
   location: string;
   peopleStr: string;
   cost: string;
@@ -113,7 +113,12 @@ export function recordToFormState(record: TetoRecord, items: Item[]): RecordEdit
     mood: record.mood || moodFromTag || '',
     energy: record.energy || '',
     status: record.status || '',
-    note: record.note || '',
+    notes:
+      record.notes && record.notes.length > 0
+        ? record.notes.filter((n) => n.trim())
+        : record.note?.trim()
+          ? [record.note.trim()]
+          : [''],
     location: record.location || '',
     peopleStr: (record.people || []).join(', '),
     cost: record.cost != null ? String(record.cost) : '',
@@ -154,7 +159,8 @@ export function formStateToUpdatePayload(
     mood: form.mood || undefined,
     energy: form.energy || undefined,
     status: form.status || undefined,
-    note: form.note || undefined,
+    notes: form.notes.map((n) => n.trim()).filter(Boolean),
+    note: form.notes.map((n) => n.trim()).find(Boolean) || undefined,
     location: form.location.trim() || null,
     people: splitList(form.peopleStr),
     cost: form.cost ? parseFloat(form.cost) : null,

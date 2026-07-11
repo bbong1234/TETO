@@ -123,6 +123,8 @@ export interface Record {
   energy: string | null;
   result: string | null;
   note: string | null;
+  /** 多条笔记（优先于 note） */
+  notes?: string[] | null;
   category?: string | null;
   subcategory?: string | null;
   /** 工具/载体（如：不背单词、多邻国），与子项正交 */
@@ -239,6 +241,10 @@ export interface Item {
    * 与 records.item_id / sub_items 构成「大类 → 事项 → 子项」三层语义
    */
   parent_item_id?: string | null;
+  /** 默认职能标签 id（选中事项时自动带出） */
+  default_function_tag_id?: string | null;
+  /** 默认工具标签（选中事项时自动带出） */
+  default_tool_label?: string | null;
   created_at: string;
   updated_at: string;
   // 关联数据
@@ -292,12 +298,21 @@ export interface ItemActivityStats {
   last_active_at: string | null;
 }
 
+/** 标签类型：项目/场景、职能/动作、情绪 */
+export type TagType = 'project' | 'function' | 'mood';
+
+export const TAG_TYPE_LABELS: { [K in TagType]: string } = {
+  project: '项目',
+  function: '动作',
+  mood: '情绪',
+};
+
 export interface Tag {
   id: string;
   user_id: string;
   name: string;
   color: string | null;
-  type: string | null;
+  type: TagType | string | null;
   created_at: string;
 }
 
@@ -375,7 +390,7 @@ export interface CreateRecordPayload {
   energy?: string;
   result?: string;
   note?: string;
-  category?: string;
+  notes?: string[];
   subcategory?: string;
   tool_label?: string | null;
   item_id?: string;
@@ -400,6 +415,10 @@ export interface CreateRecordPayload {
   parent_input_id?: string | null;
   lifecycle_status?: LifecycleStatus;
   tag_ids?: string[];
+  paused_total_seconds?: number;
+  paused_at?: string | null;
+  parent_session_id?: string | null;
+  session_state?: SessionState;
   // 规律/历史字段
   data_nature?: 'fact' | 'inferred';
   is_period_rule?: boolean;
@@ -454,6 +473,8 @@ export interface CreateItemPayload {
   started_at?: string;
   folder_id?: string | null;
   parent_item_id?: string | null;
+  default_function_tag_id?: string | null;
+  default_tool_label?: string | null;
 }
 
 export interface UpdateItemPayload {
@@ -467,18 +488,72 @@ export interface UpdateItemPayload {
   ended_at?: string;
   folder_id?: string | null;
   parent_item_id?: string | null;
+  default_function_tag_id?: string | null;
+  default_tool_label?: string | null;
+}
+
+/** 项目笔记类型 */
+export const PROJECT_NOTE_TYPES = ['knowledge', 'review', 'insight', 'reflection', 'milestone'] as const;
+export type ProjectNoteType = typeof PROJECT_NOTE_TYPES[number];
+
+export interface ProjectNote {
+  id: string;
+  user_id: string;
+  item_id: string;
+  content: string;
+  note_type: ProjectNoteType;
+  source_event_id?: string | null;
+  record_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProjectNotePayload {
+  item_id: string;
+  content: string;
+  note_type?: ProjectNoteType;
+  source_event_id?: string | null;
+  record_id?: string | null;
+}
+
+/** 滚动派生的用户画像 */
+export interface UserProfile {
+  user_id: string;
+  active_hours: { hour: number; minutes: number }[];
+  avg_focus_minutes: number | null;
+  top_items: { item_id: string; item_title: string; minutes: number }[];
+  interrupt_patterns: { label: string; count: number }[];
+  mood_summary: { average: number | null; trend: 'up' | 'down' | 'stable' };
+  updated_at: string;
+}
+
+/** 复盘周期 */
+export type ReviewPeriod = 'day' | 'week' | 'month';
+
+export interface ReviewSummary {
+  period: ReviewPeriod;
+  date_from: string;
+  date_to: string;
+  label: string;
+  headline: string;
+  sessions_count: number;
+  total_minutes: number;
+  milestones: string[];
+  ideas_count: number;
+  top_items: { item_id: string; item_title: string; minutes: number }[];
+  unassigned_count: number;
 }
 
 export interface CreateTagPayload {
   name: string;
   color?: string;
-  type?: string;
+  type?: TagType | string | null;
 }
 
 export interface UpdateTagPayload {
   name?: string;
   color?: string;
-  type?: string;
+  type?: TagType | string | null;
 }
 
 // ============================================
@@ -500,6 +575,12 @@ export interface RecordsQuery {
   limit?: number;
   /** 默认 asc；详情页 feed 可用 desc 取最近记录 */
   order?: 'asc' | 'desc';
+  /** 仅无 item_id 且待确认的记录（收件箱） */
+  unassigned?: boolean;
+  /** 按审核状态过滤 */
+  review_status?: 'unchecked' | 'confirmed' | 'corrected' | 'disputed';
+  /** 仅已有 item_id 的记录（分类待确认队列） */
+  has_item_id?: boolean;
 }
 
 export interface ItemsQuery {
@@ -520,6 +601,8 @@ export const INSIGHT_METRIC_IDS = [
   'time_distribution',
   'comparison',
   'data_review',
+  'mood_energy',
+  'expense',
 ] as const;
 export type InsightMetricId = (typeof INSIGHT_METRIC_IDS)[number];
 
@@ -557,6 +640,12 @@ export interface TimelineEntry {
   start_time?: string;   // "HH:MM" 格式，来自 occurred_at
   end_time?: string;     // "HH:MM" 格式，来自 occurred_at_end
   text: string;          // 优先 action_text + event_text 合并，否则 content
+  /** 事项路径 L1-L2-L3（分块展示） */
+  tag_path?: string;
+  /** 动作（分块展示） */
+  action_label?: string;
+  /** 时间/摘要等普通文字（分块展示） */
+  detail_text?: string;
   kind?: TimelineEntryKind;
   record_type?: RecordType;
   is_current?: boolean;  // 进行中记录
@@ -564,11 +653,15 @@ export interface TimelineEntry {
   is_pinned?: boolean;   // 置顶（如今日待办计划）
   occurred_at?: string;  // ISO，进行中条目用于实时计时
   duration_minutes?: number;
+  /** 秒级净时长（时间线后缀展示） */
+  duration_seconds?: number;
   item_title?: string;
   category?: string;
   subcategory?: string;
   tag_names?: string[];
   time_label?: string;   // 模糊时间或计划时段文案
+  /** 未关联事项（item_id 为空） */
+  is_unassigned?: boolean;
 }
 
 /** 今日活动统计（记录页轻量统计） */
@@ -637,6 +730,49 @@ export interface GoalProgress {
   period_label: string;      // "7天" / "本周" / "本月" / "累计"
   is_over_limit?: boolean;   // 仅周期性限制型
   rule_type: GoalRuleType;   // 内部逻辑用，不展示给用户
+  /** 按近7天均速预测的完成日期 */
+  predicted_completion_date?: string | null;
+  current_velocity?: number | null;
+  required_velocity?: number | null;
+  on_track?: 'on-track' | 'at-risk' | 'unknown';
+  prediction_note?: string | null;
+}
+
+/** 情绪趋势（洞察页） */
+export interface MoodEnergyDay {
+  date: string;
+  mood_avg: number | null;
+  record_count: number;
+}
+
+export interface MoodEnergyTrend {
+  days: MoodEnergyDay[];
+  average_mood: number | null;
+}
+
+/** 消费汇总（洞察页） */
+export interface ExpenseCategoryRow {
+  label: string;
+  amount: number;
+}
+
+export interface ExpenseItemRow {
+  item_id: string | null;
+  label: string;
+  amount: number;
+}
+
+export interface ExpensePaymentRow {
+  label: string;
+  amount: number;
+}
+
+export interface ExpenseSummary {
+  total_expense: number;
+  total_income: number;
+  by_category: ExpenseCategoryRow[];
+  by_item: ExpenseItemRow[];
+  by_payment_source: ExpensePaymentRow[];
 }
 
 // ── 事实 ──
@@ -719,6 +855,12 @@ export interface InsightsData {
 
   // 事实来源（完整列表，含底部 AI 润色用）
   facts: InsightFact[];
+
+  // 情绪趋势
+  mood_energy?: MoodEnergyTrend;
+
+  // 消费汇总
+  expense?: ExpenseSummary;
 }
 
 // ============ 目标与阶段 ============

@@ -27,6 +27,14 @@ const InsightsClient = dynamic(
   () => import('@/app/(dashboard)/insights/InsightsClient'),
   { loading: () => <InsightsPageSkeleton /> }
 );
+const ReviewClient = dynamic(
+  () => import('@/app/(dashboard)/review/ReviewClient'),
+  { loading: () => <InsightsPageSkeleton /> }
+);
+const GoalsClient = dynamic(
+  () => import('@/app/(dashboard)/goals/GoalsClient'),
+  { loading: () => <InsightsPageSkeleton /> }
+);
 
 const TAB_PANEL: Record<
   MobileTabRoot,
@@ -34,7 +42,9 @@ const TAB_PANEL: Record<
 > = {
   '/records': { component: RecordsClient, skeleton: <RecordsDayContentSkeleton /> },
   '/items': { component: ItemsClient, skeleton: <ItemsDesktopSkeleton /> },
+  '/review': { component: ReviewClient, skeleton: <InsightsPageSkeleton /> },
   '/insights': { component: InsightsClient, skeleton: <InsightsPageSkeleton /> },
+  '/goals': { component: GoalsClient, skeleton: <InsightsPageSkeleton /> },
 };
 
 interface MobileTabShellProps {

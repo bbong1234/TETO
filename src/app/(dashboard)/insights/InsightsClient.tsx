@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { BarChart3, RefreshCw, Download, Loader2 } from 'lucide-react';
 import DateRangeSelector from './components/DateRangeSelector';
 import TodayTimelinePanel from './components/TodayTimelinePanel';
@@ -9,6 +9,12 @@ import ActivityHeatmapPanel from './components/ActivityHeatmapPanel';
 import InsightSummaryPanel from './components/InsightSummaryPanel';
 import ItemActivityPanel from './components/ItemActivityPanel';
 import GoalProgressPanel from './components/GoalProgressPanel';
+import PredictionPanel from './components/PredictionPanel';
+import MoodEnergyTrendPanel from './components/MoodEnergyTrendPanel';
+import ExpenseSummaryPanel from './components/ExpenseSummaryPanel';
+import FunctionTagInsightsPanel from './components/FunctionTagInsightsPanel';
+import TodayActivityStats from '../records/components/TodayActivityStats';
+import type { Item, Record as TetoRecord } from '@/types/teto';
 import TimeDistributionPanel from './components/TimeDistributionPanel';
 import PeriodComparisonPanel from './components/PeriodComparisonPanel';
 import DataReviewPanel from './components/DataReviewPanel';
@@ -30,6 +36,8 @@ const SLOW_METRICS: InsightMetricId[] = [
   'time_distribution',
   'comparison',
   'data_review',
+  'mood_energy',
+  'expense',
 ];
 
 function getDateRange(preset: DatePreset): { date_from: string; date_to: string } {
@@ -66,6 +74,8 @@ function mergeInsights(fast: InsightsData, slow: InsightsData | null): InsightsD
     comparison: slow.comparison,
     data_review: slow.data_review,
     facts: slow.facts,
+    mood_energy: slow.mood_energy,
+    expense: slow.expense,
   };
 }
 
@@ -75,6 +85,50 @@ function DeferredSectionSkeleton({ label }: { label: string }) {
       <Loader2 className="h-3.5 w-3.5 animate-spin" />
       {label}
     </div>
+  );
+}
+
+function TodayActivityStatsSection({ date }: { date: string }) {
+  const [records, setRecords] = useState<TetoRecord[]>([]);
+  const [currentActivity, setCurrentActivity] = useState<TetoRecord | null>(null);
+  const [items, setItems] = useState<Item[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/v2/records/bootstrap?date=${date}&limit=200`);
+        const data = await res.json();
+        if (cancelled) return;
+        setRecords(data.data?.records ?? []);
+        setItems(data.data?.items ?? []);
+        setCurrentActivity(data.data?.current_activity ?? null);
+      } catch {
+        if (!cancelled) {
+          setRecords([]);
+          setItems([]);
+          setCurrentActivity(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [date]);
+
+  if (loading) return <DeferredSectionSkeleton label="正在加载今日统计…" />;
+
+  return (
+    <TodayActivityStats
+      records={records}
+      date={date}
+      currentActivity={currentActivity}
+      items={items}
+    />
   );
 }
 
@@ -130,6 +184,9 @@ export default function InsightsClient() {
     setDateTo(to);
   };
 
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const isTodayRange = dateFrom === dateTo && dateFrom === todayStr;
+
   return (
     <div className="h-full flex flex-col overflow-hidden p-4 lg:p-6">
       <div className="flex-shrink-0 flex items-center justify-between gap-3 mb-5">
@@ -170,6 +227,7 @@ export default function InsightsClient() {
         {!loading && !error && insightsData && (
           <>
             <TodayTimelinePanel data={insightsData.recent_timeline.today} />
+            {isTodayRange && <TodayActivityStatsSection date={todayStr} />}
             <YesterdayTimelinePanel data={insightsData.recent_timeline.yesterday} />
             <ActivityHeatmapPanel days={insightsData.activity_heatmap.days} />
 
@@ -195,6 +253,21 @@ export default function InsightsClient() {
                 />
 
                 <GoalProgressPanel progress={insightsData.goals.progress} />
+                <PredictionPanel progress={insightsData.goals.progress} />
+                <MoodEnergyTrendPanel data={insightsData.mood_energy} />
+                <ExpenseSummaryPanel data={insightsData.expense} />
+
+                {/* 职能标签跨项目时间汇总 */}
+                {dateFrom && dateTo && (
+                  <section className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+                    <div className="mb-3 flex items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-700">职能动作分布</span>
+                      <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-500">跨项目</span>
+                    </div>
+                    <FunctionTagInsightsPanel dateFrom={dateFrom} dateTo={dateTo} />
+                  </section>
+                )}
+
                 <TimeDistributionPanel data={insightsData.time_distribution} />
                 <PeriodComparisonPanel changes={insightsData.comparison.changes} />
                 <DataReviewPanel data={insightsData.data_review} />

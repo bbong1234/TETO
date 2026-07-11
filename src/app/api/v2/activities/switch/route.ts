@@ -16,6 +16,7 @@ interface SwitchActivityBody {
   phase_id?: string | null;
   tool_label?: string | null;
   tag_ids?: string[];
+  start_paused?: boolean;
 }
 
 export async function POST(request: NextRequest) {
@@ -53,6 +54,7 @@ export async function POST(request: NextRequest) {
       phase_id: body.phase_id,
       tool_label: body.tool_label,
       tag_ids: body.tag_ids,
+      start_paused: body.start_paused,
       supabase,
       traceId: ctx.traceId,
     });

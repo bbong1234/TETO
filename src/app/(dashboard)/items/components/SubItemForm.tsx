@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
+import { getApiErrorMessage } from '@/lib/api/client-errors';
 
 interface SubItemFormProps {
   itemId: string;
@@ -44,7 +45,7 @@ export default function SubItemForm({ itemId, initialData, onClose, onSaved }: S
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || '保存失败');
+        throw new Error(getApiErrorMessage(data, '保存失败'));
       }
 
       onSaved();

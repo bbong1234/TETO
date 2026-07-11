@@ -1,10 +1,11 @@
-import type { Item } from '@/types/teto';
+import type { Item, Record as TetoRecord } from '@/types/teto';
 import {
   ACTIVITY_CATEGORY_PRESETS,
   SKILL_CATEGORY_PRESETS,
   SKILL_DEFAULT_ITEM_TITLES,
   type SkillCategoryPreset,
 } from '@/lib/activity/constants';
+import { UNASSIGNED_ACTIVE_PLACEHOLDER } from '@/lib/activity/recent-context';
 
 const ACTIVE_ITEM_STATUSES = new Set(['活跃', '推进中', '放缓', '停滞']);
 const PRESET_SET = new Set<string>(ACTIVITY_CATEGORY_PRESETS);
@@ -195,11 +196,32 @@ export function getItemsForCategoryFromIndex(
   categoryItemId: string,
   selectedCategoryId?: string
 ): Item[] {
-  const category = index.itemById.get(categoryItemId);
-  const children = index.childrenByParent.get(categoryItemId) ?? [];
+  return getAttributionPickerChildItems(items, categoryItemId, selectedCategoryId, index);
+}
+
+/**
+ * 记录页归属选择器用的大类下子项列表。
+ * 仅展示在用二类（活跃/推进中/放缓/停滞），排除已搁置与已完成。
+ */
+export function getAttributionPickerChildItems(
+  items: Item[],
+  categoryItemId: string,
+  selectedCategoryId?: string,
+  index?: ItemTreeIndex
+): Item[] {
+  const category = index?.itemById.get(categoryItemId) ?? items.find((i) => i.id === categoryItemId);
+  const children = items.filter(
+    (i) => i.parent_item_id === categoryItemId && isActiveItem(i)
+  );
+
   if (category?.title === '其他') {
-    return getItemsForCategory(items, categoryItemId, selectedCategoryId);
+    const orphans = getOrphanItems(items, selectedCategoryId, { includeCompleted: false }).filter(
+      (i) => isActiveItem(i)
+    );
+    const seen = new Set(children.map((i) => i.id));
+    return [...children, ...orphans.filter((i) => !seen.has(i.id))];
   }
+
   return children;
 }
 
@@ -295,6 +317,81 @@ export function findEnglishDefaultItem(items: Item[]): Item | undefined {
 /** 子项挂在事项 id 上 */
 export function resolveSubItemHostItemId(ctx: { itemId?: string }): string | null {
   return ctx.itemId || null;
+}
+
+/** 组织层级归一化：一类 / 二类 Item / 三类 Item 或 SubItem（与 QuickCreate 归属一致） */
+export interface NormalizedOrgLevels {
+  categoryItemId: string;
+  l2ItemId: string;
+  l3ItemId: string;
+  subItemId: string;
+  itemDepth: number;
+}
+
+export function normalizeOrgLevels(
+  items: Item[],
+  itemId: string,
+  subItemId?: string | null
+): NormalizedOrgLevels {
+  const empty: NormalizedOrgLevels = {
+    categoryItemId: '',
+    l2ItemId: '',
+    l3ItemId: '',
+    subItemId: subItemId?.trim() ?? '',
+    itemDepth: -1,
+  };
+  if (!itemId) return empty;
+
+  const path = getItemPath(items, itemId);
+  if (path.length === 0) return empty;
+
+  const depth = path.length - 1;
+
+  if (subItemId?.trim()) {
+    return {
+      categoryItemId: path[0]?.id ?? '',
+      l2ItemId: depth >= 1 ? path[path.length - 1].id : '',
+      l3ItemId: '',
+      subItemId: subItemId.trim(),
+      itemDepth: depth,
+    };
+  }
+
+  if (depth === 0) {
+    return {
+      categoryItemId: itemId,
+      l2ItemId: '',
+      l3ItemId: '',
+      subItemId: '',
+      itemDepth: 0,
+    };
+  }
+
+  if (depth === 1) {
+    return {
+      categoryItemId: path[0].id,
+      l2ItemId: itemId,
+      l3ItemId: '',
+      subItemId: '',
+      itemDepth: 1,
+    };
+  }
+
+  return {
+    categoryItemId: path[0].id,
+    l2ItemId: path[path.length - 2].id,
+    l3ItemId: itemId,
+    subItemId: '',
+    itemDepth: depth,
+  };
+}
+
+/** 二类下的三类 Item 选项（不含 SubItem；包含已完成供归属选择） */
+export function listLevel3ItemOptions(items: Item[], l2ItemId: string): Item[] {
+  if (!l2ItemId) return [];
+  return items.filter(
+    (i) => i.parent_item_id === l2ItemId && i.status !== '已搁置'
+  );
 }
 
 /** 解析记录/活动应关联的 item_id（必须为具体事项，不可直挂大类） */
@@ -466,6 +563,14 @@ export function buildContextPathLabel(
   return parts.join(' / ');
 }
 
+const SWITCH_CONTENT_RE = /^切换到\s+(.+)$/;
+
+/** 从块时间切换记录的 content 提取第三级标签名 */
+export function extractSwitchLabel(content?: string | null): string | undefined {
+  const m = content?.trim().match(SWITCH_CONTENT_RE);
+  return m?.[1]?.trim() || undefined;
+}
+
 /** 从 item_id 解析大类名称（用于统计分组） */
 export function resolveCategoryTitleForItem(
   items: Item[],
@@ -487,16 +592,236 @@ export function buildItemPathLabel(
   itemId: string | null | undefined,
   contentFallback?: string
 ): string {
-  if (!itemId) return contentFallback?.trim() ?? '';
+  if (!itemId) return sanitizeDisplayContent(contentFallback) ?? '';
   const path = getItemPath(items, itemId);
-  if (path.length === 0) return contentFallback?.trim() ?? '';
+  if (path.length === 0) return sanitizeDisplayContent(contentFallback) ?? '';
   const pathStr = path.map((i) => i.title).join(' / ');
-  const content = contentFallback?.trim();
+  const content = sanitizeDisplayContent(contentFallback);
   const leaf = path[path.length - 1]?.title;
   if (content && content !== leaf && !pathStr.endsWith(content)) {
     return `${pathStr} · ${content}`;
   }
   return pathStr || content || leaf || '';
+}
+
+function sanitizeDisplayContent(content?: string | null): string | undefined {
+  const trimmed = content?.trim();
+  if (!trimmed || trimmed === UNASSIGNED_ACTIVE_PLACEHOLDER) return undefined;
+  if (extractSwitchLabel(trimmed)) return undefined;
+  return trimmed;
+}
+
+function truncateTimelineText(text: string, maxLen = 36): string {
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen - 1)}…`;
+}
+
+/** 时间线：一级-二级-三级标签路径（与组织选择器层级一致） */
+export function buildTimelineTagPath(
+  record: Pick<
+    TetoRecord,
+    'item_id' | 'category' | 'subcategory' | 'item' | 'tags' | 'sub_item_id' | 'content'
+  >,
+  items?: Item[],
+  options?: { subItemTitle?: string; subItemTitles?: ReadonlyMap<string, string> }
+): string {
+  if (items && record.item_id) {
+    const levels = normalizeOrgLevels(items, record.item_id, record.sub_item_id ?? undefined);
+    const byId = new Map(items.map((i) => [i.id, i]));
+    const parts: string[] = [];
+    const l1 = levels.categoryItemId ? byId.get(levels.categoryItemId)?.title : undefined;
+    const l2 = levels.l2ItemId ? byId.get(levels.l2ItemId)?.title : undefined;
+    let resolvedSubTitle: string | undefined;
+    if (levels.subItemId) {
+      resolvedSubTitle =
+        options?.subItemTitle?.trim() ||
+        options?.subItemTitles?.get(levels.subItemId) ||
+        extractSwitchLabel(record.content);
+    }
+    const l3 =
+      levels.subItemId && resolvedSubTitle
+        ? resolvedSubTitle
+        : levels.l3ItemId
+          ? byId.get(levels.l3ItemId)?.title
+          : undefined;
+    if (l1) parts.push(l1);
+    if (l2) parts.push(l2);
+    if (l3) parts.push(l3);
+    if (parts.length > 0) return parts.join('-');
+  }
+
+  const legacy = [record.category, record.subcategory, record.item?.title]
+    .map((s) => s?.trim())
+    .filter(Boolean);
+  if (legacy.length > 0) {
+    return legacy.slice(0, 3).join('-');
+  }
+
+  const fnTags =
+    record.tags
+      ?.filter((t) => t.type === 'function')
+      .map((t) => t.name.trim())
+      .filter(Boolean) ?? [];
+  if (fnTags.length > 0) {
+    return fnTags.slice(0, 3).join('-');
+  }
+
+  return '';
+}
+
+export interface TimelineEntryParts {
+  tagPath: string;
+  action: string;
+  timeText: string;
+  detail: string;
+  text: string;
+}
+
+type TimelineEntryRecord = Pick<
+  TetoRecord,
+  | 'content'
+  | 'raw_input'
+  | 'input_source'
+  | 'action_text'
+  | 'event_text'
+  | 'object_text'
+  | 'time_text'
+  | 'note'
+  | 'result'
+  | 'item_id'
+  | 'sub_item_id'
+  | 'category'
+  | 'subcategory'
+  | 'item'
+  | 'tags'
+  | 'lifecycle_status'
+  | 'occurred_at_end'
+>;
+
+/** 时间线分块：事项路径 / 动作 / 时间 / 摘要 */
+export function buildTimelineEntryParts(
+  record: TimelineEntryRecord,
+  items?: Item[],
+  options?: { isCurrent?: boolean; subItemTitles?: ReadonlyMap<string, string> }
+): TimelineEntryParts {
+  const tagPath = buildTimelineTagPath(record, items, {
+    subItemTitles: options?.subItemTitles,
+  });
+  const action = record.action_text?.trim() ?? '';
+  const timeText = record.time_text?.trim() ?? '';
+  const summary = buildTimelineSummary(record, { isCurrent: options?.isCurrent, tagPath });
+
+  const parts = [tagPath, action, timeText, summary].filter(Boolean);
+  let text: string;
+  if (action && tagPath && isRedundantWithTagPath(action, tagPath)) {
+    text = parts.filter((p) => p !== action).join(' ');
+  } else {
+    text = parts.join(' ');
+  }
+
+  return { tagPath, action, timeText, detail: summary, text };
+}
+
+/** 时间线正文：一级-二级-三级  动作  时间  简单摘要（不含「进行中」占位） */
+export function buildTimelineEntryText(
+  record: TimelineEntryRecord,
+  items?: Item[],
+  options?: { isCurrent?: boolean; subItemTitles?: ReadonlyMap<string, string> }
+): string {
+  return buildTimelineEntryParts(record, items, options).text;
+}
+
+function isRedundantWithTagPath(text: string, tagPath: string, action?: string): boolean {
+  const t = text.trim();
+  if (!t || !tagPath) return false;
+  if (action && t === action) return true;
+  const parts = tagPath.split('-').map((s) => s.trim()).filter(Boolean);
+  if (parts.includes(t)) return true;
+  // 文本恰为路径各级的顺序拼接（如「编程公司系统开发」）视为冗余
+  if (parts.length >= 2) {
+    let cursor = 0;
+    for (const part of parts) {
+      const idx = t.indexOf(part, cursor);
+      if (idx === -1) return false;
+      cursor = idx + part.length;
+    }
+    if (cursor >= t.length) return true;
+  }
+  return false;
+}
+
+function buildTimelineSummary(
+  record: Pick<
+    TetoRecord,
+    | 'content'
+    | 'raw_input'
+    | 'input_source'
+    | 'action_text'
+    | 'event_text'
+    | 'object_text'
+    | 'note'
+    | 'result'
+    | 'lifecycle_status'
+    | 'occurred_at_end'
+  >,
+  options?: { isCurrent?: boolean; tagPath?: string }
+): string {
+  const action = record.action_text?.trim();
+  const event = record.event_text?.trim();
+  const object = record.object_text?.trim();
+  const content = sanitizeDisplayContent(record.content);
+  const tagPath = options?.tagPath ?? '';
+  const skipContentDetail =
+    record.input_source === 'quick' ||
+    Boolean(
+      record.raw_input?.trim() &&
+        content &&
+        record.raw_input.trim() === content.trim()
+    );
+  const tagParts = new Set(
+    tagPath
+      .split('-')
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+  const switchLabel = extractSwitchLabel(content);
+
+  const contentAsSummary =
+    !skipContentDetail &&
+    content &&
+    content !== action &&
+    !tagParts.has(content) &&
+    !(switchLabel && tagParts.has(switchLabel)) &&
+    !isRedundantWithTagPath(content, tagPath, action) &&
+    !options?.isCurrent
+      ? content
+      : undefined;
+
+  const candidates = [
+    event,
+    object && object !== action ? object : undefined,
+    record.result?.trim(),
+    contentAsSummary,
+    record.note?.trim(),
+  ]
+    .filter(Boolean)
+    .filter((c) => !isRedundantWithTagPath(c as string, tagPath, action)) as string[];
+
+  for (const candidate of candidates) {
+    if (candidate === UNASSIGNED_ACTIVE_PLACEHOLDER) continue;
+    return truncateTimelineText(candidate);
+  }
+
+  if (options?.isCurrent) return '';
+  if (
+    !skipContentDetail &&
+    content &&
+    !(switchLabel && tagParts.has(switchLabel)) &&
+    !isRedundantWithTagPath(content, tagPath, action)
+  ) {
+    return truncateTimelineText(content);
+  }
+  return '';
 }
 
 /** 快速切换标签：展示路径末两段（有子项时 事项·子项，无子项时 大类·事项 或 单标签名） */
@@ -548,15 +873,21 @@ export function buildRecordDisplayLabel(record: {
   subcategory?: string | null;
   item_id?: string | null;
   item?: { title?: string } | null;
+  lifecycle_status?: string | null;
+  occurred_at_end?: string | null;
 }, items?: Item[]): string {
+  let content = record.content?.trim() || undefined;
+  if (content === UNASSIGNED_ACTIVE_PLACEHOLDER) {
+    content = undefined;
+  }
   if (items && record.item_id) {
-    const label = buildItemPathLabel(items, record.item_id, record.content ?? undefined);
+    const label = buildItemPathLabel(items, record.item_id, content);
     if (label) return label;
   }
-  const parts = [record.category, record.subcategory, record.item?.title, record.content].filter(
+  const parts = [record.category, record.subcategory, record.item?.title, content].filter(
     Boolean
   );
-  return parts.join(' / ') || record.content || '';
+  return parts.join(' / ') || content || '';
 }
 
 /** 服务端：根据 parent 链计算 depth 与祖先（不含自身） */

@@ -126,6 +126,7 @@ export async function updateRecord(
   if (recordData.energy !== undefined) updateData.energy = recordData.energy;
   if (recordData.result !== undefined) updateData.result = recordData.result;
   if (recordData.note !== undefined) updateData.note = recordData.note;
+  if (recordData.notes !== undefined) updateData.notes = recordData.notes;
   if (recordData.category !== undefined) updateData.category = recordData.category;
   if (recordData.subcategory !== undefined) updateData.subcategory = recordData.subcategory;
   if (recordData.tool_label !== undefined) updateData.tool_label = recordData.tool_label;
@@ -148,6 +149,10 @@ export async function updateRecord(
   if (recordData.people !== undefined) updateData.people = recordData.people;
   if (recordData.batch_id !== undefined) updateData.batch_id = recordData.batch_id;
   if (recordData.lifecycle_status !== undefined) updateData.lifecycle_status = recordData.lifecycle_status;
+  if (recordData.paused_total_seconds !== undefined) updateData.paused_total_seconds = recordData.paused_total_seconds;
+  if (recordData.paused_at !== undefined) updateData.paused_at = recordData.paused_at;
+  if (recordData.parent_session_id !== undefined) updateData.parent_session_id = recordData.parent_session_id;
+  if (recordData.session_state !== undefined) updateData.session_state = recordData.session_state;
   // 规律/历史字段
   if (recordData.data_nature !== undefined) updateData.data_nature = recordData.data_nature;
   if (recordData.is_period_rule !== undefined) updateData.is_period_rule = recordData.is_period_rule;
@@ -176,6 +181,7 @@ export async function updateRecord(
   // === 1.5 录入结构对齐新增 ===
   if (recordData.body_state !== undefined) updateData.body_state = recordData.body_state;
   if (recordData.money_currency !== undefined) updateData.money_currency = recordData.money_currency;
+  if (recordData.related_objects !== undefined) updateData.related_objects = recordData.related_objects;
   // 如果 time_anchor_date 更新导致 record_day 需要重新归属，一并更新
   if (newRecordDayId) updateData.record_day_id = newRecordDayId;
 
@@ -195,7 +201,11 @@ export async function updateRecord(
   }
 
   // 重新获取带关联的数据
-  const updated = await getRecordById(userId, id);
+  let updated = await getRecordById(userId, id);
+  if (!updated) {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    updated = await getRecordById(userId, id);
+  }
   if (!updated) {
     throw new Error('更新记录后获取失败');
   }
@@ -389,6 +399,21 @@ export async function listRecords(
   if (query.search) {
     const escaped = query.search.replace(/[%_\\]/g, '\\$&');
     q = q.ilike('content', `%${escaped}%`);
+  }
+
+  if (query.unassigned) {
+    q = q
+      .is('item_id', null)
+      .eq('review_status', 'unchecked')
+      .neq('lifecycle_status', 'cancelled');
+  }
+
+  if (query.review_status) {
+    q = q.eq('review_status', query.review_status);
+  }
+
+  if (query.has_item_id) {
+    q = q.not('item_id', 'is', null);
   }
 
   // 添加排序：同批次记录排在一起，批次内按 created_at 排序
@@ -672,4 +697,80 @@ export async function getPhaseSubItemBreakdownsByItem(
   }
 
   return result;
+}
+
+/** 待整理记录数：无 item_id、review_status=unchecked、非 cancelled */
+export async function countUnassignedRecords(userId: string): Promise<number> {
+  const supabase = await createClient();
+  const { count, error } = await supabase
+    .from('records')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .is('item_id', null)
+    .eq('review_status', 'unchecked')
+    .neq('lifecycle_status', 'cancelled');
+
+  if (error) throw new Error(`统计待整理记录失败: ${error.message}`);
+  return count ?? 0;
+}
+
+export interface ItemRecordContext {
+  costs: number[];
+  locations: string[];
+  contents: string[];
+}
+
+/**
+ * 某事项历史记录的常用金额/地点/内容摘要（供预测气泡）
+ */
+export async function getItemRecordContext(
+  userId: string,
+  itemId: string
+): Promise<ItemRecordContext> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from('records')
+    .select('cost, location, content, action_text')
+    .eq('user_id', userId)
+    .eq('item_id', itemId)
+    .order('created_at', { ascending: false })
+    .limit(60);
+
+  if (error) {
+    throw new Error(`查询事项记录上下文失败: ${error.message}`);
+  }
+
+  const costFreq = new Map<number, number>();
+  const locFreq = new Map<string, number>();
+  const contentFreq = new Map<string, number>();
+
+  for (const row of data ?? []) {
+    const cost = row.cost as number | null;
+    if (cost != null && cost > 0) {
+      costFreq.set(cost, (costFreq.get(cost) ?? 0) + 1);
+    }
+    const loc = (row.location as string | null)?.trim();
+    if (loc) {
+      locFreq.set(loc, (locFreq.get(loc) ?? 0) + 1);
+    }
+    const actionText = (row.action_text as string | null)?.trim();
+    const contentRaw = (row.content as string | null)?.trim();
+    const snippet = (actionText || contentRaw || '').slice(0, 6);
+    if (snippet) {
+      contentFreq.set(snippet, (contentFreq.get(snippet) ?? 0) + 1);
+    }
+  }
+
+  const topByFreq = <T>(map: Map<T, number>, limit: number): T[] =>
+    [...map.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([k]) => k);
+
+  return {
+    costs: topByFreq(costFreq, 5),
+    locations: topByFreq(locFreq, 5),
+    contents: topByFreq(contentFreq, 5),
+  };
 }

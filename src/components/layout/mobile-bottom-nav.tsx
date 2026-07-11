@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { BookOpen, ListChecks, BarChart3, MoreHorizontal } from 'lucide-react';
+import { BookOpen, ListChecks, BarChart3, Moon, MoreHorizontal, Target } from 'lucide-react';
 import { useEffect, useState, useTransition, type MouseEvent } from 'react';
 import Link from 'next/link';
 import {
@@ -9,11 +9,15 @@ import {
   MOBILE_TAB_ROOTS,
   type MobileTabRoot,
 } from '@/components/layout/mobile-tab-routes';
+import { useUnassignedCount } from '@/hooks/use-unassigned-count';
+import UnassignedBadge from '@/components/layout/UnassignedBadge';
 
 const primaryNavItems: { label: string; href: MobileTabRoot; icon: typeof BookOpen }[] = [
   { label: '记录', href: '/records', icon: BookOpen },
   { label: '事项', href: '/items', icon: ListChecks },
+  { label: '复盘', href: '/review', icon: Moon },
   { label: '洞察', href: '/insights', icon: BarChart3 },
+  { label: '目标', href: '/goals', icon: Target },
 ];
 
 const moreNavItems = [{ label: '诊断', href: '/debug' }];
@@ -29,6 +33,7 @@ export default function MobileBottomNav() {
   const [pendingHref, setPendingHref] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const moreActive = moreNavItems.some((item) => isActivePath(pathname, item.href));
+  const { count: unassignedCount } = useUnassignedCount();
 
   useEffect(() => {
     for (const href of MOBILE_TAB_ROOTS) {
@@ -106,7 +111,12 @@ export default function MobileBottomNav() {
                   isPending && pendingHref === item.href ? 'opacity-80' : '',
                 ].join(' ')}
               >
-                <Icon className={['h-5 w-5', active ? 'stroke-[2.5]' : 'stroke-2'].join(' ')} />
+                <span className="relative">
+                  <Icon className={['h-5 w-5', active ? 'stroke-[2.5]' : 'stroke-2'].join(' ')} />
+                  {item.href === '/review' && (
+                    <UnassignedBadge count={unassignedCount} className="-top-1 -right-2" />
+                  )}
+                </span>
                 <span className={['text-[10px] font-medium', active ? 'text-blue-300' : ''].join(' ')}>
                   {item.label}
                 </span>

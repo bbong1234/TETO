@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
 import { computeGoalEngine } from '@/lib/db/goal-engine';
+import { deriveGoalPrediction } from '@/lib/db/goal-prediction';
 import { buildStatsQuery } from '@/lib/stats/record-filters';
 import { CORE_METRICS } from '@/lib/stats/metric-definitions';
 import { queryAllRecordsForReview } from '@/lib/stats/computation-center';
@@ -23,6 +24,8 @@ import type {
   GoalRuleType,
   GoalPeriod,
   InsightMetricId,
+  MoodEnergyTrend,
+  ExpenseSummary,
 } from '@/types/teto';
 
 // ============================================
@@ -112,6 +115,8 @@ export async function getInsights(
     timeDistribution,
     periodChanges,
     dataReview,
+    moodEnergy,
+    expenseSummary,
   ] = await Promise.all([
     want('activity_heatmap')
       ? computeActivityHeatmap(supabase, userId, heatmapDaysBack)
@@ -127,6 +132,12 @@ export async function getInsights(
     want('data_review')
       ? computeDataReview(supabase, userId, dayIdsInRange)
       : Promise.resolve(EMPTY_DATA_REVIEW),
+    want('mood_energy')
+      ? computeMoodEnergyTrend(supabase, userId, 30)
+      : Promise.resolve(undefined as MoodEnergyTrend | undefined),
+    want('expense')
+      ? computeExpenseSummary(supabase, userId, date_from, date_to)
+      : Promise.resolve(undefined as ExpenseSummary | undefined),
   ]);
 
   const headlineFacts = want('summary')
@@ -158,6 +169,8 @@ export async function getInsights(
     comparison: { changes: periodChanges },
     data_review: dataReview,
     facts: headlineFacts,
+    mood_energy: moodEnergy,
+    expense: expenseSummary,
   };
 }
 
@@ -439,6 +452,8 @@ async function computeGoalProgress(
             targetValue = 0;
         }
 
+        const prediction = deriveGoalPrediction(engineResult);
+
         return {
           goal_id: (goal as { id: string }).id,
           goal_text: (goal as { goal_text: string | null }).goal_text || '',
@@ -448,6 +463,7 @@ async function computeGoalProgress(
           period_label: ruleType === '一次性完成' ? '累计' : computePeriodLabel(period),
           is_over_limit: isOverLimit,
           rule_type: ruleType,
+          ...prediction,
         } as GoalProgress;
       } catch {
         return null;
@@ -721,4 +737,169 @@ function computeSummaryFacts(
   }
 
   return facts.slice(0, 5);
+}
+
+// ============================================
+// 情绪趋势
+// ============================================
+async function computeMoodEnergyTrend(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  daysBack: number
+): Promise<MoodEnergyTrend> {
+  const today = fmtLocalDate(new Date());
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - (daysBack - 1));
+  const dateFrom = fmtLocalDate(startDate);
+
+  const { data: days } = await supabase
+    .from('record_days')
+    .select('id, date')
+    .eq('user_id', userId)
+    .gte('date', dateFrom)
+    .lte('date', today);
+
+  if (!days || days.length === 0) {
+    return { days: [], average_mood: null };
+  }
+
+  const dayIdToDate = new Map(days.map((d: { id: string; date: string }) => [d.id, d.date]));
+  const dayIds = days.map((d: { id: string }) => d.id);
+
+  const { data: records } = await supabase
+    .from('records')
+    .select('record_day_id, mood')
+    .eq('user_id', userId)
+    .in('record_day_id', dayIds)
+    .not('mood', 'is', null);
+
+  const moodByDate = new Map<string, number[]>();
+  for (const r of records ?? []) {
+    const date = dayIdToDate.get((r as { record_day_id: string }).record_day_id);
+    const moodStr = (r as { mood: string | null }).mood;
+    if (!date || !moodStr) continue;
+    const n = Number.parseInt(moodStr, 10);
+    if (Number.isNaN(n) || n < 1 || n > 5) continue;
+    const arr = moodByDate.get(date) ?? [];
+    arr.push(n);
+    moodByDate.set(date, arr);
+  }
+
+  const sortedDates = [...moodByDate.keys()].sort();
+  const trendDays = sortedDates.map((date) => {
+    const vals = moodByDate.get(date) ?? [];
+    const avg = vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    return { date, mood_avg: avg, record_count: vals.length };
+  });
+
+  const allMoods = [...moodByDate.values()].flat();
+  const averageMood =
+    allMoods.length > 0 ? allMoods.reduce((a, b) => a + b, 0) / allMoods.length : null;
+
+  return { days: trendDays, average_mood: averageMood };
+}
+
+// ============================================
+// 消费汇总
+// ============================================
+async function computeExpenseSummary(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  dateFrom: string,
+  dateTo: string
+): Promise<ExpenseSummary> {
+  const { data: days } = await supabase
+    .from('record_days')
+    .select('id')
+    .eq('user_id', userId)
+    .gte('date', dateFrom)
+    .lte('date', dateTo);
+
+  if (!days || days.length === 0) {
+    return {
+      total_expense: 0,
+      total_income: 0,
+      by_category: [],
+      by_item: [],
+      by_payment_source: [],
+    };
+  }
+
+  const dayIds = days.map((d: { id: string }) => d.id);
+
+  const { data: records } = await supabase
+    .from('records')
+    .select('content, cost, money_direction, item_id, tool_label, items(title)')
+    .eq('user_id', userId)
+    .in('record_day_id', dayIds)
+    .not('cost', 'is', null)
+    .gt('cost', 0);
+
+  let totalExpense = 0;
+  let totalIncome = 0;
+  const byLabel = new Map<string, number>();
+  const byItem = new Map<string, { item_id: string | null; label: string; amount: number }>();
+  const byPayment = new Map<string, number>();
+
+  for (const r of records ?? []) {
+    const row = r as {
+      cost: number;
+      money_direction: string | null;
+      content: string;
+      item_id: string | null;
+      tool_label: string | null;
+      items?: { title?: string } | null;
+    };
+    const cost = Number(row.cost) || 0;
+    const direction = row.money_direction;
+    const label = (row.content || '其他').trim() || '其他';
+
+    if (direction === 'income') {
+      totalIncome += cost;
+      continue;
+    }
+    totalExpense += cost;
+    byLabel.set(label, (byLabel.get(label) ?? 0) + cost);
+
+    const itemKey = row.item_id ?? '__none__';
+    const itemLabel =
+      row.items?.title?.trim() || (row.item_id ? '未命名事项' : '未关联事项');
+    const itemEntry = byItem.get(itemKey) ?? {
+      item_id: row.item_id,
+      label: itemLabel,
+      amount: 0,
+    };
+    itemEntry.amount += cost;
+    byItem.set(itemKey, itemEntry);
+
+    const paymentLabel = row.tool_label?.trim();
+    if (paymentLabel) {
+      byPayment.set(paymentLabel, (byPayment.get(paymentLabel) ?? 0) + cost);
+    }
+  }
+
+  const round = (n: number) => Math.round(n * 100) / 100;
+
+  const by_category = [...byLabel.entries()]
+    .map(([label, amount]) => ({ label, amount: round(amount) }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 8);
+
+  const by_item = [...byItem.values()]
+    .map((row) => ({ ...row, amount: round(row.amount) }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 8);
+
+  const by_payment_source = [...byPayment.entries()]
+    .map(([label, amount]) => ({ label, amount: round(amount) }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 6);
+
+  return {
+    total_expense: round(totalExpense),
+    total_income: round(totalIncome),
+    by_category,
+    by_item,
+    by_payment_source,
+  };
 }

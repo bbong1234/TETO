@@ -40,6 +40,7 @@ export default function RecordEditDrawer({
   const {
     form,
     patchForm,
+    flushSave,
     remove,
     deleting,
     saving,
@@ -52,9 +53,13 @@ export default function RecordEditDrawer({
   const statusText =
     saveStatus === 'saving' ? '保存中…' : saveStatus === 'saved' ? '已保存' : '';
 
+  const handleClose = () => {
+    void flushSave().finally(onClose);
+  };
+
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
+      <div className="fixed inset-0 z-40 bg-black/30" onClick={handleClose} />
 
       <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-y-auto bg-white shadow-xl lg:rounded-l-2xl">
         <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-slate-200 bg-white px-5 py-3">
@@ -84,7 +89,7 @@ export default function RecordEditDrawer({
             </button>
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100"
             >
               <X className="h-4 w-4" />
@@ -105,6 +110,7 @@ export default function RecordEditDrawer({
             onItemCreated={onItemCreated}
             onTagCreated={onTagCreated}
             onCreateError={onCreateError ?? onError}
+            onRecordPatched={onSaved}
           />
         </div>
       </div>

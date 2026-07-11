@@ -9,7 +9,9 @@ interface MobileTopbarProps {
 const pageTitles: Record<string, string> = {
   '/records': '记录',
   '/items': '事项',
+  '/review': '复盘',
   '/insights': '洞察',
+  '/goals': '目标',
   '/debug': '诊断',
 };
 

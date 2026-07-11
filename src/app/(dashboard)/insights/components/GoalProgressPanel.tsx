@@ -56,6 +56,11 @@ export default function GoalProgressPanel({ progress }: { progress: GoalProgress
                     {currentValueDisplay}/{targetValueDisplay} {goal.unit}
                   </span>
                 </div>
+                {goal.predicted_completion_date && (
+                  <p className="text-[10px] text-violet-600 mt-1">
+                    预计 {new Date(goal.predicted_completion_date + 'T12:00:00').toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })} 完成
+                  </p>
+                )}
               </div>
             );
           })}

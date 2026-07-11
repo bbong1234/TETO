@@ -18,8 +18,11 @@ function shiftDate(baseDate: string, days: number): string {
   return `${y}-${m}-${day}`;
 }
 
-function inferTimeFromText(timeText: string): { hour: number; minute: number } | null {
-  const m = timeText.match(/(\d{1,2})(?:\s*[:：点时]\s*(\d{1,2}))?/);
+export function inferTimeFromText(timeText: string): { hour: number; minute: number } | null {
+  // 数字必须带明确的钟点标记，避免“花了9块”被误判为 09:00。
+  const m = timeText.match(
+    /(\d{1,2})(?:\s*[:：点时]\s*(\d{1,2})?|\s*(am|pm)\b)/i
+  );
   if (m) {
     let hour = Number(m[1]);
     const minute = m[2] ? Number(m[2]) : 0;
@@ -31,6 +34,9 @@ function inferTimeFromText(timeText: string): { hour: number; minute: number } |
       if (lower.includes('中午') && hour < 11) {
         hour += 12;
       }
+      const meridiem = m[3]?.toLowerCase();
+      if (meridiem === 'am' && hour === 12) hour = 0;
+      if (meridiem === 'pm' && hour < 12) hour += 12;
       if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
         return { hour, minute };
       }
@@ -84,15 +90,16 @@ export function resolveTemporalFields(
   const occurredDate = occurredAt && occurredAt.includes('T') ? occurredAt.slice(0, 10) : null;
   const anchorDateRaw =
     typeof proposed.time_anchor_date === 'string' ? proposed.time_anchor_date : null;
-  const inferredAnchorDate = inferAnchorDateFromTimeText(
-    fallbackDate,
-    typeof proposed.time_text === 'string' ? proposed.time_text : null
-  );
-  const anchorDate = anchorDateRaw ?? inferredAnchorDate;
+  const timeTextStr = typeof proposed.time_text === 'string' ? proposed.time_text : '';
+  const inferredAnchorDate = inferAnchorDateFromTimeText(fallbackDate, timeTextStr || null);
+  let anchorDate = anchorDateRaw ?? inferredAnchorDate;
+  if (!anchorDate && normalizedType === '发生' && timeTextStr && inferTimeFromText(timeTextStr)) {
+    anchorDate = fallbackDate;
+  }
 
   let occurredAtComputed: string | null = occurredAt;
   if (!occurredAtComputed && normalizedType === '发生' && anchorDate) {
-    const hm = inferTimeFromText(typeof proposed.time_text === 'string' ? proposed.time_text : '');
+    const hm = inferTimeFromText(timeTextStr);
     if (hm) {
       occurredAtComputed = `${anchorDate}T${pad2(hm.hour)}:${pad2(hm.minute)}:00+08:00`;
     }

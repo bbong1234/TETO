@@ -2,32 +2,44 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, Funnel } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, ChevronsLeft, ChevronsRight, Funnel, Search, X } from 'lucide-react';
+import { planPriorityToSubcategory, type PlanPriority } from '@/lib/activity/plan-priority';
 import type { Goal, Item, Record, Tag, RecordType, UserTool } from '@/types/teto';
+import type { UserRule } from '@/lib/db/user-rules';
 import { type IngestClarifyState } from './components/QuickInput';
 import FilterBar from './components/FilterBar';
 import DayRecordGroup from './components/DayRecordGroup';
 import RecordEditDrawer from './components/RecordEditDrawer';
 import CurrentActivityCard from './components/CurrentActivityCard';
-import QuickSwitchPanel, { type ActivitySwitchResult } from './components/QuickSwitchPanel';
 import { recordBelongsToDay } from '@/lib/activity/timeline-utils';
-import { postBackfillRecord } from '@/lib/activity/post-backfill-record';
 import { ensureCategoryItems, needsCategorySeed } from '@/lib/activity/ensure-categories';
 import { sortRecords } from '@/lib/activity/sort-records';
 import {
-  mergeSwitchIntoRecords,
-  mergeRecordUpdated,
-  mergeRecordDeleted,
   replaceOptimisticRecord,
   enrichRecord,
+  isOptimisticRecordId,
+  isOptimisticBlockSegmentId,
   type ActivitySwitchPayload,
+  type SessionActionPayload,
 } from '@/lib/activity/records-mutation';
+import { loadLockedBlockCategory } from '@/hooks/use-block-session-segments';
+import { filterRecordsForBootstrap } from '@/lib/activity/select-timeline-records';
+import {
+  loadDeletedRecordTombstones,
+  removeDeletedRecordTombstone,
+} from '@/lib/activity/deleted-records-tombstone';
+import {
+  ActivitySessionProvider,
+  type ActivitySessionContextValue,
+} from '@/contexts/ActivitySessionContext';
 import TodayActivityTimeline from './components/TodayActivityTimeline';
-import TodayActivityStats from './components/TodayActivityStats';
-import StartActivityPanel, { type StartActivitySubmitPayload } from './components/StartActivityPanel';
+import TodayStatusCard from './components/TodayStatusCard';
 import { useToast } from '@/components/ui/use-toast';
 import ToastContainer from '@/components/ui/use-toast';
 import { RecordsDayContentSkeleton, RecordsMultiDaySkeleton } from '@/components/ui/PageSkeletons';
+import NewItemConfirmBubble from './components/NewItemConfirmBubble';
+import type { NewItemSuggestion } from '@/lib/activity/ai-enhance-trigger';
+import { initSeedRulesOnce } from '@/lib/activity/seed-user-rules';
 
 function formatDate(date: Date): string {
   const y = date.getFullYear();
@@ -249,8 +261,10 @@ export default function RecordsClient() {
   const [toolsLoading, setToolsLoading] = useState(true);
   const [itemsLoading, setItemsLoading] = useState(true);
   const [filterType, setFilterType] = useState<RecordType | ''>('');
-  const [filterTagId, setFilterTagId] = useState('');
+  const [filterTagId, setFilterTagId] = useState(() => searchParams.get('tag_id') || '');
   const [filterItemId, setFilterItemId] = useState(() => searchParams.get('item_id') || '');
+  const [filterSearch, setFilterSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);
   const [editingRecord, setEditingRecord] = useState<Record | null>(null);
   const [recordsLoading, setRecordsLoading] = useState(true);
@@ -260,15 +274,17 @@ export default function RecordsClient() {
     nonce: number;
     snapshot: IngestClarifyState;
   } | null>(null);
-  // 1.7：补记面板
-  const [backfillPanel, setBackfillPanel] = useState<{ startIso?: string; endIso?: string } | null>(null);
-  const [currentActivity, setCurrentActivity] = useState<Record | null>(null);
-  const [activitySyncToken, setActivitySyncToken] = useState(0);
   const [showFilterBar, setShowFilterBar] = useState(false);
+  const [timingPanelsExpanded, setTimingPanelsExpanded] = useState(true);
+  const sessionRef = useRef<ActivitySessionContextValue | null>(null);
+  const [userRules, setUserRules] = useState<UserRule[]>([]);
+  const [aiEnhancingIds, setAiEnhancingIds] = useState<Set<string>>(() => new Set());
+  const [newItemSuggestionQueue, setNewItemSuggestionQueue] = useState<NewItemSuggestion[]>([]);
+  const currentSuggestion = newItemSuggestionQueue[0] ?? null;
   const tagsLoadedRef = useRef(false);
   const bootstrapMetaLoadedRef = useRef(false);
 
-  const hasActiveFilters = Boolean(filterType || filterItemId);
+  const hasActiveFilters = Boolean(filterType || filterItemId || filterSearch);
 
   useEffect(() => {
     setPendingInputs(loadPendingDraftsFromStorage());
@@ -283,10 +299,12 @@ export default function RecordsClient() {
   }, [pendingInputs]);
 
   const aiPendingIds = useMemo(() => {
-    return new Set(
+    const ids = new Set(
       pendingInputs.filter((p) => p.lifecycle === 'parsing').map((p) => p.id)
     );
-  }, [pendingInputs]);
+    for (const id of aiEnhancingIds) ids.add(id);
+    return ids;
+  }, [pendingInputs, aiEnhancingIds]);
   const { toasts, showError, dismissToast } = useToast();
 
   // 计划完成/推迟对话框状态
@@ -298,6 +316,8 @@ export default function RecordsClient() {
   const [postponeDate, setPostponeDate] = useState('');
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const prevTimelineCountRef = useRef(0);
   const todayColRef = useRef<HTMLDivElement>(null);
   // 加载更早时，记录需要补偿的 scrollLeft 偏移量
   const scrollAdjustRef = useRef<number | null>(null);
@@ -324,6 +344,11 @@ export default function RecordsClient() {
   const isOnToday = isMultiDay
     ? multiDayDates.includes(todayStr)
     : singleDayOffset === 0;
+
+  const blockCategoryLocked =
+    typeof window !== 'undefined' ? Boolean(loadLockedBlockCategory()) : false;
+
+  const resolveSession = () => sessionRef.current;
 
   // 多天模式初始化：前天、昨天、今天、明天、后天（共5天）
   const initMultiDayDates = useCallback(() => {
@@ -412,17 +437,8 @@ export default function RecordsClient() {
     setItems((prev) => (prev.some((i) => i.id === item.id) ? prev : [...prev, item]));
   }, []);
 
-  const loadTags = useCallback(async () => {
-    if (tagsLoadedRef.current) return;
-    tagsLoadedRef.current = true;
-    try {
-      const res = await fetch('/api/v2/tags');
-      const data = await res.json();
-      if (data.data) setTags(data.data);
-    } catch (err) {
-      console.error('加载标签失败:', err);
-      tagsLoadedRef.current = false;
-    }
+  const handleTagCreated = useCallback((tag: Tag) => {
+    setTags((prev) => (prev.some((t) => t.id === tag.id) ? prev : [...prev, tag]));
   }, []);
 
   // 加载记录页首屏（合并 items / records / 当前活动 / 工具）
@@ -447,21 +463,57 @@ export default function RecordsClient() {
       if (filterType) params.set('type', filterType);
       if (filterTagId) params.set('tag_id', filterTagId);
       if (filterItemId) params.set('item_id', filterItemId);
+      if (filterSearch.trim()) params.set('search', filterSearch.trim());
 
       const res = await fetch(`/api/v2/records/bootstrap?${params.toString()}`);
-      const data = await res.json();
+      let data = await res.json();
+      // 500 时重试一次（种子规则并发写入可能导致瞬时连接池打满）
+      if (!res.ok && res.status >= 500) {
+        await new Promise((r) => setTimeout(r, 1200));
+        const retryRes = await fetch(`/api/v2/records/bootstrap?${params.toString()}`);
+        data = await retryRes.json();
+        if (!retryRes.ok && !data.data) {
+          showError(typeof data.error === 'string' ? data.error : data.error?.message ?? '加载记录失败');
+          return;
+        }
+      } else if (!res.ok) {
+        showError(typeof data.error === 'string' ? data.error : data.error?.message ?? '加载记录失败');
+        return;
+      }
       if (data.data) {
         const loadedItems = data.data.items ?? [];
-        setRecords(sortRecords(data.data.records ?? []));
+        const loadedRecords = (data.data.records ?? []) as Record[];
+        const tombstones = loadDeletedRecordTombstones();
+        for (const id of [...tombstones]) {
+          if (!loadedRecords.some((r) => r.id === id)) {
+            removeDeletedRecordTombstone(tombstones, id);
+          }
+        }
+        resolveSession()?.reconcileTombstones(loadedRecords.map((r) => r.id));
+        const filteredRecords = filterRecordsForBootstrap(loadedRecords, [...tombstones]);
+        setRecords(sortRecords(filteredRecords));
         setItems(loadedItems);
         setUserTools(data.data.tools ?? []);
-        setCurrentActivity(data.data.current_activity ?? null);
+        if (isFirstLoad) {
+          const current = data.data.current_activity as Record | null | undefined;
+          resolveSession()?.hydrateFromBootstrap(current);
+        }
+        if (isFirstLoad && data.data.tags) {
+          setTags(data.data.tags);
+          tagsLoadedRef.current = true;
+        }
+        if (isFirstLoad && Array.isArray(data.data.user_rules)) {
+          setUserRules(data.data.user_rules);
+        }
         bootstrapMetaLoadedRef.current = true;
         setPageReady(true);
         if (needsCategorySeed(loadedItems)) {
           void ensureCategoryItems(loadedItems).then((next) => {
             if (next) setItems(next);
           });
+        }
+        if (isFirstLoad) {
+          void initSeedRulesOnce(loadedItems);
         }
       } else if (data.error) {
         showError(data.error.message ?? '加载记录失败');
@@ -474,7 +526,7 @@ export default function RecordsClient() {
       setItemsLoading(false);
       setToolsLoading(false);
     }
-  }, [isMultiDay, multiDayDates, singleDayDate, filterType, filterTagId, filterItemId]);
+  }, [isMultiDay, multiDayDates, singleDayDate, filterType, filterTagId, filterItemId, filterSearch]);
 
   useEffect(() => {
     fetchRecords();
@@ -482,22 +534,26 @@ export default function RecordsClient() {
 
   useEffect(() => {
     if (editingRecord) {
-      void loadTags();
       void loadGoals();
     }
-  }, [editingRecord, loadTags, loadGoals]);
+  }, [editingRecord, loadGoals]);
 
-  const applyActivitySwitch = useCallback(
-    (data: ActivitySwitchPayload) => {
-      setCurrentActivity(data.record);
-      setActivitySyncToken((t) => t + 1);
-      setRecords((prev) => mergeSwitchIntoRecords(prev, data, items, singleDayDate));
-    },
-    [items, singleDayDate]
-  );
+  const applySessionAction = useCallback((data: SessionActionPayload) => {
+    resolveSession()?.applySessionAction(data);
+  }, []);
+
+  const applyActivitySwitch = useCallback((data: ActivitySwitchPayload) => {
+    if (data.record) {
+      setTimingPanelsExpanded(true);
+    } else {
+      setTimingPanelsExpanded(false);
+    }
+    sessionRef.current?.applyActivitySwitchPayload(data);
+  }, []);
 
   const applyRecordAdded = useCallback(
     (record: Record, replaceOptimistic = true) => {
+      if (resolveSession()?.isTombstoned(record.id)) return;
       setRecords((prev) =>
         replaceOptimistic
           ? replaceOptimisticRecord(prev, record, items, singleDayDate)
@@ -505,13 +561,6 @@ export default function RecordsClient() {
       );
     },
     [items, singleDayDate]
-  );
-
-  const handleActivitySwitched = useCallback(
-    (data: ActivitySwitchPayload) => {
-      applyActivitySwitch(data);
-    },
-    [applyActivitySwitch]
   );
 
   const handleRecordCreated = () => {
@@ -522,26 +571,98 @@ export default function RecordsClient() {
 
   const applyRecordUpdated = useCallback(
     (updated: Record) => {
-      setRecords((prev) => mergeRecordUpdated(prev, updated, items, singleDayDate));
-      setCurrentActivity((prev) => (prev?.id === updated.id ? updated : prev));
-      setActivitySyncToken((t) => t + 1);
+      if (resolveSession()?.state.activity?.id === updated.id) {
+        setTimingPanelsExpanded(true);
+      }
+      resolveSession()?.applyRecordUpdated(updated);
     },
-    [items, singleDayDate]
+    []
   );
 
   const applyRecordDeleted = useCallback((id: string) => {
-    setRecords((prev) => mergeRecordDeleted(prev, id));
-    setCurrentActivity((prev) => (prev?.id === id ? null : prev));
-    setActivitySyncToken((t) => t + 1);
+    resolveSession()?.applyRecordDeleted(id);
   }, []);
+
+  const isRecordDeleted = useCallback(
+    (recordId: string) => resolveSession()?.isTombstoned(recordId) ?? false,
+    []
+  );
 
   const handleRecordUpdated = useCallback(
     (updated: Record) => {
       applyRecordUpdated(updated);
-      setEditingRecord(null);
+      setEditingRecord((prev) => (prev?.id === updated.id ? updated : prev));
     },
     [applyRecordUpdated]
   );
+
+  const handleConfirmClassification = useCallback(
+    async (record: Record) => {
+      try {
+        const res = await fetch(`/api/v2/records/${record.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ review_status: 'confirmed' }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.data?.id) applyRecordUpdated(data.data as Record);
+        }
+        // 确认后写入关键词词典，下次同类输入自动归属
+        if (record.item_id) {
+          const parsed = record.parsed_semantic as { action_text?: string } | null | undefined;
+          const keyword = (parsed?.action_text?.trim()) ||
+            (record.raw_input?.trim().replace(/[¥￥\d.,元块小时分钟]+/g, '').trim()) ||
+            record.content?.trim();
+          if (keyword && keyword.length >= 2) {
+            void fetch('/api/v2/user-rules', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                rule_type: 'item_mapping',
+                trigger_pattern: keyword.slice(0, 20),
+                target_id: record.item_id,
+                target_type: 'item',
+                source: 'user_confirm',
+                confidence: 'high',
+                is_active: true,
+              }),
+            });
+          }
+        }
+      } catch {
+        showError('确认归属失败');
+      }
+    },
+    [applyRecordUpdated, showError]
+  );
+
+  const handlePlanPriorityChange = useCallback(
+    async (record: Record, priority: PlanPriority | null) => {
+      try {
+        const res = await fetch(`/api/v2/records/${record.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subcategory: planPriorityToSubcategory(priority) }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message ?? '更新优先级失败');
+        if (data.data) applyRecordUpdated(data.data);
+      } catch (e) {
+        showError(e instanceof Error ? e.message : '更新优先级失败');
+      }
+    },
+    [applyRecordUpdated, showError]
+  );
+
+  const handlePlanCompleteFromCard = useCallback((record: Record) => {
+    setCompletingRecord(record);
+    setCompleteDate(todayStr);
+    setCompleteTime(
+      new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+    );
+    setCompletionContent('');
+  }, [todayStr]);
 
   const handleRecordDeleted = useCallback(
     (id: string) => {
@@ -550,6 +671,13 @@ export default function RecordsClient() {
     },
     [applyRecordDeleted]
   );
+
+  const handleDeleteFailed = useCallback((record: Record) => {
+    if (isOptimisticRecordId(record.id) || isOptimisticBlockSegmentId(record.id)) {
+      return;
+    }
+    resolveSession()?.onDeleteFailed(record);
+  }, []);
 
   // 多天模式 ←/→（一次移动2天）
   const handleMultiPrev = () => {
@@ -619,6 +747,19 @@ export default function RecordsClient() {
   const totalRecords = isMultiDay
     ? recordsWithPending.length
     : singleDayRecords.length;
+
+  useLayoutEffect(() => {
+    if (isMultiDay) return;
+    const el = timelineScrollRef.current;
+    if (!el) return;
+    const count = recordsWithPending.length;
+    const prev = prevTimelineCountRef.current;
+    prevTimelineCountRef.current = count;
+    // 仅新增记录时滚到底；删除/刷新/服务端落库替换时不滚，避免闪烁
+    if (count > prev) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [isMultiDay, recordsWithPending.length]);
 
   const isPendingRecord = useCallback((id: string) => id.startsWith('session:'), []);
 
@@ -868,8 +1009,28 @@ export default function RecordsClient() {
   };
 
   return (
+    <ActivitySessionProvider
+      items={items}
+      tags={tags}
+      fallbackDate={singleDayDate}
+      records={records}
+      setRecords={setRecords}
+      onError={showError}
+    >
+      {(session) => {
+        sessionRef.current = session;
+        const currentActivity = session.activity;
+        const isTimingActive =
+          !isMultiDay && isOnToday && Boolean(currentActivity ?? session.isInBlock);
+        const inBlockSession =
+          !isMultiDay && isOnToday && (isTimingActive || session.isInBlock || blockCategoryLocked);
+        const isTimingFullscreen = inBlockSession && timingPanelsExpanded;
+        const timelineRecords = session.selectTimelineRecords(recordsWithPending);
+
+        return (
     <div className="h-full flex flex-col bg-slate-100">
-      {/* 顶部工具栏（固定） */}
+      {/* 顶部工具栏（计时全屏时隐藏） */}
+      {!isTimingFullscreen && (
       <div className="flex-shrink-0 border-b border-slate-200 bg-white px-4 py-3">
         <div className={`mx-auto flex items-center justify-between ${isMultiDay ? 'max-w-7xl' : 'max-w-2xl'}`}>
           <div className="flex items-center gap-2">
@@ -933,6 +1094,32 @@ export default function RecordsClient() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <div className="relative hidden sm:block">
+              <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') setFilterSearch(searchInput.trim());
+                }}
+                placeholder="搜索记录…"
+                className="w-36 rounded-lg border border-slate-200 bg-white py-1.5 pl-7 pr-7 text-xs text-slate-700 focus:border-blue-300 focus:outline-none focus:ring-1 focus:ring-blue-200"
+              />
+              {searchInput && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchInput('');
+                    setFilterSearch('');
+                  }}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  aria-label="清除搜索"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
             <button
               onClick={handleToggleMultiDay}
               className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
@@ -991,68 +1178,131 @@ export default function RecordsClient() {
         )}
 
       </div>
+      )}
 
       {/* 内容区（填满剩余高度） */}
       <div className="flex-1 min-h-0">
         {!isMultiDay ? (
-          <div className="h-full overflow-y-auto">
-            <div className="mx-auto max-w-2xl px-4 py-4">
-              <div className="space-y-4">
-                {isOnToday && (
-                  <>
-                    <CurrentActivityCard
-                      items={items}
-                      itemsLoading={itemsLoading}
-                      pageReady={pageReady}
-                      initialActivity={currentActivity}
-                      refreshKey={refreshKey}
-                      activitySyncToken={activitySyncToken}
-                      syncActivity={currentActivity}
-                      userTools={userTools}
-                      toolsLoading={toolsLoading}
-                      onToolsChange={setUserTools}
-                      onActivitySwitch={applyActivitySwitch}
-                      onRecordAdded={applyRecordAdded}
-                      onFallbackRefresh={() => setRefreshKey((k) => k + 1)}
-                      onItemsChanged={reloadItems}
-                      onItemCreated={handleItemCreated}
-                      onCreateError={showError}
-                      onActivityChange={setCurrentActivity}
-                      onError={showError}
-                    />
-                    <QuickSwitchPanel
-                      supplementRecords={records.filter((r) => r.type === '发生')}
-                      items={items}
-                      userTools={userTools}
-                      toolsLoading={toolsLoading}
-                      onSwitched={handleActivitySwitched}
-                      onError={showError}
-                    />
-                  </>
+          <div className="flex h-full flex-col overflow-hidden">
+            <div className="mx-auto flex w-full max-w-2xl flex-1 min-h-0 flex-col overflow-hidden px-4">
+              <div className="shrink-0 pt-4 sm:hidden">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="search"
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') setFilterSearch(searchInput.trim());
+                    }}
+                    placeholder="搜索记录内容…"
+                    className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-9 text-sm focus:border-blue-300 focus:outline-none"
+                  />
+                  {filterSearch && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchInput('');
+                        setFilterSearch('');
+                      }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-blue-600"
+                    >
+                      清除
+                    </button>
+                  )}
+                </div>
+                {filterSearch && (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    搜索「{filterSearch}」共 {records.length} 条
+                  </p>
                 )}
+              </div>
+
+              {/* 统计抬头：sticky 吸顶，不随任何内容滚动 */}
+              {isOnToday && (
+                <div className="sticky top-0 z-20 shrink-0 bg-slate-100 pt-3 pb-1">
+                  <TodayStatusCard
+                    date={todayStr}
+                    records={singleDayRecords}
+                    currentActivity={currentActivity}
+                    items={items}
+                    compact
+                  />
+                </div>
+              )}
+
+              {/* 时间轴区域：内部白卡片自带滚动 */}
+              <div
+                ref={timelineScrollRef}
+                className="flex-1 min-h-0 overflow-hidden py-4"
+              >
                 {recordsLoading && records.length === 0 ? (
                   <RecordsDayContentSkeleton />
                 ) : (
-                  <>
-                    <TodayActivityTimeline
-                      records={recordsWithPending}
-                      date={singleDayDate}
-                      items={items}
-                      onGapClick={(startIso, endIso) =>
-                        setBackfillPanel({ startIso, endIso })
-                      }
-                      onRecordClick={handleRecordClick}
-                      onPlanComplete={handleComplete}
-                    />
-                    <TodayActivityStats
-                      records={singleDayRecords}
-                      date={singleDayDate}
-                      currentActivity={isOnToday ? currentActivity : null}
-                      items={items}
-                    />
-                  </>
+                  <TodayActivityTimeline
+                    records={timelineRecords}
+                    date={singleDayDate}
+                    items={items}
+                    onRecordClick={handleRecordClick}
+                    onPlanComplete={handleComplete}
+                    onRecordDeleted={applyRecordDeleted}
+                    onDeleteFailed={handleDeleteFailed}
+                    onError={showError}
+                  />
                 )}
               </div>
+
+              {isOnToday && (
+                <div className="shrink-0 pb-4">
+                  <CurrentActivityCard
+                    items={items}
+                    itemsLoading={itemsLoading}
+                    pageReady={pageReady}
+                    refreshKey={refreshKey}
+                    isRecordDeleted={isRecordDeleted}
+                    userTools={userTools}
+                    toolsLoading={toolsLoading}
+                    onToolsChange={setUserTools}
+                    onActivitySwitch={applyActivitySwitch}
+                    onRecordAdded={applyRecordAdded}
+                    onRecordDeleted={applyRecordDeleted}
+                    onFallbackRefresh={() => setRefreshKey((k) => k + 1)}
+                    onItemsChanged={reloadItems}
+                    onItemCreated={handleItemCreated}
+                    onCreateError={showError}
+                    onError={showError}
+                    todayRecords={singleDayRecords}
+                    todayDate={todayStr}
+                    quickSwitchRecords={records.filter((r) => r.type === '发生')}
+                    tags={tags}
+                    onPlanComplete={handlePlanCompleteFromCard}
+                    onPlanPriorityChange={handlePlanPriorityChange}
+                    onTagCreated={handleTagCreated}
+                    userRules={userRules}
+                    onRecordPatched={applyRecordUpdated}
+                    onSessionAction={applySessionAction}
+                    onAiEnhanceStart={(id) =>
+                      setAiEnhancingIds((prev) => new Set([...prev, id]))
+                    }
+                    onAiEnhanceEnd={(id) =>
+                      setAiEnhancingIds((prev) => {
+                        const next = new Set(prev);
+                        next.delete(id);
+                        return next;
+                      })
+                    }
+                    onNewItemSuggested={(s) =>
+                      setNewItemSuggestionQueue((prev) =>
+                        prev.some((x) => x.recordId === s.recordId) ? prev : [...prev, s]
+                      )
+                    }
+                    drawerExpanded={inBlockSession ? timingPanelsExpanded : undefined}
+                    onDrawerExpandedChange={
+                      inBlockSession ? setTimingPanelsExpanded : undefined
+                    }
+                  />
+                </div>
+              )}
             </div>
           </div>
         ) : recordsLoading && records.length === 0 ? (
@@ -1080,6 +1330,7 @@ export default function RecordsClient() {
                     <DayRecordGroup
                       date={group.date}
                       records={group.records}
+                      allItems={items}
                       layout="column"
                       aiPendingIds={aiPendingIds}
                       onRecordClick={handleRecordClick}
@@ -1090,6 +1341,7 @@ export default function RecordsClient() {
                       onConvertToPlan={handleConvertToPlan}
                       onConvertToItem={handleConvertToItem}
                       onConvertToGoal={handleConvertToGoal}
+                      onConfirmClassification={handleConfirmClassification}
                       onError={showError}
                     />
                   </div>
@@ -1119,33 +1371,12 @@ export default function RecordsClient() {
           onClose={() => setEditingRecord(null)}
           onSaved={handleRecordUpdated}
           onDeleted={handleRecordDeleted}
+          onDeleteFailed={handleDeleteFailed}
           onError={showError}
           onItemsChange={reloadItems}
           onItemCreated={handleItemCreated}
+          onTagCreated={handleTagCreated}
           onCreateError={showError}
-        />
-      )}
-
-      {/* 1.7：补记面板（点击时间线空白区域触发） */}
-      {backfillPanel !== null && (
-        <StartActivityPanel
-          open
-          mode="backfill"
-          items={items}
-          onItemsChange={reloadItems}
-          onItemCreated={handleItemCreated}
-          onCreateError={showError}
-          backfillDate={singleDayDate}
-          initialStart={backfillPanel.startIso}
-          initialEnd={backfillPanel.endIso}
-          gapStartIso={backfillPanel.startIso}
-          gapEndIso={backfillPanel.endIso}
-          onClose={() => setBackfillPanel(null)}
-          onSubmit={async (payload) => {
-            await postBackfillRecord(payload, singleDayDate);
-            setBackfillPanel(null);
-            setRefreshKey((k) => k + 1);
-          }}
         />
       )}
 
@@ -1157,7 +1388,7 @@ export default function RecordsClient() {
             <p className="text-xs text-slate-500">{completingRecord.content}</p>
             <div className="space-y-2">
               <label className="block text-xs text-slate-600">
-                实际完成内容
+                完成说明
                 <textarea
                   value={completionContent}
                   onChange={(e) => setCompletionContent(e.target.value)}
@@ -1207,7 +1438,26 @@ export default function RecordsClient() {
           </div>
         </div>
       )}
+      {currentSuggestion && (
+        <NewItemConfirmBubble
+          suggestion={currentSuggestion}
+          items={items}
+          onConfirmed={(newItem, fnTag) => {
+            handleItemCreated(newItem);
+            if (fnTag) handleTagCreated(fnTag);
+            // 刷新记录列表以反映新事项归属
+            setRefreshKey((k) => k + 1);
+            setNewItemSuggestionQueue((prev) => prev.slice(1));
+          }}
+          onDismiss={() => setNewItemSuggestionQueue((prev) => prev.slice(1))}
+          onError={showError}
+        />
+      )}
+
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
+        );
+      }}
+    </ActivitySessionProvider>
   );
 }

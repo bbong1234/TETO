@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertCircle, X } from 'lucide-react';
+import { normalizeErrorMessage } from '@/lib/api/client-errors';
 
 export interface Toast {
   id: number;
@@ -19,8 +21,9 @@ export function useToast() {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const showError = useCallback((message: string) => {
+    const text = normalizeErrorMessage(message);
     const id = ++toastId;
-    setToasts((prev) => [...prev, { id, message }]);
+    setToasts((prev) => [...prev, { id, message: text }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 3000);
@@ -44,25 +47,38 @@ export default function ToastContainer({
   toasts: Toast[];
   onDismiss: (id: number) => void;
 }) {
-  if (toasts.length === 0) return null;
+  const [mounted, setMounted] = useState(false);
 
-  return (
-    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-teto-dropdown flex flex-col items-center gap-2 pointer-events-none">
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (toasts.length === 0 || !mounted) return null;
+
+  return createPortal(
+    <div
+      className="fixed left-1/2 z-[500] flex w-[min(100vw-2rem,24rem)] -translate-x-1/2 flex-col items-stretch gap-2 pointer-events-none"
+      style={{ top: 'max(1rem, calc(env(safe-area-inset-top, 0px) + 3.5rem))' }}
+    >
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className="pointer-events-auto flex items-center gap-2 rounded-teto-lg bg-teto-semantic-error px-4 py-2.5 text-sm font-medium text-white shadow-lg animate-in fade-in slide-in-from-top-2 duration-teto-fast"
+          role="alert"
+          className="pointer-events-auto flex items-start gap-2 rounded-xl bg-red-600 px-4 py-3 text-sm font-medium text-white shadow-lg"
         >
-          <AlertCircle className="h-4 w-4 shrink-0" />
-          <span>{toast.message}</span>
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span className="flex-1 leading-snug break-words">{toast.message}</span>
           <button
+            type="button"
             onClick={() => onDismiss(toast.id)}
             className="ml-1 shrink-0 rounded p-0.5 hover:bg-red-700 transition-colors"
+            aria-label="关闭"
           >
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
       ))}
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -1,13 +1,18 @@
 import type { CreateRecordPayload, Record } from '@/types/teto';
+import { UNASSIGNED_ACTIVE_PLACEHOLDER } from '@/lib/activity/recent-context';
 
 /**
  * 手动录入（想法/计划等）：走 enhance=client 直连入库，不经 AI 清分。
  */
 export async function postManualRecord(payload: CreateRecordPayload): Promise<Record> {
+  const body: CreateRecordPayload = {
+    ...payload,
+    content: payload.content?.trim() ?? (payload.raw_input?.trim() ? '' : UNASSIGNED_ACTIVE_PLACEHOLDER),
+  };
   const res = await fetch('/api/v2/records?enhance=client', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
   const data = await res.json();
   if (!res.ok) {

@@ -32,11 +32,11 @@ function SubItemBreakdownBar({ rows }: { rows: PhaseSubItemBreakdown[] }) {
 
   return (
     <div className="mt-2 pt-2 border-t border-slate-100/80">
-      <p className="text-[10px] font-medium text-slate-500 mb-1.5">职能分布（本阶段）</p>
+      <p className="text-[10px] font-medium text-slate-500 mb-1.5">动作分布（本阶段）</p>
       <div className="flex flex-wrap gap-1">
         {rows.map((row) => {
           const key = row.sub_item_id ?? '__none__';
-          const label = row.sub_item_title ?? '未选职能';
+          const label = row.sub_item_title ?? '未选动作';
           return (
             <span
               key={key}
