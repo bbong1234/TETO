@@ -2582,8 +2582,9 @@ export default function CurrentActivityCard({
   );
 
   const handleIdleContextChange = useCallback((v: ActivityContextValue) => {
+    const hasManualContext = Boolean(v.itemId || v.categoryItemId || v.subItemId || v.phaseId);
     setIdleContext(v);
-    setContextManualOverride(true);
+    setContextManualOverride(hasManualContext);
   }, []);
 
   /** 用户手动改动作也视为最终选择，后续输入不再自动覆盖归属。 */
