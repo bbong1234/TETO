@@ -50,7 +50,7 @@ export async function listActiveActivities(userId: string): Promise<Record[]> {
   const rows = data ?? [];
   if (rows.length === 0) return [];
 
-  const itemIds = [...new Set(rows.filter((r) => r.item_id).map((r) => r.item_id as string))];
+  const itemIds = [...new Set(rows.filter((r: { item_id?: string | null }) => r.item_id).map((r: { item_id?: string | null }) => r.item_id as string))];
   const itemMap = new Map<string, { id: string; title: string }>();
   if (itemIds.length > 0) {
     const { data: itemsData } = await supabase
@@ -63,7 +63,7 @@ export async function listActiveActivities(userId: string): Promise<Record[]> {
     }
   }
 
-  return rows.map((row) =>
+  return rows.map((row: any) =>
     enrichRow(row, row.item_id ? itemMap.get(row.item_id as string) ?? null : null)
   );
 }

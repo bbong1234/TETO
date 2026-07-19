@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-hd63vq",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260712-5pkcsz",
+  "sourceDecisionId": "DEC-CORR-7f4efe81",
+  "description": "用户将 \"status\" 从 \"的\" 修正为 \"的\"",
+  "input": {
+    "recordId": "7f4efe81-68a7-4fca-8981-ca882c6488a3",
+    "userInput": null
+  },
+  "expected": {
+    "status": "的"
+  },
+  "actualProduction": {
+    "status": "的"
+  },
+  "generatedAt": "2026-07-12T03:27:47.216Z"
+}

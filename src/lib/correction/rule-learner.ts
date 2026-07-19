@@ -210,7 +210,7 @@ export async function learnRulesFromCorrections(
     }
 
     // ── 4. 标记所有相关 corrections 的 rule_id ──
-    const correctionIds = group.corrections.map(c => c.id);
+    const correctionIds = group.corrections.map((c: any) => c.id);
     await supabase
       .from('corrections')
       .update({ rule_id: ruleId })

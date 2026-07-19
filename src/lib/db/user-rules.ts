@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 
 // ================================
 // 类型定义
@@ -240,16 +241,15 @@ export async function deleteUserRule(
   ruleId: string
 ): Promise<void> {
   const supabase = await createClient();
-
-  const { error } = await supabase
-    .from('user_rules')
-    .delete()
-    .eq('id', ruleId)
-    .eq('user_id', userId);
-
-  if (error) {
-    throw new Error(`删除用户规则失败: ${error.message}`);
-  }
+  await deleteOneOwnedRow(
+    supabase,
+    'user_rules',
+    [
+      { column: 'id', value: ruleId },
+      { column: 'user_id', value: userId },
+    ],
+    '删除用户规则失败'
+  );
 }
 
 /**

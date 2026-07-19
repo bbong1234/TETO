@@ -1,6 +1,6 @@
 import { resolveRecordAnchorDate } from '@/lib/activity/record-time';
 import type { Record as TetoRecord } from '@/types/teto';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { ServerDbClient } from '@/lib/supabase/server';
 
 /** 展示用编号；无 display_no 时用归属日 + sort_order 兜底 */
 export function formatRecordDisplayNo(record: Pick<TetoRecord, 'display_no' | 'sort_order' | 'time_anchor_date' | 'record_day_id'> & {
@@ -15,7 +15,7 @@ export function formatRecordDisplayNo(record: Pick<TetoRecord, 'display_no' | 's
 
 /** 创建记录时分配 display_no */
 export async function generateDisplayNoForDate(
-  supabase: SupabaseClient,
+  supabase: ServerDbClient,
   userId: string,
   anchorDate: string
 ): Promise<string> {

@@ -7,6 +7,7 @@ import {
 } from '@/types/teto';
 
 export type AttributeGroupId =
+  | 'action'
   | 'bodyMind'
   | 'status'
   | 'place'
@@ -22,6 +23,7 @@ export interface AttributeGroupDef {
 }
 
 export const ATTRIBUTE_GROUPS: AttributeGroupDef[] = [
+  { id: 'action', label: '动作' },
   { id: 'bodyMind', label: '身心' },
   { id: 'status', label: '状态' },
   { id: 'place', label: '地点' },
@@ -41,6 +43,8 @@ function moodChip(mood: string): string {
 
 export function attributeGroupHasValue(form: RecordEditFormState, id: AttributeGroupId): boolean {
   switch (id) {
+    case 'action':
+      return !!(form.actionText.trim() || form.eventText.trim() || form.objectText.trim());
     case 'bodyMind':
       return !!(form.mood.trim() || form.energy.trim() || form.bodyState.trim());
     case 'status':
@@ -69,6 +73,10 @@ export function attributeGroupHasValue(form: RecordEditFormState, id: AttributeG
 
 export function formatAttributeGroupSummary(form: RecordEditFormState, id: AttributeGroupId): string {
   switch (id) {
+    case 'action':
+      return [form.actionText.trim(), form.eventText.trim(), form.objectText.trim()]
+        .filter(Boolean)
+        .join(' · ');
     case 'bodyMind': {
       const parts = [moodChip(form.mood), form.energy.trim(), form.bodyState.trim()].filter(Boolean);
       return parts.join(' · ');

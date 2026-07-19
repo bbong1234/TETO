@@ -41,6 +41,14 @@ function GroupEditor({
   onPatch: (patch: Partial<RecordEditFormState>) => void;
 }) {
   switch (groupId) {
+    case 'action':
+      return (
+        <div className="space-y-2">
+          <CompactInput label="动作" value={form.actionText} onChange={(v) => onPatch({ actionText: v })} placeholder="如：学习、吃饭" />
+          <CompactInput label="事件" value={form.eventText} onChange={(v) => onPatch({ eventText: v })} placeholder="如：完成听写" />
+          <CompactInput icon={<Target className="h-3 w-3" />} label="对象" value={form.objectText} onChange={(v) => onPatch({ objectText: v })} placeholder="如：英语、早饭" />
+        </div>
+      );
     case 'bodyMind':
       return (
         <div className="space-y-2">

@@ -19,6 +19,8 @@ interface FunctionTagRowProps {
   onGraceUndo?: () => void;
   /** 选中项不在当前动作池时也保持展示（切换事项加载中） */
   pinnedSelectedTag?: Tag | null;
+  /** 新建动作标签所属的一类事项；为空时创建全局标签 */
+  scopeItemId?: string | null;
 }
 
 /**
@@ -39,6 +41,7 @@ export default function FunctionTagRow({
   graceExpiresAt = null,
   onGraceUndo,
   pinnedSelectedTag = null,
+  scopeItemId = null,
 }: FunctionTagRowProps) {
   const baseFunctionTags = tags.filter((t) => t.type === 'function');
   const functionTags =
@@ -59,7 +62,7 @@ export default function FunctionTagRow({
       const res = await fetch('/api/v2/tags', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, type: 'function' }),
+        body: JSON.stringify({ name, type: 'function', scope_item_id: scopeItemId }),
       });
       const data = await res.json();
       if (res.ok && data.data) {

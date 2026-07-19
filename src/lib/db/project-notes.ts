@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import type { ProjectNote, CreateProjectNotePayload, ProjectNoteType } from '@/types/teto';
 
 export async function listProjectNotes(
@@ -45,12 +46,15 @@ export async function createProjectNote(
 
 export async function deleteProjectNote(userId: string, id: string): Promise<void> {
   const supabase = await createClient();
-  const { error } = await supabase
-    .from('project_notes')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
-  if (error) throw new Error(`删除项目笔记失败: ${error.message}`);
+  await deleteOneOwnedRow(
+    supabase,
+    'project_notes',
+    [
+      { column: 'id', value: id },
+      { column: 'user_id', value: userId },
+    ],
+    '删除项目笔记失败'
+  );
 }
 
 /** 从 milestone/idea 事件沉淀到知识库 */

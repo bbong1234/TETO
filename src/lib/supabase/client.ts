@@ -1,22 +1,18 @@
+'use client';
+
 import { createBrowserClient } from '@supabase/ssr';
+import { createBrowserPostgresClient } from '@/lib/postgres/client-browser';
+import { assertSupabaseConfigured, isClientDevMode } from '@/lib/db/runtime-mode';
 
-let browserClient: ReturnType<typeof createBrowserClient> | undefined;
-
+/** 浏览器端：dev 用认证桩；生产用 Supabase Auth（数据仍经 API） */
 export function createClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!url || !key) {
-    throw new Error('缺少 Supabase 配置：NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY');
+  if (isClientDevMode()) {
+    return createBrowserPostgresClient();
   }
 
-  if (!browserClient) {
-    browserClient = createBrowserClient(url, key);
-  }
-
-  return browserClient;
-}
-
-export function resetBrowserClient() {
-  browserClient = undefined;
+  assertSupabaseConfigured();
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
 }

@@ -88,14 +88,29 @@ TETO 不是传统待办工具的增强版，也不是单纯日记软件。它解
 
 ## 环境变量说明
 
+### 本地开发（`.env.local`）
+
+| 变量名 | 必填 | 说明 |
+|--------|------|------|
+| `DATABASE_URL` | 是 | 本机 PostgreSQL，如 `postgresql://postgres:密码@127.0.0.1:5432/teto` |
+| `DEV_MODE` | 是 | 服务端开发模式，配合 `DATABASE_URL` 使用本机库 |
+| `NEXT_PUBLIC_DEV_MODE` | 是 | 客户端开发模式，跳过登录页 |
+| `NEXT_PUBLIC_DEV_USER_ID` | 是 | 本地固定用户 UUID（与 bootstrap `006_dev_user.sql` 一致） |
+| `DEEPSEEK_API_KEY` | 否 | AI 语义解析 |
+
+本地只需 `npm run dev`，**不需要**配置 Supabase。
+
+### Vercel 生产
+
 | 变量名 | 必填 | 说明 |
 |--------|------|------|
 | `NEXT_PUBLIC_SUPABASE_URL` | 是 | Supabase 项目 URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | 是 | Supabase 匿名密钥 |
-| `SUPABASE_SERVICE_ROLE_KEY` | 是 | Supabase Service Role Key（服务端操作） |
-| `NEXT_PUBLIC_DEV_MODE` | 否 | 设为 `true` 启用开发模式（跳过登录） |
-| `NEXT_PUBLIC_DEV_USER_ID` | 否 | 开发模式使用的测试用户 ID |
-| `DEV_MODE` | 否 | 服务端开发模式（控制 service_role key 使用） |
+| `SUPABASE_SERVICE_ROLE_KEY` | 否 | 部分脚本/管理操作 |
+
+**生产环境不要配置** `DATABASE_URL`、`DEV_MODE`、`NEXT_PUBLIC_DEV_MODE`。
+
+Supabase 建表步骤见 [`sql/bootstrap/SUPABASE_PRODUCTION.md`](sql/bootstrap/SUPABASE_PRODUCTION.md)。
 
 ## 数据库表
 
@@ -163,12 +178,16 @@ src/
 
 ## Vercel 部署说明
 
-1. 确保本地 `npm run build` 执行通过
-2. 确保代码已推送到 GitHub
-3. 确保 Supabase SQL 脚本已执行
-4. 登录 [Vercel](https://vercel.com) → Import Git 仓库
-5. 配置环境变量：`NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`、`SUPABASE_SERVICE_ROLE_KEY`
-6. 部署后在 Supabase 控制台添加 Vercel 生产域名到 URL Configuration
+1. 本地 `npm run build` 通过
+2. 代码推送到 GitHub（Vercel 自动部署）
+3. 在 Supabase 执行生产 schema，见 [`sql/bootstrap/SUPABASE_PRODUCTION.md`](sql/bootstrap/SUPABASE_PRODUCTION.md)
+4. Vercel → Settings → Environment Variables（**Production**）：
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - 可选 `SUPABASE_SERVICE_ROLE_KEY`
+   - **删除** 若存在的 `DATABASE_URL`、`DEV_MODE`、`NEXT_PUBLIC_DEV_MODE`
+5. Redeploy 后，Supabase → Authentication → URL Configuration 添加生产域名与 `/auth/callback`
+6. 验证：`/login` 可注册登录；多用户数据按 RLS 隔离
 
 ## 当前不包含的内容
 

@@ -66,6 +66,16 @@ describe('item-tree hierarchy rules', () => {
     expect(titles).toContain('英语');
   });
 
+  it('getCategoryItems shows L1 with records but no children via categoryIdsWithRecords', () => {
+    const sport = item({ id: 'cat-sport', title: '运动' });
+    const list = [sport, english, englishStudy];
+    const withRecords = new Set(['cat-sport']);
+    expect(getCategoryItems(list, undefined, undefined, { categoryIdsWithRecords: withRecords }).map(
+      (i) => i.title
+    )).toContain('运动');
+    expect(isUsedCategoryItem(sport, list, undefined, undefined, withRecords)).toBe(true);
+  });
+
   it('does not allow direct attachment to category', () => {
     expect(resolveTargetItemId({})).toBeNull();
     expect(

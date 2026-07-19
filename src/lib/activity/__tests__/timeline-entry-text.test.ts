@@ -109,7 +109,7 @@ describe('buildTimelineEntryText', () => {
     expect(text).toBe('吃早饭 早饭，吃了两个茶叶蛋，一个馒头，花了5块');
   });
 
-  it('随手记不在时间线尾部展示原始 content', () => {
+  it('随手记优先展示 raw_input 原文', () => {
     const text = buildTimelineEntryText(
       record({
         input_source: 'quick',
@@ -121,8 +121,7 @@ describe('buildTimelineEntryText', () => {
       }),
       items
     );
-    expect(text).toBe('吃早饭');
-    expect(text).not.toContain('茶叶蛋');
+    expect(text).toBe('吃早饭 早饭，吃了两个茶叶蛋，花了5块');
   });
 
   it('进行中会话仅展示标签与动作，摘要不回退占位文案', () => {

@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-y1ah7q",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260718-o7d28a",
+  "sourceDecisionId": "DEC-CORR-9403292e",
+  "description": "用户将 \"finance_account_id\" 从 \"d88db6a3-7bf1-4c9a-86fa-3d2c3a6c6afb\" 修正为 \"d88db6a3-7bf1-4c9a-86fa-3d2c3a6c6afb\"",
+  "input": {
+    "recordId": "9403292e-feb3-4cfb-b707-e2271ec067d0",
+    "userInput": null
+  },
+  "expected": {
+    "finance_account_id": "d88db6a3-7bf1-4c9a-86fa-3d2c3a6c6afb"
+  },
+  "actualProduction": {
+    "finance_account_id": "d88db6a3-7bf1-4c9a-86fa-3d2c3a6c6afb"
+  },
+  "generatedAt": "2026-07-18T12:14:18.290Z"
+}

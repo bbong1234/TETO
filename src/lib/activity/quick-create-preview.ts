@@ -2,6 +2,7 @@ import {
   buildOrgPathLabel,
   collectMatchingPatterns,
   isAttributionEligibleItem,
+  itemTitleMatchesInput,
   MIN_ATTRIBUTION_INPUT_LENGTH,
   resolveTextAttribution,
 } from '@/lib/activity/attribution-resolve';
@@ -41,6 +42,33 @@ export interface BuildQuickCreateOptionsParams {
   subItems?: SubItem[];
 }
 
+function resolveScopedFunctionTagId(
+  candidateId: string | null | undefined,
+  categoryId: string | null | undefined,
+  tags: Tag[]
+): string | null {
+  if (!candidateId) return null;
+  const tag = tags.find((entry) => entry.id === candidateId && entry.type === 'function');
+  if (!tag) return null;
+  if (tag.scope_item_id && tag.scope_item_id !== categoryId) return null;
+  return tag.id;
+}
+
+function matchScopedFunctionTagByName(
+  text: string,
+  categoryId: string | null | undefined,
+  tags: Tag[]
+): string | null {
+  return tags
+    .filter(
+      (tag) =>
+        tag.type === 'function' &&
+        (!tag.scope_item_id || tag.scope_item_id === categoryId) &&
+        itemTitleMatchesInput(text, tag.name)
+    )
+    .sort((a, b) => b.name.trim().length - a.name.trim().length)[0]?.id ?? null;
+}
+
 /**
  * 随手记输入时的归属选项（一类 / 二类分层，按 itemId 去重）
  */
@@ -77,6 +105,11 @@ export function buildQuickCreateAttributionOptions(
     presetItemId: presets.itemId,
     subItems: params?.subItems ?? [],
   });
+  const scopedFunctionTagId = resolveScopedFunctionTagId(
+    presets.functionTagId,
+    category?.id,
+    tags
+  ) ?? matchScopedFunctionTagByName(trimmed, category?.id, tags);
 
   let hasRecommended = false;
 
@@ -89,7 +122,7 @@ export function buildQuickCreateAttributionOptions(
       label: buildOrgPathLabel(category.title, matchedL2.title, subTitle),
       itemId: matchedL2.id,
       subItemId,
-      functionTagId: presets.functionTagId,
+      functionTagId: scopedFunctionTagId,
       recommended: true,
     });
     hasRecommended = true;
@@ -104,7 +137,7 @@ export function buildQuickCreateAttributionOptions(
       shortLabel: matchedL2.title,
       label: fullLabel,
       itemId: matchedL2.id,
-      functionTagId: presets.functionTagId,
+      functionTagId: scopedFunctionTagId,
       recommended: true,
     });
     hasRecommended = true;
@@ -116,7 +149,7 @@ export function buildQuickCreateAttributionOptions(
       shortLabel: category.title,
       label: category.title,
       itemId: category.id,
-      functionTagId: matchedL2 ? null : presets.functionTagId,
+      functionTagId: matchedL2 ? null : scopedFunctionTagId,
       recommended: !hasRecommended,
     });
     if (!hasRecommended) hasRecommended = true;
@@ -148,14 +181,14 @@ export function buildQuickCreateAttributionOptions(
     }
   }
 
-  if (presets.functionTagId && !category) {
-    const name = tags.find((t) => t.id === presets.functionTagId)?.name?.trim();
+  if (scopedFunctionTagId && !category) {
+    const name = tags.find((t) => t.id === scopedFunctionTagId)?.name?.trim();
     if (name) {
       addUniqueOption(options, seenIds, seenItemIds, {
-        id: `tag:${presets.functionTagId}`,
+        id: `tag:${scopedFunctionTagId}`,
         shortLabel: name,
         label: name,
-        functionTagId: presets.functionTagId,
+        functionTagId: scopedFunctionTagId,
         recommended: !hasRecommended,
       });
       if (!hasRecommended) hasRecommended = true;

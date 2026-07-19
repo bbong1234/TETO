@@ -5,11 +5,9 @@ import { createClient } from '@/lib/supabase/server';
 import { createRecordSafely } from '@/lib/domain/record-service';
 import type { RecordsQuery, CreateRecordPayload } from '@/types/teto';
 import { RECORD_TYPES, LIFECYCLE_STATUSES, normalizeRecordType } from '@/types/teto';
-import { classifyInput } from '@/lib/ai/classify-input';
-import type { ClarificationNeeded, ClassificationResult } from '@/types/semantic';
+import { ERROR_CODES, genInputId } from '@/lib/observability/id-registry';
 import { handleApiError } from '@/lib/api/error-handler';
 import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
-import { ERROR_CODES, genInputId, genUnitId } from '@/lib/observability/id-registry';
 import { createComponentLogger } from '@/lib/observability/logger';
 import { persistTraceSummary } from '@/lib/observability/trace';
 
@@ -160,155 +158,24 @@ export async function POST(request: NextRequest) {
 
     const supabase = await createClient();
 
-    // 判断是否需要跳过 AI 清分（?enhance=client 或客户端已预解析）
-    const enhanceMode = new URL(request.url).searchParams.get('enhance');
-    const alreadyParsed = !!(body as unknown as Record<string, unknown>).parsed_semantic;
-
-    if (enhanceMode === 'client' || alreadyParsed) {
-      // 客户端增强模式：直接入库（不走服务端 AI 清分）
-      // 设置默认 review_status，客户端增强的数据标记为 unchecked
-      if (!(body as unknown as Record<string, unknown>).review_status) {
-        (body as unknown as Record<string, unknown>).review_status = 'unchecked';
-      }
-      const result = await createRecordSafely({ userId, payload: body, supabase });
-      if (!result.ok) {
-        return apiError(
-          ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED,
-          result.errors.map(e => e.message).join('; '),
-          ctx.traceId, 400,
-          result.errors.map(e => ({ code: e.code, message: e.message }))
-        );
-      }
-
-      persistTraceSummary({ supabase, userId, traceId: ctx.traceId, operation: 'record_create', status: 'ok' });
-      return apiSuccess(
-        result.data,
-        ctx.traceId, 201,
-        result.warnings.map(w => ({ code: w.code, message: w.message }))
+    if (!(body as unknown as Record<string, unknown>).review_status) {
+      (body as unknown as Record<string, unknown>).review_status = 'unchecked';
+    }
+    const result = await createRecordSafely({ userId, payload: body, supabase });
+    if (!result.ok) {
+      return apiError(
+        ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED,
+        result.errors.map(e => e.message).join('; '),
+        ctx.traceId, 400,
+        result.errors.map(e => ({ code: e.code, message: e.message }))
       );
     }
 
-    // ════════════════════════════════════════════════════════
-    // 正常流程：AI 清分 → 判断可入库 → 入库
-    // ════════════════════════════════════════════════════════
-
-    // ① AI 清分（不入库，纯分析）— 必须用用户原文 raw_input，避免用摘要 content 喂模型
-    const rawForClassify =
-      typeof body.raw_input === 'string' && body.raw_input.trim().length > 0
-        ? body.raw_input.trim()
-        : body.content;
-
-    const classification: ClassificationResult = await classifyInput(
-      userId, rawForClassify, body.date, ctx.traceId
-    );
-
-    // ② 需要确认 → 返回确认卡片，不入库
-    if (classification.needsConfirmation) {
-      persistTraceSummary({ supabase, userId, traceId: ctx.traceId, operation: 'record_classify', status: 'partial' });
-      return apiSuccess(
-        { _clarification: classification.clarification, _compound: { detected: classification.isCompound, unitsCount: classification.unitsCount } },
-        ctx.traceId, 200
-      );
-    }
-
-    // ③ 可入库 → 按 unit 逐条创建记录（高置信度，直接入库）
-    const createdRecords: Record<string, unknown>[] = [];
-    const splitRecordIds: string[] = [];
-    const batchId = classification.isCompound ? crypto.randomUUID() : undefined;
-    const proposals = classification.unitProposals;
-
-    for (let i = 0; i < proposals.length; i++) {
-      const proposal = proposals[i];
-      const isMainRecord = i === 0;
-
-      const createPayload: Record<string, unknown> = {
-        content: proposal.contentSummary || body.content,
-        raw_input: body.raw_input ?? rawForClassify,
-        date: body.date,
-        type: (proposal.fields.type as string) || '发生',
-        input_id: isMainRecord ? inputId : genUnitId(inputId, i),
-        ...(isMainRecord ? {} : { parent_input_id: inputId }),
-        ...(batchId ? { batch_id: batchId } : {}),
-        parsed_semantic: classification.rawParsed,
-        review_status: 'confirmed',
-        confidence_level: 'high',
-        input_source: 'ai',
-        ...proposal.fields,
-      };
-
-      // 保留客户端传入的字段（如有）
-      if (body.type && !createPayload.type) createPayload.type = body.type;
-
-      const result = await createRecordSafely({
-        userId,
-        payload: createPayload as unknown as CreateRecordPayload,
-        supabase,
-      });
-
-      if (!result.ok) {
-        log.error('记录创建失败', { details: { unitIndex: i, errors: result.errors.map(e => e.message) } });
-        // 首个 unit 失败则整体失败
-        if (isMainRecord) {
-          return apiError(
-            ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED,
-            result.errors.map(e => e.message).join('; '),
-            ctx.traceId, 400,
-            result.errors.map(e => ({ code: e.code, message: e.message }))
-          );
-        }
-        continue; // 子记录失败不阻塞主记录
-      }
-
-      const record = result.data as unknown as Record<string, unknown>;
-      createdRecords.push(record);
-
-      // 子记录建立 derived_from 关联
-      if (!isMainRecord && record.id) {
-        splitRecordIds.push(record.id as string);
-        const mainRecordId = createdRecords[0]?.id;
-        if (mainRecordId) {
-          await supabase.from('record_links').insert({
-            source_id: record.id,
-            target_id: mainRecordId,
-            link_type: 'derived_from',
-            user_id: userId,
-          }).select('id').maybeSingle();
-        }
-      }
-    }
-
-    if (createdRecords.length === 0) {
-      return apiError(ERROR_CODES.RECORD_CREATE_VALIDATION_FAILED, '所有记录创建失败', ctx.traceId, 500);
-    }
-
-    // 持久化决策日志（可回放审计链路）
-    if (classification.decisions.length > 0) {
-      const decisionRows = classification.decisions.map(d => ({
-        decision_id: d.decisionId,
-        trace_id: ctx.traceId,
-        decision_type: d.type,
-        input_summary: d.explain,
-        output_summary: JSON.stringify(proposals[d.unitIndex]?.fields ?? {}),
-        metadata: d.detail ?? {},
-      }));
-      const { error: decErr } = await supabase.from('decision_logs').insert(decisionRows);
-      if (decErr) {
-        log.warn('决策日志写入失败（非致命）', { details: { error: decErr.message } });
-      }
-    }
-
-    // 持久化 trace
     persistTraceSummary({ supabase, userId, traceId: ctx.traceId, operation: 'record_create', status: 'ok' });
-
     return apiSuccess(
-      {
-        ...createdRecords[0],
-        _compound: classification.isCompound
-          ? { detected: true, unitsCount: classification.unitsCount, splitRecordIds }
-          : undefined,
-        _decisions: classification.decisions,
-      },
-      ctx.traceId, 201
+      result.data,
+      ctx.traceId, 201,
+      result.warnings.map(w => ({ code: w.code, message: w.message }))
     );
   } catch (error) {
     return handleApiError(error);

@@ -158,7 +158,7 @@ export async function enhanceRecord(
   const targetItemId4Sub = (aiUpdate.item_id as string) || existingRecord.item_id;
   let subItemAmbiguous: { label: string; value: string }[] | null = null;
   if (!existingRecord.sub_item_id && targetItemId4Sub) {
-    const subsUnderItem = (subItems ?? []).filter(s => s.item_id === targetItemId4Sub);
+    const subsUnderItem = (subItems ?? []).filter((s: any) => s.item_id === targetItemId4Sub);
     const action = firstUnit.action_text?.trim().toLowerCase() || '';
     const hint = typeof firstUnit.sub_item_hint === 'string' ? firstUnit.sub_item_hint.trim().toLowerCase() : '';
     const metricName = firstUnit.metric?.name || (aiUpdate.metric_name as string | undefined);
@@ -186,7 +186,7 @@ export async function enhanceRecord(
     } else if (uniqueMatches.length > 1) {
       subItemAmbiguous = uniqueMatches.map(m => ({ label: m.title, value: m.id }));
     } else if (subsUnderItem.length > 0) {
-      subItemAmbiguous = subsUnderItem.map(s => ({ label: s.title, value: s.id }));
+      subItemAmbiguous = subsUnderItem.map((s: any) => ({ label: s.title, value: s.id }));
     }
   }
 

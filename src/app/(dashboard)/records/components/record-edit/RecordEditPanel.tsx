@@ -5,12 +5,8 @@ import type { RecordEditFormState } from '@/lib/activity/record-form';
 import RecordSourceSection from './RecordSourceSection';
 import RecordMetaSection from './RecordMetaSection';
 import RecordAttributionSection from './RecordAttributionSection';
-import RecordGoalSection from './RecordGoalSection';
 import RecordFinanceSection from './RecordFinanceSection';
-import RecordAttributesSection from './RecordAttributesSection';
-import RecordNoteSection from './RecordNoteSection';
-import RecordEditLinksSection from './RecordEditLinksSection';
-import RecordDetailSection from './RecordDetailSection';
+import RecordEditMoreSection from './RecordEditMoreSection';
 
 interface RecordEditPanelProps {
   record: Record;
@@ -41,8 +37,6 @@ export default function RecordEditPanel({
   onCreateError,
   onRecordPatched,
 }: RecordEditPanelProps) {
-  const hasLinks = !!(record.linked_records && record.linked_records.length > 0);
-
   return (
     <div className="space-y-3">
       <RecordSourceSection record={record} form={form} onPatch={onPatch} />
@@ -58,28 +52,20 @@ export default function RecordEditPanel({
         onTagCreated={onTagCreated}
         onCreateError={onCreateError}
       />
-      <RecordGoalSection
-        form={form}
-        items={items}
-        goals={goals}
-        goalBadge={record.goal ?? null}
-        onPatch={onPatch}
-      />
-      <RecordFinanceSection form={form} onPatch={onPatch} />
-      <RecordAttributesSection
+      <RecordFinanceSection form={form} onPatch={onPatch} onError={onCreateError} />
+      <RecordEditMoreSection
         record={record}
         form={form}
         items={items}
+        goals={goals}
         onPatch={onPatch}
+        onContextSubItemsLoaded={onContextSubItemsLoaded}
+        onItemsChange={onItemsChange}
+        onItemCreated={onItemCreated}
+        onTagCreated={onTagCreated}
+        onCreateError={onCreateError}
         onRecordPatched={onRecordPatched}
-        onError={onCreateError}
       />
-      <RecordNoteSection form={form} onPatch={onPatch} />
-      {hasLinks && (
-        <RecordDetailSection title={`关联记录 (${record.linked_records!.length})`}>
-          <RecordEditLinksSection recordId={record.id} />
-        </RecordDetailSection>
-      )}
     </div>
   );
 }

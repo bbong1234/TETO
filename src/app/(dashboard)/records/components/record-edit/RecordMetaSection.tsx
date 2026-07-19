@@ -53,7 +53,9 @@ export default function RecordMetaSection({ form, originalRecord, onPatch }: Rec
 
   const lifecycle = originalRecord.lifecycle_status;
   const lifecycleLabel =
-    lifecycle && lifecycle !== 'active' ? LIFECYCLE_LABEL[lifecycle] ?? lifecycle : '';
+    lifecycle && lifecycle !== 'active' && lifecycle !== 'completed'
+      ? LIFECYCLE_LABEL[lifecycle] ?? lifecycle
+      : '';
 
   return (
     <RecordDetailSection title="元信息">

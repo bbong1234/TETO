@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-z4tpkk",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260718-y8bvd7",
+  "sourceDecisionId": "DEC-CORR-9403292e",
+  "description": "用户将 \"tool_label\" 从 \"支付宝\" 修正为 \"支付宝\"",
+  "input": {
+    "recordId": "9403292e-feb3-4cfb-b707-e2271ec067d0",
+    "userInput": null
+  },
+  "expected": {
+    "tool_label": "支付宝"
+  },
+  "actualProduction": {
+    "tool_label": "支付宝"
+  },
+  "generatedAt": "2026-07-18T12:14:18.295Z"
+}

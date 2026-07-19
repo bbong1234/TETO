@@ -319,7 +319,7 @@ export async function classifyInput(
       const searchText = (itemHint || unitMatchText).toLowerCase();
       for (const rule of itemMappingRules) {
         if (searchText.includes(rule.trigger_pattern.toLowerCase())) {
-          const targetItem = effectiveItems.find(it => it.id === rule.target_id);
+          const targetItem = effectiveItems.find((it: any) => it.id === rule.target_id);
           if (targetItem) {
             matchedItemId = rule.target_id!;
             fields.item_id = matchedItemId;
@@ -351,7 +351,7 @@ export async function classifyInput(
           searchText.includes(rule.trigger_pattern.toLowerCase())
         ) {
           const subsUnderItem = (subItems ?? []).filter(
-            s => s.item_id === matchedItemId && s.id === rule.target_id
+            (s: any) => s.item_id === matchedItemId && s.id === rule.target_id
           );
           if (subsUnderItem.length > 0) {
             matchedSubItemId = rule.target_id!;
@@ -376,7 +376,7 @@ export async function classifyInput(
     // ── 子项匹配 ──
     let subItemAmbiguous: { label: string; value: string }[] | null = null;
     if (!matchedSubItemId && matchedItemId) {
-      const subsUnderItem = (subItems ?? []).filter(s => s.item_id === matchedItemId);
+      const subsUnderItem = (subItems ?? []).filter((s: any) => s.item_id === matchedItemId);
       const action = typeof unit.action_text === 'string' ? unit.action_text.trim().toLowerCase() : '';
       const hint = typeof unit.sub_item_hint === 'string' ? unit.sub_item_hint.trim().toLowerCase() : '';
 

@@ -78,11 +78,13 @@ export function isUsedCategoryItem(
   item: Item,
   items: Item[],
   selectedCategoryId?: string,
-  userCategoryIds?: ReadonlySet<string>
+  userCategoryIds?: ReadonlySet<string>,
+  categoryIdsWithRecords?: ReadonlySet<string>
 ): boolean {
   if (!isActiveItem(item) || item.parent_item_id) return false;
   if (userCategoryIds?.has(item.id)) return true;
   if (selectedCategoryId && item.id === selectedCategoryId) return true;
+  if (categoryIdsWithRecords?.has(item.id)) return true;
   if (items.some((i) => i.parent_item_id === item.id && isActiveItem(i))) return true;
   return false;
 }
@@ -100,10 +102,11 @@ export function getCategoryItems(
   items: Item[],
   selectedCategoryId?: string,
   userCategoryIds?: ReadonlySet<string>,
-  options?: { includeCompleted?: boolean; showUnusedPresets?: boolean }
+  options?: { includeCompleted?: boolean; showUnusedPresets?: boolean; categoryIdsWithRecords?: ReadonlySet<string> }
 ): Item[] {
   const includeCompleted = options?.includeCompleted ?? false;
   const showUnusedPresets = options?.showUnusedPresets ?? false;
+  const categoryIdsWithRecords = options?.categoryIdsWithRecords;
   const cats = items.filter((i) => {
     if (i.parent_item_id) return false;
     if (!isActiveItem(i) && !(includeCompleted && i.status === '已完成')) return false;
@@ -111,7 +114,7 @@ export function getCategoryItems(
       if (userCategoryIds?.has(i.id)) return true;
       return isCategoryItem(i, items, selectedCategoryId);
     }
-    return isUsedCategoryItem(i, items, selectedCategoryId, userCategoryIds);
+    return isUsedCategoryItem(i, items, selectedCategoryId, userCategoryIds, categoryIdsWithRecords);
   });
   return cats.sort((a, b) => {
     const aPreset = PRESET_SET.has(a.title) ? 0 : 1;
@@ -169,13 +172,15 @@ export function getCategoryItemsFromIndex(
   items: Item[],
   index: ItemTreeIndex,
   selectedCategoryId?: string,
-  userCategoryIds?: ReadonlySet<string>
+  userCategoryIds?: ReadonlySet<string>,
+  categoryIdsWithRecords?: ReadonlySet<string>
 ): Item[] {
   const cats = items.filter((i) => {
     if (i.parent_item_id) return false;
     if (!isActiveItem(i)) return false;
     if (userCategoryIds?.has(i.id)) return true;
     if (selectedCategoryId && i.id === selectedCategoryId) return true;
+    if (categoryIdsWithRecords?.has(i.id)) return true;
     return (index.activeChildCountByParent.get(i.id) ?? 0) > 0;
   });
   return cats.sort((a, b) => {
@@ -239,6 +244,48 @@ export function getChildItems(
   return items.filter(
     (i) => i.parent_item_id === parentItemId && isBoardVisibleItem(i, includeCompleted)
   );
+}
+
+/** 某节点及其全部后代 item id（含自身） */
+export function getSubtreeItemIds(items: Item[], itemId: string): string[] {
+  const index = buildItemTreeIndex(items);
+  const result: string[] = [];
+  const queue = [itemId];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    result.push(id);
+    const children = index.childrenByParent.get(id) ?? [];
+    for (const child of children) {
+      queue.push(child.id);
+    }
+  }
+  return result;
+}
+
+/** 第一标签下的项目节点（L2/L3，不含顶层自身） */
+export function getProjectItemsUnderRoot(items: Item[], rootItemId: string): Item[] {
+  const rootDepth = getItemDepth(items, rootItemId);
+  if (rootDepth !== 0) return [];
+  const subtreeIds = new Set(getSubtreeItemIds(items, rootItemId));
+  return items.filter((item) => {
+    if (!subtreeIds.has(item.id) || item.id === rootItemId) return false;
+    const depth = getItemDepth(items, item.id);
+    return depth === 1 || depth === 2;
+  });
+}
+
+/** 将 item_id 映射到其 L1 顶层祖先 id */
+export function buildItemIdToRootMap(items: Item[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const item of items) {
+    const path = getItemPath(items, item.id);
+    const root = path[0];
+    if (root) map.set(item.id, root.id);
+  }
+  return map;
 }
 
 /** 未挂大类的 legacy 事项（parent 为空且不是大类） */
@@ -617,14 +664,14 @@ function truncateTimelineText(text: string, maxLen = 36): string {
 }
 
 /** 时间线：一级-二级-三级标签路径（与组织选择器层级一致） */
-export function buildTimelineTagPath(
+export function buildTimelineTagPathParts(
   record: Pick<
     TetoRecord,
     'item_id' | 'category' | 'subcategory' | 'item' | 'tags' | 'sub_item_id' | 'content'
   >,
   items?: Item[],
   options?: { subItemTitle?: string; subItemTitles?: ReadonlyMap<string, string> }
-): string {
+): string[] {
   if (items && record.item_id) {
     const levels = normalizeOrgLevels(items, record.item_id, record.sub_item_id ?? undefined);
     const byId = new Map(items.map((i) => [i.id, i]));
@@ -647,14 +694,14 @@ export function buildTimelineTagPath(
     if (l1) parts.push(l1);
     if (l2) parts.push(l2);
     if (l3) parts.push(l3);
-    if (parts.length > 0) return parts.join('-');
+    if (parts.length > 0) return parts;
   }
 
   const legacy = [record.category, record.subcategory, record.item?.title]
     .map((s) => s?.trim())
-    .filter(Boolean);
+    .filter((s): s is string => Boolean(s));
   if (legacy.length > 0) {
-    return legacy.slice(0, 3).join('-');
+    return legacy.slice(0, 3);
   }
 
   const fnTags =
@@ -663,14 +710,30 @@ export function buildTimelineTagPath(
       .map((t) => t.name.trim())
       .filter(Boolean) ?? [];
   if (fnTags.length > 0) {
-    return fnTags.slice(0, 3).join('-');
+    return fnTags.slice(0, 3);
   }
+
+  return [];
+}
+
+/** 时间线：一级-二级-三级标签路径（与组织选择器层级一致） */
+export function buildTimelineTagPath(
+  record: Pick<
+    TetoRecord,
+    'item_id' | 'category' | 'subcategory' | 'item' | 'tags' | 'sub_item_id' | 'content'
+  >,
+  items?: Item[],
+  options?: { subItemTitle?: string; subItemTitles?: ReadonlyMap<string, string> }
+): string {
+  const parts = buildTimelineTagPathParts(record, items, options);
+  if (parts.length > 0) return parts.join('-');
 
   return '';
 }
 
 export interface TimelineEntryParts {
   tagPath: string;
+  tagPathParts: string[];
   action: string;
   timeText: string;
   detail: string;
@@ -704,12 +767,18 @@ export function buildTimelineEntryParts(
   items?: Item[],
   options?: { isCurrent?: boolean; subItemTitles?: ReadonlyMap<string, string> }
 ): TimelineEntryParts {
-  const tagPath = buildTimelineTagPath(record, items, {
+  const tagPathParts = buildTimelineTagPathParts(record, items, {
     subItemTitles: options?.subItemTitles,
   });
+  const tagPath = tagPathParts.length > 0 ? tagPathParts.join('-') : '';
   const action = record.action_text?.trim() ?? '';
   const timeText = record.time_text?.trim() ?? '';
-  const summary = buildTimelineSummary(record, { isCurrent: options?.isCurrent, tagPath });
+  const originalText =
+    record.raw_input?.trim() ||
+    (record.input_source === 'quick' ? record.content?.trim() : '') ||
+    '';
+  const summary =
+    originalText || buildTimelineSummary(record, { isCurrent: options?.isCurrent, tagPath });
 
   const parts = [tagPath, action, timeText, summary].filter(Boolean);
   let text: string;
@@ -719,7 +788,7 @@ export function buildTimelineEntryParts(
     text = parts.join(' ');
   }
 
-  return { tagPath, action, timeText, detail: summary, text };
+  return { tagPath, tagPathParts, action, timeText, detail: summary, text };
 }
 
 /** 时间线正文：一级-二级-三级  动作  时间  简单摘要（不含「进行中」占位） */
@@ -761,6 +830,7 @@ function buildTimelineSummary(
     | 'object_text'
     | 'note'
     | 'result'
+    | 'body_state'
     | 'lifecycle_status'
     | 'occurred_at_end'
   >,
@@ -800,6 +870,7 @@ function buildTimelineSummary(
   const candidates = [
     event,
     object && object !== action ? object : undefined,
+    record.body_state?.trim() ? `身体：${record.body_state.trim()}` : undefined,
     record.result?.trim(),
     contentAsSummary,
     record.note?.trim(),

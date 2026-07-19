@@ -353,6 +353,72 @@ export async function resolveClientRecordId(record: Record): Promise<string> {
   return record.id;
 }
 
+function isResolvableServerRecordId(id: string): boolean {
+  return !isOptimisticRecordId(id) && !isOptimisticBlockSegmentId(id);
+}
+
+/** 在本地列表中把 optimistic / 块拆段占位 id 映射到已落库的服务端 id */
+export function findMatchingServerRecordId(
+  candidate: Record,
+  pool: Record[]
+): string | null {
+  if (isResolvableServerRecordId(candidate.id)) return candidate.id;
+
+  const serverRecords = pool.filter((r) => isResolvableServerRecordId(r.id));
+
+  if (candidate.display_no?.trim()) {
+    const byDisplayNo = serverRecords.find(
+      (r) => r.display_no?.trim() === candidate.display_no?.trim()
+    );
+    if (byDisplayNo) return byDisplayNo.id;
+  }
+
+  if (candidate.occurred_at) {
+    const strong = serverRecords.find(
+      (r) =>
+        r.occurred_at === candidate.occurred_at &&
+        (candidate.occurred_at_end
+          ? r.occurred_at_end === candidate.occurred_at_end
+          : true) &&
+        (candidate.item_id == null || r.item_id === candidate.item_id)
+    );
+    if (strong) return strong.id;
+
+    const contentKey = (candidate.content || candidate.raw_input || '').trim();
+    if (contentKey) {
+      const loose = serverRecords.find((r) => {
+        const rContent = (r.content || r.raw_input || '').trim();
+        return r.occurred_at === candidate.occurred_at && rContent === contentKey;
+      });
+      if (loose) return loose.id;
+    }
+  }
+
+  return null;
+}
+
+/** 删除前解析服务端 record id；无法解析时返回 null */
+export async function resolveDeleteRecordId(
+  record: Record,
+  pool: Record[] = []
+): Promise<string | null> {
+  const fromPool = findMatchingServerRecordId(record, pool);
+  if (fromPool) return fromPool;
+
+  if (isOptimisticRecordId(record.id)) {
+    const resolved = await resolveClientRecordId(record);
+    if (isResolvableServerRecordId(resolved)) return resolved;
+    const fromResolved = findMatchingServerRecordId({ ...record, id: resolved }, pool);
+    if (fromResolved) return fromResolved;
+  }
+
+  if (isOptimisticBlockSegmentId(record.id)) {
+    return null;
+  }
+
+  return isResolvableServerRecordId(record.id) ? record.id : null;
+}
+
 export function buildOptimisticActiveRecord(params: {
   content?: string;
   item_id?: string | null;

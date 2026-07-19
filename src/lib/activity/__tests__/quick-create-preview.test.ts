@@ -187,6 +187,57 @@ describe('buildQuickCreateAttributionOptions', () => {
     expect(options.find((option) => option.functionTagId === 'tag-follow-up')).toBeDefined();
   });
 
+  it('不会把其他一类范围内的动作标签自动匹配到当前事项', () => {
+    const tags: Tag[] = [
+      {
+        id: 'tag-dictation',
+        user_id: 'u',
+        name: '听写',
+        color: null,
+        type: 'function',
+        scope_item_id: 'cat-english',
+        created_at: '',
+      },
+    ];
+    const options = buildQuickCreateAttributionOptions(
+      '吃早饭后听写',
+      items,
+      [
+        {
+          trigger_pattern: '听写',
+          target_id: 'tag-dictation',
+          rule_type: 'function_mapping',
+          is_active: true,
+        },
+      ],
+      tags
+    );
+
+    expect(options.some((option) => option.functionTagId === 'tag-dictation')).toBe(false);
+  });
+
+  it('按当前一类范围自动匹配动作标签名称', () => {
+    const english = { ...items[0], id: 'cat-english', title: '英语', parent_item_id: null };
+    const studyEnglish = { ...items[1], id: 'item-english-study', title: '学习英语', parent_item_id: 'cat-english' };
+    const tags: Tag[] = [
+      {
+        id: 'tag-dictation',
+        user_id: 'u',
+        name: '听写',
+        color: null,
+        type: 'function',
+        scope_item_id: 'cat-english',
+        created_at: '',
+      },
+    ];
+    const options = buildQuickCreateAttributionOptions('学习英语后听写', [english, studyEnglish], [], tags);
+
+    expect(options[0]).toMatchObject({
+      itemId: 'item-english-study',
+      functionTagId: 'tag-dictation',
+    });
+  });
+
   it('空输入不展示', () => {
     expect(buildQuickCreateAttributionOptions('  ', items, [])).toEqual([]);
   });

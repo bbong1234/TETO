@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-wa2ici",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260718-oov9tu",
+  "sourceDecisionId": "DEC-CORR-3d9c2ccd",
+  "description": "用户将 \"item_id\" 从 \"b62956a5-ede7-47ef-8f22-880bc231c1d2\" 修正为 \"b62956a5-ede7-47ef-8f22-880bc231c1d2\"",
+  "input": {
+    "recordId": "3d9c2ccd-d374-4b71-b5f0-256123a8b2a3",
+    "userInput": null
+  },
+  "expected": {
+    "item_id": "b62956a5-ede7-47ef-8f22-880bc231c1d2"
+  },
+  "actualProduction": {
+    "item_id": "b62956a5-ede7-47ef-8f22-880bc231c1d2"
+  },
+  "generatedAt": "2026-07-18T06:38:27.496Z"
+}

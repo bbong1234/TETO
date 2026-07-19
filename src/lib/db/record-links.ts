@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import type { RecordLink, RecordLinkWithPeer, CreateRecordLinkPayload } from '@/types/teto';
 
 // 重新导出以保持向后兼容
@@ -101,14 +102,13 @@ export async function deleteRecordLink(
   linkId: string
 ): Promise<void> {
   const supabase = await createClient();
-
-  const { error } = await supabase
-    .from('record_links')
-    .delete()
-    .eq('id', linkId)
-    .eq('user_id', userId);
-
-  if (error) {
-    throw new Error(`删除记录关联失败: ${error.message}`);
-  }
+  await deleteOneOwnedRow(
+    supabase,
+    'record_links',
+    [
+      { column: 'id', value: linkId },
+      { column: 'user_id', value: userId },
+    ],
+    '删除记录关联失败'
+  );
 }

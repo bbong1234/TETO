@@ -11,7 +11,7 @@ import { extractActionWordsFromRecords } from '@/lib/activity/action-extract';
 import { isSessionPaused } from '@/lib/activity/session-utils';
 import ActivitySessionTimer from './ActivitySessionTimer';
 import SessionInterruptControls from './SessionInterruptControls';
-import { CANCEL_WINDOW_MS, DIARY_ITEM_TITLE } from '@/lib/activity/constants';
+import { CANCEL_WINDOW_MS } from '@/lib/activity/constants';
 import StartActivityPanel, { type StartActivitySubmitPayload } from './StartActivityPanel';
 import {
   EMPTY_ACTIVITY_CONTEXT,
@@ -19,7 +19,6 @@ import {
 } from './ActivityContextPicker';
 import { postManualRecord } from '@/lib/activity/post-manual-record';
 import {
-  resolveContextLabel,
   resolveTargetItemId,
   validateActivityContext,
   resolveActivityContextFromRecord,
@@ -27,8 +26,12 @@ import {
   extractSwitchLabel,
   normalizeOrgLevels,
 } from '@/lib/activity/item-tree';
-import { matchByUserRules } from '@/lib/utils/item-match';
-import { triggerAiEnhance } from '@/lib/activity/ai-enhance-trigger';
+import { matchByUserRules, matchPresetsByText } from '@/lib/utils/item-match';
+import {
+  buildActivityContextFromAttributionOption,
+  buildQuickCreateAttributionOptions,
+  pickDefaultAttributionOptionId,
+} from '@/lib/activity/quick-create-preview';
 import type { UserRule } from '@/lib/db/user-rules';
 import {
   UNASSIGNED_ACTIVE_PLACEHOLDER,
@@ -125,7 +128,6 @@ import ContextualFunctionTagRow from '@/components/records/ContextualFunctionTag
 import { persistToolOptionIfNeeded } from '@/components/records/ToolLabelField';
 import { CurrentActivityCardSkeleton } from '@/components/ui/PageSkeletons';
 import QuickCreateBar from './QuickCreateBar';
-import type { NewItemSuggestion } from '@/lib/activity/ai-enhance-trigger';
 import BlockCategorySwitchPanel from './BlockCategorySwitchPanel';
 import BlockAttributionBubbles from './BlockAttributionBubbles';
 import ActivityDetailPanel from './ActivityDetailPanel';
@@ -169,10 +171,6 @@ interface CurrentActivityCardProps {
   userRules?: UserRule[];
   onRecordPatched?: (record: TetoRecord) => void;
   onSessionAction?: (data: SessionActionPayload) => void;
-  onAiEnhanceStart?: (recordId: string) => void;
-  onAiEnhanceEnd?: (recordId: string) => void;
-  /** AI 检测到输入中提到了不存在的新事项名 */
-  onNewItemSuggested?: (suggestion: NewItemSuggestion) => void;
   /** /切换 inline switch 回调 */
   onInlineSwitch?: (payload: import('./ActivityDialogChat').InlineSwitchPayload) => void;
   /** 计时抽屉：是否展开全屏报备面板 */
@@ -325,9 +323,6 @@ export default function CurrentActivityCard({
   userRules = [],
   onRecordPatched,
   onSessionAction,
-  onAiEnhanceStart,
-  onAiEnhanceEnd,
-  onNewItemSuggested,
   onInlineSwitch,
   drawerExpanded = false,
   onDrawerExpandedChange,
@@ -421,13 +416,8 @@ export default function CurrentActivityCard({
   const handleIdleSubItemsLoaded = useCallback((subs: import('@/types/teto').SubItem[]) => {
     setIdleSubItemsCount(subs.length);
   }, []);
-  const [idleToolLabel, setIdleToolLabel] = useState('');
-  const [idleMood, setIdleMood] = useState<string | null>(null);
-  const [idleTagIds, setIdleTagIds] = useState<string[]>([]);
   const [idleActionTagId, setIdleActionTagId] = useState<string | null>(null);
   const [idlePlanPriority, setIdlePlanPriority] = useState<PlanPriority | null>(null);
-  const [idleCost, setIdleCost] = useState<number | null>(null);
-  const [idleLocation, setIdleLocation] = useState('');
   const [idleSubmitting, setIdleSubmitting] = useState(false);
   const [contextManualOverride, setContextManualOverride] = useState(false);
   const contextManualOverrideRef = useRef(false);
@@ -512,28 +502,6 @@ export default function CurrentActivityCard({
       return resolveActivityContextFromRecord(items, ruleItemId) as ActivityContextValue;
     },
     [items, userRules]
-  );
-
-  const runAiEnhance = useCallback(
-    (recordId: string, inputText: string, date: string, existingItemId?: string | null) => {
-      if (!inputText.trim()) return;
-      onAiEnhanceStart?.(recordId);
-      void triggerAiEnhance({
-        recordId,
-        inputText,
-        date,
-        items,
-        userRules,
-        existingItemId,
-        onFieldsUpdated: (_patch, updated) => {
-          onAiEnhanceEnd?.(recordId);
-          if (updated) onRecordPatched?.(updated);
-        },
-        onError: () => onAiEnhanceEnd?.(recordId),
-        onNewItemSuggested,
-      });
-    },
-    [items, userRules, onAiEnhanceStart, onAiEnhanceEnd, onRecordPatched, onNewItemSuggested]
   );
 
   const fetchCurrent = useCallback(async () => {
@@ -1806,13 +1774,13 @@ export default function CurrentActivityCard({
     );
     switchUndoStackRef.current = clearSwitchUndoStack();
 
-    const prevActivity = activity;
-    const localId = activity.id;
+    const prevActivity = currentActivity;
+    const localId = currentActivity.id;
     const previousLockedCategoryId = lockedBlockCategoryIdRef.current;
     setActionLoading(true);
     markActivitySwitchPending();
     setActivity(null);
-    onActivitySwitch({ record: null, stopped: [buildStoppedSnapshot(activity)] });
+    onActivitySwitch({ record: null, stopped: [buildStoppedSnapshot(currentActivity)] });
     onRecordDeleted?.(localId);
     clearBlockSessionState();
 
@@ -2461,13 +2429,16 @@ export default function CurrentActivityCard({
 
 
   const handleIdleSubmit = async () => {
+    if (idleMode === '发生') return;
+
     const text = idleContent.trim();
-    // 发生模式也尝试从当前 context（picker 选择）或文本规则中解析归属
-    const effectiveContext = resolveEffectiveIdleContext(idleContext, text);
-    const effectiveTargetId = resolveTargetItemId(effectiveContext);
-    const effectiveCategoryId = effectiveContext.categoryItemId || null;
-    const effectiveItemId = effectiveTargetId ?? effectiveCategoryId;
-    const allowsActionOnly = idleMode === '发生' && Boolean(effectiveCategoryId && idleActionTagId);
+    if (!text) {
+      onError?.('想法/计划请填写具体内容');
+      return;
+    }
+
+    let effectiveContext = resolveEffectiveIdleContext(idleContext, text);
+    const allowsActionOnly = Boolean(effectiveContext.categoryItemId && idleActionTagId);
     const contextErr = allowsActionOnly
       ? null
       : validateActivityContext(effectiveContext, items, idleSubItemsCount);
@@ -2475,91 +2446,90 @@ export default function CurrentActivityCard({
       onError?.(contextErr);
       return;
     }
-    const resolved = resolveContextLabel(effectiveContext, items, text);
+
+    let itemId: string | undefined;
+    let subItemId: string | null = effectiveContext.subItemId || null;
+    let tagIds: string[] | undefined = idleActionTagId ? [idleActionTagId] : undefined;
+
+    if (!contextManualOverride) {
+      const presets = matchPresetsByText(text, userRules);
+      const options = buildQuickCreateAttributionOptions(text, items, userRules, tags);
+      const pickedId = pickDefaultAttributionOptionId(options);
+      const picked = options.find((option) => option.id === pickedId);
+
+      if (picked?.isNoAssign) {
+        itemId = undefined;
+        subItemId = null;
+      } else if (picked?.id?.startsWith('l1:')) {
+        itemId = picked.itemId ?? undefined;
+        subItemId = null;
+      } else if (picked?.itemId != null) {
+        itemId = picked.itemId;
+        subItemId = picked.subItemId ?? null;
+      } else {
+        itemId =
+          presets.itemId ??
+          resolveTargetItemId(effectiveContext) ??
+          effectiveContext.categoryItemId ??
+          undefined;
+      }
+
+      const resolvedCtx = buildActivityContextFromAttributionOption(items, picked, pickedId);
+      if (resolvedCtx) effectiveContext = resolvedCtx;
+
+      if (!idleActionTagId) {
+        const fnId = picked?.functionTagId ?? presets.functionTagId;
+        if (fnId) tagIds = [fnId];
+      }
+    } else {
+      itemId =
+        resolveTargetItemId(effectiveContext) ??
+        effectiveContext.categoryItemId ??
+        undefined;
+    }
+
+    const actionText =
+      tagIds?.length === 1
+        ? tags.find((tag) => tag.id === tagIds![0] && tag.type === 'function')?.name.trim() || undefined
+        : undefined;
+
     setIdleSubmitting(true);
     const today = todayDateStr();
     try {
-      if (idleMode === '发生') {
-        const contentForSwitch = text || UNASSIGNED_ACTIVE_PLACEHOLDER;
-        const resolvedItemId = effectiveItemId ?? null;
-        setIdleContent('');
-        setIdleSubmitting(false);
-        try {
-          const switchData = await postSwitch({
-            content: contentForSwitch,
-            item_id: resolvedItemId,
-            sub_item_id: effectiveContext.subItemId || null,
-            tag_ids: idleActionTagId ? [idleActionTagId] : undefined,
-          });
-          if (text && switchData?.record?.id) {
-            runAiEnhance(switchData.record.id, text, today, resolvedItemId);
-          }
-        } catch (e) {
-          onFallbackRefresh?.();
-          onError?.(e instanceof Error ? e.message : '开始失败');
+      const payload: CreateRecordPayload = {
+        content: text,
+        type: idleMode as RecordType,
+        date: today,
+        item_id: itemId,
+        sub_item_id: subItemId,
+        input_source: 'manual',
+        review_status: itemId ? 'confirmed' : 'unchecked',
+        ...(tagIds ? { tag_ids: tagIds } : {}),
+        ...(actionText ? { action_text: actionText } : {}),
+      };
+      if (idleMode === '计划') {
+        payload.lifecycle_status = 'active';
+        payload.time_anchor_date = today;
+        if (idlePlanPriority) {
+          payload.subcategory = planPriorityToSubcategory(idlePlanPriority) ?? undefined;
         }
-      } else {
-        if (!text) {
-          onError?.('想法/计划请填写具体内容');
-          setIdleSubmitting(false);
-          return;
-        }
-        const itemId = effectiveItemId ?? undefined;
-        const payload: CreateRecordPayload = {
-          content: text,
-          type: idleMode as RecordType,
-          date: today,
-          item_id: itemId,
-          sub_item_id: effectiveContext.subItemId || null,
-          phase_id: effectiveContext.phaseId || null,
-          tool_label: idleToolLabel.trim() || null,
-          mood: idleMood ?? undefined,
-          input_source: 'manual',
-          review_status: 'unchecked',
-        };
-        if (idleCost != null && idleCost > 0) {
-          payload.cost = idleCost;
-          payload.money_direction = 'expense';
-          payload.money_currency = 'CNY';
-        }
-        if (idleLocation.trim()) {
-          payload.location = idleLocation.trim();
-        }
-        if (idleMode === '计划') {
-          payload.lifecycle_status = 'active';
-          payload.time_anchor_date = today;
-          if (idlePlanPriority) {
-            payload.subcategory = planPriorityToSubcategory(idlePlanPriority) ?? undefined;
-          }
-        }
-        const mergedTagIds = Array.from(
-          new Set([...idleTagIds.filter((id) => id !== idleActionTagId), ...(idleActionTagId ? [idleActionTagId] : [])])
-        );
-        if (mergedTagIds.length > 0) {
-          payload.tag_ids = mergedTagIds;
-        }
-        const optimistic = buildOptimisticManualRecord(payload, items, tags);
-        onRecordAdded(optimistic, false);
-        saveLastActivityContext(effectiveContext);
-        setIdleContext(effectiveContext);
-        setIdleContent('');
-        setIdleToolLabel('');
-        setIdleMood(null);
-        setIdleActionTagId(null);
-        setIdleTagIds([]);
-        setIdlePlanPriority(null);
-        setIdleCost(null);
-        setIdleLocation('');
-        setIdleSubmitting(false);
-        if (idleToolLabel.trim()) void persistToolOptionIfNeeded(idleToolLabel);
-        try {
-          const created = await postManualRecord(payload);
-          onRecordAdded(created, true);
-          runAiEnhance(created.id, text, today, itemId ?? null);
-        } catch (e) {
-          onFallbackRefresh?.();
-          onError?.(e instanceof Error ? e.message : '保存失败');
-        }
+      }
+
+      const optimistic = buildOptimisticManualRecord(payload, items, tags);
+      onRecordAdded(optimistic, false);
+      saveLastActivityContext(effectiveContext);
+      setIdleContext(effectiveContext);
+      setIdleContent('');
+      setIdleActionTagId(null);
+      setIdlePlanPriority(null);
+      setIdleSubmitting(false);
+
+      try {
+        const created = await postManualRecord(payload);
+        onRecordAdded(created, true);
+      } catch (e) {
+        onFallbackRefresh?.();
+        onError?.(e instanceof Error ? e.message : '保存失败');
       }
     } catch (e) {
       onError?.(e instanceof Error ? e.message : '操作失败');
@@ -2567,10 +2537,19 @@ export default function CurrentActivityCard({
     }
   };
 
-  const handleSelectCategory = useCallback((bubble: { label: string; categoryItemId: string }) => {
-    const ctx = resolveActivityContextFromRecord(items, bubble.categoryItemId) as ActivityContextValue;
-    setIdleContext(ctx);
-  }, [items]);
+  useEffect(() => {
+    if (idleMode === '发生') return;
+    if (!idleContent.trim() || contextManualOverride) return;
+
+    const options = buildQuickCreateAttributionOptions(idleContent, items, userRules, tags);
+    const pickedId = pickDefaultAttributionOptionId(options);
+    const picked = options.find((option) => option.id === pickedId);
+    if (!picked) return;
+
+    const ctx = buildActivityContextFromAttributionOption(items, picked, pickedId);
+    if (ctx) setIdleContext(ctx);
+    if (picked.functionTagId) setIdleActionTagId(picked.functionTagId);
+  }, [idleContent, idleMode, items, userRules, tags, contextManualOverride]);
 
   // 随手记输入框 → 标签栏自动同步（只更新选中状态，不进入块时间）
   const handleQuickCreateAttributionResolved = useCallback(
@@ -2582,7 +2561,8 @@ export default function CurrentActivityCard({
   );
 
   const handleIdleContextChange = useCallback((v: ActivityContextValue) => {
-    const hasManualContext = Boolean(v.itemId || v.categoryItemId || v.subItemId || v.phaseId);
+    // 仅选一类标签时不锁死自动匹配；二类/三类/阶段才算手动归属
+    const hasManualContext = Boolean(v.itemId || v.subItemId || v.phaseId);
     setIdleContext(v);
     setContextManualOverride(hasManualContext);
   }, []);
@@ -2601,13 +2581,8 @@ export default function CurrentActivityCard({
     if (preserveManualSelection) return;
     setIdleContext(EMPTY_ACTIVITY_CONTEXT);
     setIdleActionTagId(null);
-    setIdleTagIds([]);
     setContextManualOverride(false);
   }, []);
-
-  const handleEnterBlockTime = useCallback(() => {
-    void enterBlockTimeFromContext(idleContext);
-  }, [idleContext, enterBlockTimeFromContext]);
 
   const handleAttachRecord = async () => {
     if (!activity || !attachText.trim()) return;
@@ -2693,7 +2668,6 @@ export default function CurrentActivityCard({
         entry.sub_item_id
       ) as ActivityContextValue;
       setIdleContext(ctx);
-      if (toolLabel?.trim()) setIdleToolLabel(toolLabel.trim());
       setContextManualOverride(true);
     },
     [items]
@@ -2820,60 +2794,34 @@ export default function CurrentActivityCard({
           <ActivityIdlePanel
             items={items}
             itemsLoading={itemsLoading}
-            userTools={userTools}
-            toolsLoading={toolsLoading}
-            onToolsChange={onToolsChange}
             onItemsChange={onItemsChanged}
             onItemCreated={onItemCreated}
             onCreateError={onCreateError}
             tags={tags}
             todayRecords={todayRecords}
             todayDate={todayDate ?? todayDateStr()}
-            quickSwitchRecords={quickSwitchRecords}
-            onQuickSwitch={handleQuickSwitch}
-            onQuickSwitchSelect={handleQuickSwitchSelect}
-            onQuickSwitchStateChange={setActionLoading}
             onPlanComplete={onPlanComplete}
             onRecordPlanPriorityChange={onPlanPriorityChange}
             content={idleContent}
             mode={idleMode}
             context={idleContext}
-            toolLabel={idleToolLabel}
-            mood={idleMood}
             actionTagId={idleActionTagId}
             submitting={idleSubmitting}
             onContentChange={setIdleContent}
             onModeChange={setIdleMode}
             onContextChange={handleIdleContextChange}
-            onToolLabelChange={setIdleToolLabel}
-            onMoodChange={setIdleMood}
             onActionTagChange={handleIdleActionTagChange}
             onAutoActionTagResolved={setIdleActionTagId}
-            selectedTagIds={idleTagIds}
-            onTagIdsChange={setIdleTagIds}
             onTagCreated={onTagCreated}
             planPriority={idlePlanPriority}
             onPlanPriorityChange={setIdlePlanPriority}
             onSubItemsLoaded={handleIdleSubItemsLoaded}
             onSubmit={handleIdleSubmit}
-            onCustomStart={() => setPanelMode('start')}
-            onContextHintSelect={(hint) => {
-              if (hint.kind === 'cost') setIdleCost(Number(hint.value));
-              else if (hint.kind === 'location') setIdleLocation(String(hint.value));
-              else if (hint.kind === 'content') setIdleContent(String(hint.value));
-            }}
-            onSelectCategory={handleSelectCategory}
-            onEnterBlockTime={handleEnterBlockTime}
             onQuickCreateAttributionResolved={handleQuickCreateAttributionResolved}
             onQuickCreateInputClear={handleQuickCreateInputClear}
             contextManualOverride={contextManualOverride}
             userRules={userRules}
             onRecordAdded={onRecordAdded}
-            onAiEnhanceStart={onAiEnhanceStart}
-            onAiEnhanceEnd={onAiEnhanceEnd}
-            onRecordPatched={onRecordPatched}
-            onFallbackRefresh={onFallbackRefresh}
-            onNewItemSuggested={onNewItemSuggested}
             onQuickCreateError={onError}
           />
         ) : null}
@@ -2887,11 +2835,6 @@ export default function CurrentActivityCard({
             tags={tags}
             onRecordAdded={onRecordAdded}
             onError={onError}
-            onAiEnhanceStart={onAiEnhanceStart}
-            onAiEnhanceEnd={onAiEnhanceEnd}
-            onRecordPatched={onRecordPatched}
-            onFallbackRefresh={onFallbackRefresh}
-            onNewItemSuggested={onNewItemSuggested}
           />
         </div>
       )}

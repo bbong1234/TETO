@@ -1,18 +1,18 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { isLocalPostgresMode, isSupabaseConfigured } from '@/lib/db/runtime-mode';
 
 export async function middleware(request: NextRequest) {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!url || !key) {
+  if (isLocalPostgresMode() || !isSupabaseConfigured()) {
     return NextResponse.next({ request });
   }
 
   let supabaseResponse = NextResponse.next({ request });
 
-  try {
-    const supabase = createServerClient(url, key, {
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
       cookies: {
         getAll() {
           return request.cookies.getAll();
@@ -27,12 +27,10 @@ export async function middleware(request: NextRequest) {
           });
         },
       },
-    });
+    }
+  );
 
-    await supabase.auth.getUser();
-  } catch (error) {
-    console.error('[middleware] Supabase session refresh failed:', error);
-  }
+  await supabase.auth.getUser();
 
   return supabaseResponse;
 }

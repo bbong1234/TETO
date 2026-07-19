@@ -359,7 +359,6 @@ export function ActivitySessionProvider({
 
   const onDeleteFailed = useCallback(
     (record: TetoRecord) => {
-      if (isOptimisticRecordId(record.id)) return;
       removeDeletedRecordTombstone(tombstoneSetRef.current!, record.id);
       dispatch({ type: 'REMOVE_TOMBSTONE', id: record.id });
       setRecords((prev) => {

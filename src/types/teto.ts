@@ -95,7 +95,36 @@ export const PLACE_TYPE_LABELS: { [key: string]: string } = {
 };
 
 export const MONEY_DIRECTION_LABELS: { [key: string]: string } = {
-  expense: '支出', income: '收入', none: '无',
+  expense: '支出', income: '收入', none: '无', transfer: '转账',
+};
+
+export const FINANCE_ACCOUNT_TYPES = [
+  'wechat',
+  'alipay',
+  'bank_card',
+  'cash',
+  'credit_card',
+  'other',
+] as const;
+
+export type FinanceAccountType = (typeof FINANCE_ACCOUNT_TYPES)[number];
+
+export const FINANCE_ACCOUNT_TYPE_LABELS: { [K in FinanceAccountType]: string } = {
+  wechat: '微信',
+  alipay: '支付宝',
+  bank_card: '银行卡',
+  cash: '现金',
+  credit_card: '信用卡',
+  other: '其他',
+};
+
+export const FINANCE_ACCOUNT_TYPE_ICONS: { [K in FinanceAccountType]: string } = {
+  wechat: '💚',
+  alipay: '💙',
+  bank_card: '🏦',
+  cash: '💵',
+  credit_card: '💳',
+  other: '📁',
 };
 
 // ============================================
@@ -129,6 +158,10 @@ export interface Record {
   subcategory?: string | null;
   /** 工具/载体（如：不背单词、多邻国），与子项正交 */
   tool_label?: string | null;
+  /** 收支归属账户 */
+  finance_account_id?: string | null;
+  /** 转账转入账户 */
+  transfer_to_account_id?: string | null;
   item_id: string | null;
   /** 强关联目标（结案/进展说明记录必填；日常努力记录可选） */
   goal_id?: string | null;
@@ -185,7 +218,7 @@ export interface Record {
   // L2-H 地点组
   place_type?: string | null;            // 英文枚举
   // L2-I 量化组
-  money_direction?: 'expense' | 'income' | 'none' | null; // 资金方向
+  money_direction?: 'expense' | 'income' | 'none' | 'transfer' | null; // 资金方向
   metrics?: import('./semantic').SemanticMetric[]; // 量化指标数组
   // L2-H 人物组补充
   relation_roles?: string[] | null;      // 关系角色数组
@@ -313,6 +346,8 @@ export interface Tag {
   name: string;
   color: string | null;
   type: TagType | string | null;
+  /** 动作标签所属的一类事项；为空时为全局标签 */
+  scope_item_id?: string | null;
   created_at: string;
 }
 
@@ -393,6 +428,8 @@ export interface CreateRecordPayload {
   notes?: string[];
   subcategory?: string;
   tool_label?: string | null;
+  finance_account_id?: string | null;
+  transfer_to_account_id?: string | null;
   item_id?: string;
   goal_id?: string | null;
   phase_id?: string | null;
@@ -438,7 +475,7 @@ export interface CreateRecordPayload {
   outcome_direction?: 'positive' | 'neutral' | 'negative' | null;
   cause_text?: string | null;
   place_type?: string | null;
-  money_direction?: 'expense' | 'income' | 'none' | null;
+  money_direction?: 'expense' | 'income' | 'none' | 'transfer' | null;
   metrics?: import('./semantic').SemanticMetric[];
   relation_roles?: string[] | null;
   review_status?: 'unchecked' | 'confirmed' | 'corrected' | 'disputed';
@@ -548,12 +585,14 @@ export interface CreateTagPayload {
   name: string;
   color?: string;
   type?: TagType | string | null;
+  scope_item_id?: string | null;
 }
 
 export interface UpdateTagPayload {
   name?: string;
   color?: string;
   type?: TagType | string | null;
+  scope_item_id?: string | null;
 }
 
 // ============================================
@@ -642,6 +681,8 @@ export interface TimelineEntry {
   text: string;          // 优先 action_text + event_text 合并，否则 content
   /** 事项路径 L1-L2-L3（分块展示） */
   tag_path?: string;
+  /** 一类 / 二类 / 三类标签分块（优先于 tag_path 展示） */
+  tag_path_parts?: string[];
   /** 动作（分块展示） */
   action_label?: string;
   /** 时间/摘要等普通文字（分块展示） */
@@ -773,6 +814,94 @@ export interface ExpenseSummary {
   by_category: ExpenseCategoryRow[];
   by_item: ExpenseItemRow[];
   by_payment_source: ExpensePaymentRow[];
+}
+
+/** 钱包周期键 */
+export type WalletPeriodKey = 'today' | 'week' | 'month' | 'year';
+
+export interface WalletAccountRow {
+  account_id: string | null;
+  label: string;
+  account_type?: FinanceAccountType | null;
+  icon?: string | null;
+  expense: number;
+  income: number;
+  net: number;
+  current_balance?: number;
+  opening_balance?: number;
+}
+
+export interface FinanceAccount {
+  id: string;
+  user_id: string;
+  name: string;
+  account_type: FinanceAccountType;
+  icon: string | null;
+  opening_balance: number;
+  currency: string;
+  is_archived: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  current_balance?: number;
+  period_expense?: number;
+  period_income?: number;
+}
+
+export interface CreateFinanceAccountPayload {
+  name: string;
+  account_type: FinanceAccountType;
+  icon?: string | null;
+  opening_balance?: number;
+  currency?: string;
+  sort_order?: number;
+}
+
+export interface UpdateFinanceAccountPayload {
+  name?: string;
+  account_type?: FinanceAccountType;
+  icon?: string | null;
+  opening_balance?: number;
+  currency?: string;
+  is_archived?: boolean;
+  sort_order?: number;
+}
+
+export interface WalletPeriodSummary {
+  period: WalletPeriodKey;
+  label: string;
+  date_from: string;
+  date_to: string;
+  total_expense: number;
+  total_income: number;
+  net: number;
+  by_account: WalletAccountRow[];
+}
+
+export interface WalletTransaction {
+  id: string;
+  date: string;
+  content: string;
+  cost: number;
+  money_direction: 'expense' | 'income' | 'none' | 'transfer' | null;
+  account_label: string;
+  transfer_to_label?: string | null;
+  finance_account_id?: string | null;
+  occurred_at: string | null;
+  created_at: string | null;
+}
+
+export interface WalletSummary {
+  periods: WalletPeriodSummary[];
+  transactions: WalletTransaction[];
+  accounts: FinanceAccount[];
+  total_assets: number;
+  structure?: WalletStructureSummary;
+}
+
+export interface WalletStructureSummary {
+  by_category: ExpenseCategoryRow[];
+  by_item: ExpenseItemRow[];
 }
 
 // ── 事实 ──
@@ -1064,6 +1193,73 @@ export interface ItemAggregation {
     metric_unit: string;
   }[];
   record_count: number;
+}
+
+/** 第一标签（顶层事项）列表摘要 — 事项筛选竖切片 */
+export interface TopLevelItemExplorerSummary {
+  id: string;
+  title: string;
+  status: ItemStatus;
+  record_count: number;
+  total_duration_minutes: number;
+  last_active_at: string | null;
+  project_count: number;
+  action_count: number;
+}
+
+/** 项目筛选项（第二/第三标签） */
+export interface ItemExplorerProjectFacet {
+  id: string;
+  title: string;
+  /** items 树节点或 sub_items */
+  kind: 'item' | 'sub_item';
+  /** 产品层级：2=第二标签，3=第三标签 */
+  level: 2 | 3;
+  /** 第三标签的父级（L2 item id） */
+  parent_id: string | null;
+  record_count: number;
+  /** 完整路径展示，如「TETO开发 / TETO项目1.7版本」 */
+  path_label: string;
+}
+
+/** 动作筛选项（function 标签） */
+export interface ItemExplorerActionFacet {
+  id: string;
+  name: string;
+  record_count: number;
+}
+
+/** 事项记录浏览查询 */
+export interface ItemRecordExplorerQuery {
+  project_id?: string;
+  sub_item_id?: string;
+  function_tag_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** 事项记录浏览响应 */
+export interface ItemRecordExplorerResult {
+  root_item: Pick<Item, 'id' | 'title' | 'status'>;
+  filters: {
+    project_id: string | null;
+    sub_item_id: string | null;
+    function_tag_id: string | null;
+  };
+  stats: {
+    record_count: number;
+    total_duration_minutes: number;
+    last_active_at: string | null;
+  };
+  project_facets: ItemExplorerProjectFacet[];
+  action_facets: ItemExplorerActionFacet[];
+  records: Record[];
+  pagination: {
+    limit: number;
+    offset: number;
+    total: number;
+    has_more: boolean;
+  };
 }
 
 // ============ 子项 ============

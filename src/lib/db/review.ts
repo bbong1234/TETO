@@ -74,9 +74,9 @@ export async function computeReviewSummary(
     .in('record_day_id', dayIds);
 
   const rows = records ?? [];
-  const occurrenceRows = rows.filter((r) => r.type === '发生' && r.lifecycle_status === 'completed');
-  const ideaRows = rows.filter((r) => r.type === '想法');
-  const unassigned = rows.filter((r) => !r.item_id && r.review_status === 'unchecked').length;
+  const occurrenceRows = rows.filter((r: any) => r.type === '发生' && r.lifecycle_status === 'completed');
+  const ideaRows = rows.filter((r: any) => r.type === '想法');
+  const unassigned = rows.filter((r: any) => !r.item_id && r.review_status === 'unchecked').length;
 
   let totalMinutes = 0;
   const itemMap = new Map<string, number>();

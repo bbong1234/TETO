@@ -50,6 +50,36 @@ export function inferTimeFromText(timeText: string): { hour: number; minute: num
   return null;
 }
 
+export function inferTimeRangeFromText(
+  timeText: string
+): { start: { hour: number; minute: number }; end: { hour: number; minute: number } } | null {
+  const match = timeText.match(
+    /(\d{1,2})(?:\s*[:：]\s*(\d{1,2}))?\s*(?:[-~～到至])\s*(\d{1,2})(?:\s*[:：点时]\s*(\d{1,2}))?/
+  );
+  if (!match) return null;
+
+  let startHour = Number(match[1]);
+  const startMinute = match[2] ? Number(match[2]) : 0;
+  let endHour = Number(match[3]);
+  const endMinute = match[4] ? Number(match[4]) : 0;
+  const lower = timeText.toLowerCase();
+  if ((lower.includes('下午') || lower.includes('晚上') || lower.includes('夜里')) && startHour < 12) {
+    startHour += 12;
+    if (endHour < 12) endHour += 12;
+  }
+  if (lower.includes('中午') && startHour < 11) {
+    startHour += 12;
+    if (endHour < 12) endHour += 12;
+  }
+  if (
+    startHour < 0 || startHour > 23 || endHour < 0 || endHour > 23 ||
+    startMinute < 0 || startMinute > 59 || endMinute < 0 || endMinute > 59
+  ) {
+    return null;
+  }
+  return { start: { hour: startHour, minute: startMinute }, end: { hour: endHour, minute: endMinute } };
+}
+
 export function inferAnchorDateFromTimeText(baseDate: string, timeText: string | null | undefined): string | null {
   if (!timeText) return null;
   const t = timeText.trim();
@@ -93,13 +123,19 @@ export function resolveTemporalFields(
   const timeTextStr = typeof proposed.time_text === 'string' ? proposed.time_text : '';
   const inferredAnchorDate = inferAnchorDateFromTimeText(fallbackDate, timeTextStr || null);
   let anchorDate = anchorDateRaw ?? inferredAnchorDate;
-  if (!anchorDate && normalizedType === '发生' && timeTextStr && inferTimeFromText(timeTextStr)) {
+  if (
+    !anchorDate &&
+    normalizedType === '发生' &&
+    timeTextStr &&
+    (inferTimeRangeFromText(timeTextStr) || inferTimeFromText(timeTextStr))
+  ) {
     anchorDate = fallbackDate;
   }
 
   let occurredAtComputed: string | null = occurredAt;
+  const timeRange = inferTimeRangeFromText(timeTextStr);
   if (!occurredAtComputed && normalizedType === '发生' && anchorDate) {
-    const hm = inferTimeFromText(timeTextStr);
+    const hm = timeRange?.start ?? inferTimeFromText(timeTextStr);
     if (hm) {
       occurredAtComputed = `${anchorDate}T${pad2(hm.hour)}:${pad2(hm.minute)}:00+08:00`;
     }
@@ -110,6 +146,10 @@ export function resolveTemporalFields(
     occurredAtEndRaw && !Number.isNaN(new Date(occurredAtEndRaw).getTime())
       ? occurredAtEndRaw
       : null;
+
+  if (!occurredAtEnd && anchorDate && timeRange) {
+    occurredAtEnd = `${anchorDate}T${pad2(timeRange.end.hour)}:${pad2(timeRange.end.minute)}:00+08:00`;
+  }
 
   if (!occurredAtEnd && occurredAtComputed) {
     const duration = Number(proposed.duration_minutes);

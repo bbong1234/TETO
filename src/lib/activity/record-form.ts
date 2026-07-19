@@ -8,8 +8,25 @@ import { generateContentSummary } from '@/lib/utils/generate-content-summary';
 import {
   mergeToolLabelForSave,
   recordHasFinance,
+  resolveFormMoneyDirection,
   splitToolLabelForForm,
 } from '@/lib/activity/finance-account';
+
+/** 详情页展示的原始输入：优先 raw_input，随手记兼容仅有 content 的旧数据 */
+export function resolveRecordOriginalText(
+  record: TetoRecord,
+  form?: Pick<RecordEditFormState, 'rawInput'>
+): string {
+  const fromForm = form?.rawInput?.trim();
+  if (fromForm) return fromForm;
+  const fromRaw = record.raw_input?.trim();
+  if (fromRaw) return fromRaw;
+  if (record.input_source === 'quick') {
+    const fromContent = record.content?.trim();
+    if (fromContent) return fromContent;
+  }
+  return '';
+}
 
 export interface RecordEditFormState {
   content: string;
@@ -46,8 +63,10 @@ export interface RecordEditFormState {
   relatedObjectsStr: string;
   resultText: string;
   toolLabel: string;
-  /** 收支账户（v1 落库 tool_label；与属性·工具分离展示） */
+  /** 收支账户名称（展示用，保存用 financeAccountId） */
   financeAccount: string;
+  financeAccountId: string;
+  transferToAccountId: string;
   rawInput: string;
   goalId: string;
 }
@@ -77,6 +96,8 @@ export const AI_INFERRED_CORRECTION_FIELDS = [
   'time_text',
   'body_state',
   'tool_label',
+  'finance_account_id',
+  'transfer_to_account_id',
 ] as const;
 
 function splitList(str: string): string[] | null {
@@ -94,7 +115,12 @@ export function isLegacyRecordType(type: string): boolean {
 export function recordToFormState(record: TetoRecord, items: Item[]): RecordEditFormState {
   const anchorDate = resolveRecordAnchorDate(record);
   const hasFinance = recordHasFinance(record.cost, record.money_direction);
-  const { financeAccount, toolLabel } = splitToolLabelForForm(record.tool_label, hasFinance);
+  const { financeAccount, financeAccountId, toolLabel } = splitToolLabelForForm(
+    record.tool_label,
+    hasFinance,
+    record.finance_account_id,
+    (record as { finance_account?: { name?: string } }).finance_account?.name
+  );
   const moodTag = record.tags?.find((t) => t.type === 'mood');
   const moodFromTag = moodTag?.name ?? '';
   return {
@@ -135,7 +161,11 @@ export function recordToFormState(record: TetoRecord, items: Item[]): RecordEdit
     timeText: record.time_text || '',
     timePrecision: record.time_precision || '',
     placeType: record.place_type || '',
-    moneyDirection: record.money_direction || '',
+    moneyDirection:
+      record.money_direction === 'none'
+        ? 'none'
+        : record.money_direction ||
+          (record.cost != null && record.cost > 0 ? 'expense' : 'none'),
     relationRolesStr: (record.relation_roles || []).join(', '),
     bodyState: record.body_state || '',
     moneyCurrency: record.money_currency || 'CNY',
@@ -143,7 +173,9 @@ export function recordToFormState(record: TetoRecord, items: Item[]): RecordEdit
     resultText: record.result || '',
     toolLabel,
     financeAccount,
-    rawInput: record.raw_input || '',
+    financeAccountId: financeAccountId || record.finance_account_id || '',
+    transferToAccountId: record.transfer_to_account_id || '',
+    rawInput: resolveRecordOriginalText(record),
     goalId: record.goal_id || '',
   };
 }
@@ -152,6 +184,8 @@ export function formStateToUpdatePayload(
   form: RecordEditFormState,
   record: TetoRecord
 ): UpdateRecordPayload {
+  const resolvedDirection = resolveFormMoneyDirection(form);
+  const hasFinance = resolvedDirection !== 'none';
   const payload: UpdateRecordPayload = {
     content: form.content,
     type: form.type,
@@ -163,7 +197,7 @@ export function formStateToUpdatePayload(
     note: form.notes.map((n) => n.trim()).find(Boolean) || undefined,
     location: form.location.trim() || null,
     people: splitList(form.peopleStr),
-    cost: form.cost ? parseFloat(form.cost) : null,
+    cost: hasFinance && form.cost.trim() ? parseFloat(form.cost) : null,
     metric_value: form.metricValue ? parseFloat(form.metricValue) : null,
     metric_unit: form.metricUnit.trim() || null,
     metric_name: form.metricName.trim() || null,
@@ -186,7 +220,7 @@ export function formStateToUpdatePayload(
       | 'unknown'
       | undefined,
     place_type: form.placeType || undefined,
-    money_direction: (form.moneyDirection || undefined) as 'expense' | 'income' | 'none' | undefined,
+    money_direction: resolvedDirection,
     relation_roles: splitList(form.relationRolesStr) ?? undefined,
     body_state: form.bodyState.trim() || undefined,
     money_currency: form.moneyCurrency || undefined,
@@ -197,11 +231,15 @@ export function formStateToUpdatePayload(
     tool_label: mergeToolLabelForSave(
       form.financeAccount,
       form.toolLabel,
-      recordHasFinance(
-        form.cost ? parseFloat(form.cost) : null,
-        form.moneyDirection || null
-      )
+      hasFinance
     ),
+    finance_account_id: hasFinance ? form.financeAccountId.trim() || null : null,
+    transfer_to_account_id:
+      hasFinance &&
+      resolvedDirection === 'transfer' &&
+      form.transferToAccountId.trim()
+        ? form.transferToAccountId.trim()
+        : null,
     goal_id: form.goalId.trim() || null,
     related_objects: splitList(form.relatedObjectsStr) ?? null,
     occurred_at: form.occurredAt

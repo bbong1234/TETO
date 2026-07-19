@@ -10,9 +10,6 @@ export const CANCEL_WINDOW_MS = 5000;
 export const GAP_THRESHOLD_HINT =
   `相邻活动间隔不足 ${GAP_THRESHOLD_MINUTES} 分钟不会标为空白；仅提示可补记，不要求填满 24 小时。`;
 
-/** 日复盘建议归属的事项名（引导用，非强制） */
-export const DIARY_ITEM_TITLE = '日记';
-
 /**
  * 活动大类预置名：用具体领域词，不用「工作/学习」等模糊大词。
  * 已存在同名顶层 item 不会被覆盖；旧数据中的「工作」「学习」仍可作为大类使用。

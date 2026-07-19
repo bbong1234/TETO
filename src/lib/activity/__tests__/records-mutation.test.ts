@@ -373,3 +373,29 @@ describe('overlayCurrentActivityOnRecords', () => {
     expect(after[0].id).toBe('optimistic-new');
   });
 });
+
+describe('findMatchingServerRecordId', () => {
+  it('maps optimistic placeholder to server record by display_no', async () => {
+    const { findMatchingServerRecordId } = await import('../records-mutation');
+    const server = activeRecord('server-1', '写日报');
+    server.display_no = '202607170001';
+    const optimistic = activeRecord('optimistic-abc', '写日报');
+    optimistic.display_no = '202607170001';
+
+    expect(findMatchingServerRecordId(optimistic, [optimistic, server])).toBe('server-1');
+  });
+
+  it('maps optimistic block segment by occurred_at and end time', async () => {
+    const { findMatchingServerRecordId } = await import('../records-mutation');
+    const server = activeRecord('server-seg', '专注');
+    server.occurred_at = '2026-07-17T02:00:00.000Z';
+    server.occurred_at_end = '2026-07-17T03:00:00.000Z';
+    server.lifecycle_status = 'completed';
+    const optimistic = activeRecord('optimistic-block-seg-1-0', '专注');
+    optimistic.occurred_at = server.occurred_at;
+    optimistic.occurred_at_end = server.occurred_at_end;
+    optimistic.lifecycle_status = 'completed';
+
+    expect(findMatchingServerRecordId(optimistic, [optimistic, server])).toBe('server-seg');
+  });
+});

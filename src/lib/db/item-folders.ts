@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import type { ItemFolder, CreateItemFolderPayload, UpdateItemFolderPayload } from '@/types/teto';
 
 /**
@@ -105,14 +106,13 @@ export async function updateItemFolder(
  */
 export async function deleteItemFolder(userId: string, id: string): Promise<void> {
   const supabase = await createClient();
-
-  const { error } = await supabase
-    .from('item_folders')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
-
-  if (error) {
-    throw new Error(`删除文件夹失败: ${error.message}`);
-  }
+  await deleteOneOwnedRow(
+    supabase,
+    'item_folders',
+    [
+      { column: 'id', value: id },
+      { column: 'user_id', value: userId },
+    ],
+    '删除文件夹失败'
+  );
 }

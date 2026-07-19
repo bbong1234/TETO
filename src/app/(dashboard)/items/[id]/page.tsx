@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import ItemDetailClient from './ItemDetailClient';
+import ItemRecordExplorerClient from './ItemRecordExplorerClient';
 
 export default async function ItemDetailPage({
   params,
@@ -9,7 +9,7 @@ export default async function ItemDetailPage({
   const { id } = await params;
   return (
     <Suspense fallback={null}>
-      <ItemDetailClient itemId={id} />
+      <ItemRecordExplorerClient itemId={id} />
     </Suspense>
   );
 }

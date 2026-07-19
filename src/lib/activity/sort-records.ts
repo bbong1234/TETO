@@ -1,4 +1,5 @@
 import type { Record } from '@/types/teto';
+import { compareTimesDesc } from '@/lib/utils/sortable-time';
 
 /** 从 time_text 提取时间段排序权重（0-23） */
 function getTimeTextWeight(timeText: string | null | undefined): number {
@@ -57,11 +58,7 @@ export function sortRecords(rawRecords: Record[]): Record[] {
     if (isPlan) {
       group.sort((a, b) => getPlanSortKey(a).localeCompare(getPlanSortKey(b)));
     } else {
-      group.sort((a, b) => {
-        const aTime = a.occurred_at || a.created_at;
-        const bTime = b.occurred_at || b.created_at;
-        return bTime.localeCompare(aTime);
-      });
+      group.sort((a, b) => compareTimesDesc(a.occurred_at || a.created_at, b.occurred_at || b.created_at));
     }
     const keyRecord = group[0];
     const withTime = group.find((r) => r.occurred_at && r.time_precision !== 'inherited');
@@ -117,9 +114,7 @@ export function sortRecords(rawRecords: Record[]): Record[] {
       return aKey.localeCompare(bKey);
     }
 
-    const aTime = a.sortKey.occurred_at || a.sortKey.created_at;
-    const bTime = b.sortKey.occurred_at || b.sortKey.created_at;
-    return bTime.localeCompare(aTime);
+    return compareTimesDesc(a.sortKey.occurred_at || a.sortKey.created_at, b.sortKey.occurred_at || b.sortKey.created_at);
   });
 
   return units.flatMap((u) => u.records);

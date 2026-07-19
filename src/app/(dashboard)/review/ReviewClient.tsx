@@ -7,10 +7,9 @@ import ItemAttributionChips from '@/components/records/ItemAttributionChips';
 import { getItemDepth, isCategoryItem } from '@/lib/activity/item-tree';
 import { notifyUnassignedRefresh } from '@/hooks/use-unassigned-count';
 import ClassificationQueuePanel from '@/app/(dashboard)/records/components/ClassificationQueuePanel';
-import RecordDrivenDiaryPanel from '@/app/(dashboard)/records/components/RecordDrivenDiaryPanel';
 import ClassificationDictionaryPanel from '@/app/(dashboard)/records/components/ClassificationDictionaryPanel';
 
-type ReviewTab = 'review' | 'inbox' | 'classify' | 'diary' | 'dictionary';
+type ReviewTab = 'review' | 'inbox' | 'classify' | 'dictionary';
 
 function formatRecordTime(record: TetoRecord): string {
   const iso = record.occurred_at || record.created_at;
@@ -75,7 +74,6 @@ export default function ReviewClient() {
           { key: 'review', label: '滚动复盘' },
           { key: 'inbox', label: '未归属' },
           { key: 'classify', label: '分类整理' },
-          { key: 'diary', label: '今日日记' },
           { key: 'dictionary', label: '关键词词典' },
         ] as { key: ReviewTab; label: string }[]).map(({ key, label }) => (
           <button
@@ -109,9 +107,6 @@ export default function ReviewClient() {
               onError={handlePanelError}
             />
           )
-        )}
-        {tab === 'diary' && (
-          <RecordDrivenDiaryPanel onError={handlePanelError} />
         )}
         {tab === 'dictionary' && (
           itemsLoading ? (

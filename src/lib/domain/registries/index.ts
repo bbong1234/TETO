@@ -109,7 +109,7 @@ export const DOMAIN_REGISTRY: DomainRegistration[] = [
     responsibility: '财务（金额/货币/收支）',
     coreTables: [],
     status: 'reserved',
-    reservedReason: '当前由 records.cost 承载，待财务需求明确后拆分',
+    reservedReason: 'finance_accounts 表 + records 财务字段',
     targetVersion: '1.8+',
   },
   {

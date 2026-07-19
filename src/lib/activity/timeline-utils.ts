@@ -63,12 +63,13 @@ function buildEntryFields(
   items?: Item[],
   isCurrent = false,
   subItemTitles?: ReadonlyMap<string, string>
-): Pick<TimelineEntry, 'text' | 'tag_path' | 'action_label' | 'detail_text'> {
+): Pick<TimelineEntry, 'text' | 'tag_path' | 'tag_path_parts' | 'action_label' | 'detail_text'> {
   const parts = buildTimelineEntryParts(record, items, { isCurrent, subItemTitles });
   const detail = [parts.timeText, parts.detail].filter(Boolean).join(' ');
   return {
     text: parts.text,
     tag_path: parts.tagPath || undefined,
+    tag_path_parts: parts.tagPathParts.length > 0 ? parts.tagPathParts : undefined,
     action_label: parts.action || undefined,
     detail_text: detail || undefined,
   };

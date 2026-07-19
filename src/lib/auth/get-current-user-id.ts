@@ -1,17 +1,9 @@
 'use client';
 
 import { createClient } from '@/lib/supabase/client';
+import { isClientDevMode } from '@/lib/db/runtime-mode';
 
-let DEV_MODE = process.env.NEXT_PUBLIC_DEV_MODE === 'true';
 const DEV_USER_ID = process.env.NEXT_PUBLIC_DEV_USER_ID || '00000000-0000-0000-0000-000000000001';
-
-if (DEV_MODE && process.env.NODE_ENV === 'production') {
-  console.error('[安全] NEXT_PUBLIC_DEV_MODE 在生产环境已自动禁用。请从 .env 中移除 NEXT_PUBLIC_DEV_MODE=true');
-  DEV_MODE = false;
-}
-if (DEV_MODE) {
-  console.warn('[DEV_MODE] 客户端认证已跳过。仅限本地开发。');
-}
 
 export interface CurrentUser {
   id: string;
@@ -25,7 +17,7 @@ export async function getCurrentUserId(): Promise<string> {
 }
 
 export async function getCurrentUser(): Promise<CurrentUser> {
-  if (DEV_MODE) {
+  if (isClientDevMode()) {
     return {
       id: DEV_USER_ID,
       email: 'dev@teto.local',
@@ -59,7 +51,7 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 }
 
 export function isDevMode(): boolean {
-  return DEV_MODE;
+  return isClientDevMode();
 }
 
 export function getDevUserId(): string {

@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import AttributionFlowPicker from '@/components/records/AttributionFlowPicker';
 import ContextualFunctionTagRow from '@/components/records/ContextualFunctionTagRow';
 import { resolveTargetItemId } from '@/lib/activity/item-tree';
+import { formatTimelineItemTagPath, TIMELINE_ITEM_TAG_BLOCK } from '@/lib/activity/attribution-chip-styles';
 import type { RecordEditFormState } from '@/lib/activity/record-form';
 import type { Item, Tag } from '@/types/teto';
 import RecordDetailSection from './RecordDetailSection';
@@ -59,6 +60,7 @@ export default function RecordAttributionSection({
   const actionTag = tags.find((t) => t.id === selectedActionTagId);
 
   const path = pathLabels(form, items);
+  const itemTagPath = path.length > 0 ? formatTimelineItemTagPath(path) : '';
 
   const selectActionTag = (tagId: string | null) => {
     const nonFunctionIds = form.tagIds.filter((id) => {
@@ -72,17 +74,14 @@ export default function RecordAttributionSection({
   return (
     <RecordDetailSection title="归属">
       <div className="flex flex-wrap items-center gap-1.5">
-        {path.length > 0 ? (
-          path.map((part, i) => (
-            <button
-              key={`${part}-${i}`}
-              type="button"
-              onClick={() => setExpandLevel(expandLevel === 'category' ? 'none' : 'category')}
-              className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100"
-            >
-              {part}
-            </button>
-          ))
+        {itemTagPath ? (
+          <button
+            type="button"
+            onClick={() => setExpandLevel(expandLevel === 'category' ? 'none' : 'category')}
+            className={`${TIMELINE_ITEM_TAG_BLOCK} hover:bg-indigo-100 transition-colors`}
+          >
+            {itemTagPath}
+          </button>
         ) : (
           <button
             type="button"

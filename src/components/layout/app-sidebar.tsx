@@ -15,6 +15,7 @@ import {
   Moon,
   Shield,
   Target,
+  Wallet,
 } from 'lucide-react';
 
 // 主导航
@@ -23,6 +24,7 @@ const navItems = [
   { label: "事项", href: "/items", icon: ListChecks },
   { label: "目标", href: "/goals", icon: Target },
   { label: "复盘", href: "/review", icon: Moon },
+  { label: "钱包", href: "/wallet", icon: Wallet },
   { label: "洞察", href: "/insights", icon: BarChart3 },
   { label: "诊断", href: "/debug", icon: Shield },
 ];

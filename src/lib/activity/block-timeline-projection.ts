@@ -1,5 +1,6 @@
 import type { BlockTimelineSegment } from '@/app/(dashboard)/records/components/BlockSessionTimeline';
 import type { DayTimeline, TimelineEntry } from '@/types/teto';
+import { splitTimelineTagPath } from '@/lib/activity/attribution-chip-styles';
 
 function formatTimeHHMM(ms: number): string {
   const d = new Date(ms);
@@ -74,6 +75,7 @@ export function expandFeedWithBlockSegments(
   const segmentEntries: TimelineEntry[] = segments.map((seg, idx) => {
     const isCurrent = seg.endMs == null;
     const { tagPath, actionLabel } = parseSegmentLabel(seg.label);
+    const tagPathParts = tagPath ? splitTimelineTagPath(tagPath) : undefined;
     const durationSeconds = calcDurationSeconds(seg.startMs, seg.endMs, seg.isGap);
     const durationMinutes =
       durationSeconds != null ? Math.max(0, Math.round(durationSeconds / 60)) : undefined;
@@ -88,6 +90,7 @@ export function expandFeedWithBlockSegments(
       end_time: isCurrent ? undefined : formatTimeHHMM(seg.endMs!),
       text: seg.label,
       tag_path: tagPath,
+      tag_path_parts: tagPathParts?.length ? tagPathParts : undefined,
       action_label: actionLabel,
       is_current: isCurrent,
       occurred_at: isCurrent ? new Date(seg.startMs).toISOString() : undefined,
@@ -115,6 +118,7 @@ export function blockSegmentsToDayTimeline(
   const records: TimelineEntry[] = segments.map((seg, idx) => {
     const isCurrent = seg.endMs == null;
     const { tagPath, actionLabel } = parseSegmentLabel(seg.label);
+    const tagPathParts = tagPath ? splitTimelineTagPath(tagPath) : undefined;
     const durationSeconds = calcDurationSeconds(seg.startMs, seg.endMs, seg.isGap);
 
     const isGap = Boolean(seg.isGap);
@@ -126,6 +130,7 @@ export function blockSegmentsToDayTimeline(
       end_time: isGap || !isCurrent ? formatTimeHHMM(seg.endMs ?? seg.startMs) : undefined,
       text: seg.label,
       tag_path: isGap ? undefined : tagPath,
+      tag_path_parts: isGap || !tagPathParts?.length ? undefined : tagPathParts,
       action_label: isGap ? undefined : actionLabel,
       is_gap: isGap,
       is_current: isGap ? false : isCurrent,

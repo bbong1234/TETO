@@ -58,30 +58,6 @@ export function RecordsDayContentSkeleton() {
   );
 }
 
-/** 记录页：多日横向列占位 */
-export function RecordsMultiDaySkeleton() {
-  return (
-    <div className="flex h-full gap-3 px-4 py-4 animate-pulse">
-      {[1, 2, 3, 4, 5].map((i) => (
-        <div
-          key={i}
-          className="flex-shrink-0 w-[380px] rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-3"
-        >
-          <Bone className="h-4 w-24 mx-auto" />
-          <Bone className="h-16 w-full rounded-xl" />
-          <Bone className="h-12 w-full rounded-xl" />
-          <Bone className="h-12 w-full rounded-xl" />
-          <Bone className="h-10 w-full rounded-xl" />
-        </div>
-      ))}
-      <div className="flex flex-col items-center justify-center gap-2 px-4 text-sm text-slate-400">
-        <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
-        加载记录…
-      </div>
-    </div>
-  );
-}
-
 /** 事项桌面：大类分组占位 */
 export function ItemsDesktopSkeleton() {
   return (

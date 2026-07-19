@@ -18,9 +18,6 @@ export async function postManualRecord(payload: CreateRecordPayload): Promise<Re
   if (!res.ok) {
     throw new Error(data.error?.message ?? '记录失败');
   }
-  if (data.data?._clarification) {
-    throw new Error('需要 AI 确认的事项请使用「补记/自然语言录入」');
-  }
   if (!data.data?.id) {
     throw new Error('记录失败：未创建记录');
   }

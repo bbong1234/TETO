@@ -335,7 +335,7 @@ export async function listItems(
   if (!data || data.length === 0) return [];
 
   // 批量查询进行中阶段 + 时长 + 待完成计划（并行）
-  const itemIds = data.map(d => d.id);
+  const itemIds = data.map((d: any) => d.id);
   const [{ data: activePhases }, durationMap, pendingPlanMap] = await Promise.all([
     supabase
       .from('phases')

@@ -5,7 +5,7 @@ import { handleApiError } from '@/lib/api/error-handler';
 import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
 import { ERROR_CODES } from '@/lib/observability/id-registry';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 /**
  * GET /api/v2/export/records?date_from=...&date_to=...&format=csv
@@ -38,8 +38,8 @@ export async function GET(request: NextRequest) {
       return apiError(ERROR_CODES.EXPORT_NO_DATA, '所选范围内无数据', ctx.traceId, 404);
     }
 
-    const dayIds = days.map(d => d.id);
-    const dayMap = new Map(days.map(d => [d.id, d.date]));
+    const dayIds = days.map((d: { id: string }) => d.id);
+    const dayMap = new Map(days.map((d: { id: string; date: string }) => [d.id, d.date]));
 
     // 获取记录
     const { data: records, error: recError } = await supabase
@@ -52,14 +52,14 @@ export async function GET(request: NextRequest) {
     if (recError) throw new Error(`查询记录失败: ${recError.message}`);
 
     // 获取事项名称映射
-    const itemIds = [...new Set((records || []).map(r => r.item_id).filter(Boolean))] as string[];
+    const itemIds = [...new Set((records || []).map((r: { item_id: string | null }) => r.item_id).filter(Boolean))] as string[];
     let itemNameMap: Record<string, string> = {};
     if (itemIds.length > 0) {
       const { data: items } = await supabase
         .from('items')
         .select('id, title')
         .in('id', itemIds);
-      (items || []).forEach(i => { itemNameMap[i.id] = i.title; });
+      (items || []).forEach((i: { id: string; title: string }) => { itemNameMap[i.id] = i.title; });
     }
 
     if (format === 'csv') {
@@ -73,21 +73,21 @@ export async function GET(request: NextRequest) {
         return s;
       };
 
-      const rows = (records || []).map(r => [
-        escapeCsv(dayMap.get(r.record_day_id) || ''),
-        escapeCsv(r.raw_input),
-        escapeCsv(r.type),
-        escapeCsv(r.status),
-        escapeCsv(r.item_id ? itemNameMap[r.item_id] || '' : ''),
-        escapeCsv(r.duration_minutes),
-        escapeCsv(r.cost),
-        escapeCsv(r.metric_name),
-        escapeCsv(r.metric_value),
-        escapeCsv(r.result),
-        escapeCsv(r.location),
-        escapeCsv(r.people),
-        escapeCsv(r.time_anchor_date),
-        escapeCsv(r.created_at),
+      const rows = (records || []).map((r: { [key: string]: unknown }) => [
+        escapeCsv(String(dayMap.get(r.record_day_id as string) ?? '')),
+        escapeCsv(r.raw_input as string | null),
+        escapeCsv(r.type as string | null),
+        escapeCsv(r.status as string | null),
+        escapeCsv(r.item_id ? itemNameMap[r.item_id as string] || '' : ''),
+        escapeCsv(r.duration_minutes as number | null),
+        escapeCsv(r.cost as number | null),
+        escapeCsv(r.metric_name as string | null),
+        escapeCsv(r.metric_value as number | null),
+        escapeCsv(r.result as string | null),
+        escapeCsv(r.location as string | null),
+        escapeCsv(r.people as string | null),
+        escapeCsv(r.time_anchor_date as string | null),
+        escapeCsv(r.created_at as string | null),
       ].join(','));
 
       const csv = '\uFEFF' + headers.join(',') + '\n' + rows.join('\n'); // BOM for Excel

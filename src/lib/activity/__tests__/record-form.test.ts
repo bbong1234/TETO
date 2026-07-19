@@ -4,6 +4,7 @@ import {
   formStateToUpdatePayload,
   isLegacyRecordType,
   recordToFormState,
+  resolveRecordOriginalText,
 } from '@/lib/activity/record-form';
 import type { Item, Record } from '@/types/teto';
 
@@ -112,6 +113,20 @@ describe('record-form', () => {
     expect(payload.time_anchor_date).toBe('2026-06-01');
   });
 
+  it('formStateToUpdatePayload persists none direction and clears finance fields', () => {
+    const record = baseRecord({ cost: 32, money_direction: 'expense', tool_label: '微信' });
+    const form = recordToFormState(record, items);
+    form.moneyDirection = 'none';
+    form.cost = '';
+    form.financeAccount = '';
+    form.financeAccountId = '';
+    const payload = formStateToUpdatePayload(form, record);
+    expect(payload.money_direction).toBe('none');
+    expect(payload.cost).toBeNull();
+    expect(payload.finance_account_id).toBeNull();
+    expect(payload.tool_label).toBeNull();
+  });
+
   it('buildCorrectionPayload detects tool_label change', () => {
     const record = baseRecord({ tool_label: null });
     const form = recordToFormState(record, items);
@@ -124,5 +139,24 @@ describe('record-form', () => {
   it('isLegacyRecordType identifies non-user types', () => {
     expect(isLegacyRecordType('回顾')).toBe(true);
     expect(isLegacyRecordType('发生')).toBe(false);
+  });
+
+  it('resolveRecordOriginalText prefers raw_input for quick notes', () => {
+    const record = baseRecord({
+      input_source: 'quick',
+      raw_input: '早上9点吃早饭花了30块',
+      content: '',
+    });
+    expect(resolveRecordOriginalText(record)).toBe('早上9点吃早饭花了30块');
+    expect(recordToFormState(record, items).rawInput).toBe('早上9点吃早饭花了30块');
+  });
+
+  it('resolveRecordOriginalText falls back to content for legacy quick notes', () => {
+    const record = baseRecord({
+      input_source: 'quick',
+      raw_input: null,
+      content: '我有些累',
+    });
+    expect(resolveRecordOriginalText(record)).toBe('我有些累');
   });
 });

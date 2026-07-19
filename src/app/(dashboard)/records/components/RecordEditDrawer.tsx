@@ -10,9 +10,10 @@ interface RecordEditDrawerProps {
   record: Record;
   tags: Tag[];
   items: Item[];
+  recordsPool?: Record[];
   goals?: Goal[];
   onClose: () => void;
-  onSaved: (updated: Record) => void;
+  onSaved: (updated: Record, previousId?: string) => void;
   onDeleted: (id: string) => void;
   onDeleteFailed?: (record: Record) => void;
   onError: (message: string) => void;
@@ -26,6 +27,7 @@ export default function RecordEditDrawer({
   record,
   tags,
   items,
+  recordsPool = [],
   goals,
   onClose,
   onSaved,
@@ -46,7 +48,7 @@ export default function RecordEditDrawer({
     saving,
     saveStatus,
     setContextSubItemsCount,
-  } = useRecordEditForm({ record, items, onSaved, onDeleted, onDeleteFailed, onError });
+  } = useRecordEditForm({ record, items, recordsPool, onSaved, onDeleted, onDeleteFailed, onError });
 
   const displayNo = formatRecordDisplayNo(record);
 

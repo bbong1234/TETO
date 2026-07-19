@@ -3,7 +3,7 @@ import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
 import { ERROR_CODES } from '@/lib/observability/id-registry';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 /**
  * POST /api/v2/insights/polish

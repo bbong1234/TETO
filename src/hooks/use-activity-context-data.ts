@@ -131,6 +131,7 @@ export function useActivityContextData({
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [userCategoryIds, setUserCategoryIds] = useState<Set<string>>(() => new Set());
+  const [categoryIdsWithRecords, setCategoryIdsWithRecords] = useState<Set<string>>(() => new Set());
   const [activeCategoryId, setActiveCategoryId] = useState(value.categoryItemId);
   const scopedUserId = items[0]?.user_id;
   const onSubItemsLoadedRef = useRef(onSubItemsLoaded);
@@ -159,13 +160,37 @@ export function useActivityContextData({
   }, [scopedUserId]);
 
   useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/v2/items/explorer-summaries')
+      .then((res) => res.json())
+      .then((json) => {
+        if (cancelled) return;
+        const ids = new Set<string>(
+          (json.data ?? []).map((s: { id: string }) => s.id)
+        );
+        setCategoryIdsWithRecords(ids);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!scopedUserId) return;
     saveUserCategoryIds(scopedUserId, userCategoryIds);
   }, [scopedUserId, userCategoryIds]);
 
   const categoryItems = useMemo(
-    () => getCategoryItemsFromIndex(items, itemIndex, activeCategoryId || undefined, userCategoryIds),
-    [items, itemIndex, activeCategoryId, userCategoryIds]
+    () =>
+      getCategoryItemsFromIndex(
+        items,
+        itemIndex,
+        activeCategoryId || undefined,
+        userCategoryIds,
+        categoryIdsWithRecords
+      ),
+    [items, itemIndex, activeCategoryId, userCategoryIds, categoryIdsWithRecords]
   );
 
   const orgLevels = useMemo(

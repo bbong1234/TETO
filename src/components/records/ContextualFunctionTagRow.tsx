@@ -23,6 +23,8 @@ interface ContextualFunctionTagRowProps {
   keepVisibleWhileLoading?: boolean;
   /** 有上下文时只展示该上下文历史动作；空态允许新建 */
   strictScope?: boolean;
+  /** 当前归属对应的一类事项，用于新建及过滤动作标签 */
+  scopeItemId?: string | null;
 }
 
 /**
@@ -43,6 +45,7 @@ export default function ContextualFunctionTagRow({
   pinnedSelectedTag = null,
   keepVisibleWhileLoading = false,
   strictScope = false,
+  scopeItemId = null,
 }: ContextualFunctionTagRowProps) {
   const [frequent, setFrequent] = useState<Tag[]>([]);
   const [all, setAll] = useState<Tag[]>([]);
@@ -87,12 +90,22 @@ export default function ContextualFunctionTagRow({
     [fallbackTags]
   );
 
+  const scopedFallbackTags = useMemo(() => {
+    if (!scopeItemId) return globalFunctionTags;
+    return globalFunctionTags.filter(
+      (t) => !t.scope_item_id || t.scope_item_id === scopeItemId
+    );
+  }, [globalFunctionTags, scopeItemId]);
+
   const displayTags = useMemo(() => {
-    if (!itemId) return globalFunctionTags;
+    if (!itemId) return scopedFallbackTags;
     const frequentIds = new Set(frequent.map((t) => t.id));
     const more = all.filter((t) => !frequentIds.has(t.id));
     const contextual = [...frequent, ...more];
-    if (!strictScope) return contextual.length > 0 ? contextual : globalFunctionTags;
+    if (!strictScope) return contextual.length > 0 ? contextual : scopedFallbackTags;
+    if (contextual.length === 0 && (loading || scopedFallbackTags.length > 0)) {
+      return scopedFallbackTags;
+    }
     const selected =
       pinnedSelectedTag ??
       globalFunctionTags.find((t) => t.id === selectedTagId) ??
@@ -101,7 +114,7 @@ export default function ContextualFunctionTagRow({
       return [selected, ...contextual];
     }
     return contextual;
-  }, [itemId, frequent, all, globalFunctionTags, strictScope, pinnedSelectedTag, selectedTagId]);
+  }, [itemId, frequent, all, scopedFallbackTags, strictScope, pinnedSelectedTag, selectedTagId, loading, scopeItemId]);
 
   if (displayTags.length > 0) {
     lastStableTagsRef.current = displayTags;
@@ -111,7 +124,7 @@ export default function ContextualFunctionTagRow({
     keepVisibleWhileLoading && loading && displayTags.length === 0
       ? lastStableTagsRef.current.length > 0
         ? lastStableTagsRef.current
-        : globalFunctionTags
+        : scopedFallbackTags
       : displayTags;
 
   if (!keepVisibleWhileLoading && loading && itemId && visibleTags.length === 0) {
@@ -136,6 +149,7 @@ export default function ContextualFunctionTagRow({
       graceExpiresAt={graceExpiresAt}
       onGraceUndo={onGraceUndo}
       pinnedSelectedTag={pinnedSelectedTag}
+      scopeItemId={scopeItemId}
     />
   );
 }

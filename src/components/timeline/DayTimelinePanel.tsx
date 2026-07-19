@@ -1,11 +1,17 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Clock, Trash2 } from 'lucide-react';
+import { CheckCircle2, Clock, Plus, Trash2 } from 'lucide-react';
 import type { DayTimeline, TimelineEntry } from '@/types/teto';
 import { GAP_THRESHOLD_HINT } from '@/lib/activity/constants';
 import { formatTimelineDuration } from '@/lib/activity/stats-utils';
 import { isTimelineEntrySelectable } from '@/lib/activity/timeline-utils';
+import {
+  formatTimelineItemTagPath,
+  splitTimelineTagPath,
+  TIMELINE_ACTION_TAG_BLOCK,
+  TIMELINE_ITEM_TAG_BLOCK,
+} from '@/lib/activity/attribution-chip-styles';
 
 function useElapsedSeconds(startIso: string | null | undefined): number {
   const [elapsed, setElapsed] = useState(0);
@@ -35,6 +41,11 @@ interface DayTimelinePanelProps {
   onGapClick?: (entry: TimelineEntry) => void;
   onPlanComplete?: (entry: TimelineEntry) => void;
   /** 多选批量删除（今日时间线） */
+  /** 日记模式：时间线底部新建记录 */
+  showAddRecord?: boolean;
+  onAddRecord?: () => void;
+  focusedRecordId?: string | null;
+  onFocusRecord?: (recordId: string | null) => void;
   multiSelect?: {
     selectedIds: Set<string>;
     onToggle: (entry: TimelineEntry) => void;
@@ -54,6 +65,10 @@ export default function DayTimelinePanel({
   onEntryClick,
   onGapClick,
   onPlanComplete,
+  showAddRecord = false,
+  onAddRecord,
+  focusedRecordId = null,
+  onFocusRecord,
   multiSelect,
 }: DayTimelinePanelProps) {
   const pinned = data.records.filter((r) => r.is_pinned);
@@ -80,6 +95,8 @@ export default function DayTimelinePanel({
     onGapClick,
     onPlanComplete,
     multiSelect,
+    focusedRecordId,
+    onFocusRecord,
   };
 
   if (
@@ -92,6 +109,9 @@ export default function DayTimelinePanel({
         <Header title={title} />
         <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/40 p-6 text-center">
           <p className="text-sm text-slate-400">{emptyText}</p>
+          {showAddRecord && onAddRecord && (
+            <AddRecordButton onClick={onAddRecord} className="mt-4" />
+          )}
         </div>
       </div>
     );
@@ -159,6 +179,7 @@ export default function DayTimelinePanel({
                 ))}
               </div>
             )}
+            {showAddRecord && onAddRecord && <AddRecordButton onClick={onAddRecord} />}
           </div>
         </div>
       </div>
@@ -257,8 +278,22 @@ export default function DayTimelinePanel({
             ))}
           </div>
         )}
+        {showAddRecord && onAddRecord && <AddRecordButton onClick={onAddRecord} />}
       </div>
     </div>
+  );
+}
+
+function AddRecordButton({ onClick, className = '' }: { onClick: () => void; className?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 py-2.5 text-sm text-slate-500 hover:border-indigo-300 hover:text-indigo-600 ${className}`}
+    >
+      <Plus className="h-4 w-4" />
+      新建记录
+    </button>
   );
 }
 
@@ -359,13 +394,40 @@ function KindBadge({ entry }: { entry: TimelineEntry }) {
   );
 }
 
+function TimelineAttributionChips({ entry }: { entry: TimelineEntry }) {
+  const parts =
+    entry.tag_path_parts && entry.tag_path_parts.length > 0
+      ? entry.tag_path_parts
+      : entry.tag_path
+        ? splitTimelineTagPath(entry.tag_path)
+        : [];
+
+  if (parts.length === 0 && !entry.action_label) return null;
+
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      {parts.length > 0 && (
+        <span className={TIMELINE_ITEM_TAG_BLOCK}>
+          {formatTimelineItemTagPath(parts)}
+        </span>
+      )}
+      {entry.action_label && (
+        <span className={TIMELINE_ACTION_TAG_BLOCK}>{entry.action_label}</span>
+      )}
+    </span>
+  );
+}
+
 function TimelineEntryContent({ entry }: { entry: TimelineEntry }) {
   if (entry.is_gap) {
     return <span>{entry.text}</span>;
   }
 
   const hasStructured =
-    Boolean(entry.tag_path) || Boolean(entry.action_label) || Boolean(entry.detail_text);
+    Boolean(entry.tag_path) ||
+    Boolean(entry.tag_path_parts?.length) ||
+    Boolean(entry.action_label) ||
+    Boolean(entry.detail_text);
 
   if (!hasStructured) {
     return <span>{entry.text}</span>;
@@ -373,16 +435,7 @@ function TimelineEntryContent({ entry }: { entry: TimelineEntry }) {
 
   return (
     <>
-      {entry.tag_path && (
-        <span className="rounded-md bg-indigo-50 px-1.5 py-0.5 text-[11px] font-medium text-indigo-800 ring-1 ring-inset ring-indigo-100">
-          {entry.tag_path}
-        </span>
-      )}
-      {entry.action_label && (
-        <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-900 ring-1 ring-inset ring-amber-100">
-          {entry.action_label}
-        </span>
-      )}
+      <TimelineAttributionChips entry={entry} />
       {entry.detail_text && (
         <span className="text-slate-600">{entry.detail_text}</span>
       )}
@@ -396,22 +449,35 @@ function TimelineRow({
   onGapClick,
   onPlanComplete,
   multiSelect,
+  focusedRecordId = null,
+  onFocusRecord,
 }: {
   entry: TimelineEntry;
   onEntryClick?: (entry: TimelineEntry) => void;
   onGapClick?: (entry: TimelineEntry) => void;
   onPlanComplete?: (entry: TimelineEntry) => void;
   multiSelect?: DayTimelinePanelProps['multiSelect'];
+  focusedRecordId?: string | null;
+  onFocusRecord?: (recordId: string | null) => void;
 }) {
   const selectable = Boolean(multiSelect && isTimelineEntrySelectable(entry));
   const isSelected = selectable && multiSelect!.selectedIds.has(entry.id);
   const selectionActive = Boolean(multiSelect && multiSelect.selectedIds.size > 0);
+  const isLinkable = isTimelineEntrySelectable(entry);
+  const isFocused = isLinkable && focusedRecordId === entry.id;
 
   const baseHandler = entry.is_gap ? onGapClick : onEntryClick;
   const handler =
     selectable && selectionActive
       ? () => multiSelect!.onToggle(entry)
-      : baseHandler;
+      : baseHandler
+        ? (clicked: TimelineEntry) => {
+            if (isLinkable) onFocusRecord?.(clicked.id);
+            baseHandler(clicked);
+          }
+        : isLinkable
+          ? (clicked: TimelineEntry) => onFocusRecord?.(clicked.id)
+          : undefined;
   const liveSeconds = useElapsedSeconds(entry.is_current ? entry.occurred_at : undefined);
   const displaySeconds =
     entry.kind === 'activity' || entry.is_gap || entry.is_current
@@ -429,7 +495,10 @@ function TimelineRow({
       ? `${entry.start_time} - ${entry.end_time}`
       : entry.start_time ?? entry.time_label ?? (entry.is_pinned ? '今日' : '');
 
-  const rowClass = `${timelineRowClass(entry, Boolean(handler))}${isSelected ? ' bg-blue-50/80 ring-1 ring-blue-200' : ''}`;
+  const rowClass = `${timelineRowClass(entry, Boolean(handler))}${isSelected ? ' bg-blue-50/80 ring-1 ring-blue-200' : ''}${isFocused ? ' timeline-entry--focused' : ''}`;
+  const linkProps = isLinkable
+    ? { 'data-timeline-record-id': entry.id }
+    : {};
 
   const inner = (
     <>
@@ -494,19 +563,24 @@ function TimelineRow({
             }
           }}
           className={`${rowClass} cursor-pointer`}
+          {...linkProps}
         >
           {inner}
         </div>
       );
     }
     return (
-      <button type="button" onClick={() => handler(entry)} className={rowClass}>
+      <button type="button" onClick={() => handler(entry)} className={rowClass} {...linkProps}>
         {inner}
       </button>
     );
   }
 
-  return <div className={rowClass}>{inner}</div>;
+  return (
+    <div className={rowClass} {...linkProps}>
+      {inner}
+    </div>
+  );
 }
 
 function Header({ title, count }: { title: string; count?: number }) {

@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-hy4wkf",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260718-534gcs",
+  "sourceDecisionId": "DEC-CORR-9403292e",
+  "description": "用户将 \"money_direction\" 从 \"expense\" 修正为 \"expense\"",
+  "input": {
+    "recordId": "9403292e-feb3-4cfb-b707-e2271ec067d0",
+    "userInput": null
+  },
+  "expected": {
+    "money_direction": "expense"
+  },
+  "actualProduction": {
+    "money_direction": "expense"
+  },
+  "generatedAt": "2026-07-18T12:14:16.704Z"
+}

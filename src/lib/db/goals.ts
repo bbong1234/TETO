@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import type { Goal, CreateGoalPayload, UpdateGoalPayload, GoalsQuery } from '@/types/teto';
 
 /**
@@ -202,16 +203,15 @@ export async function updateGoal(
  */
 export async function deleteGoal(userId: string, id: string): Promise<void> {
   const supabase = await createClient();
-
-  const { error } = await supabase
-    .from('goals')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
-
-  if (error) {
-    throw new Error(`删除目标失败: ${error.message}`);
-  }
+  await deleteOneOwnedRow(
+    supabase,
+    'goals',
+    [
+      { column: 'id', value: id },
+      { column: 'user_id', value: userId },
+    ],
+    '删除目标失败'
+  );
 }
 
 /**

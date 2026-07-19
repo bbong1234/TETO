@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import type {
   RecurringActivity,
   CreateRecurringActivityPayload,
@@ -24,7 +25,7 @@ export async function listRecurringActivities(userId: string): Promise<Recurring
     .order('created_at', { ascending: true });
 
   if (error) throw new Error(`列出常用事项失败: ${error.message}`);
-  return (data ?? []).map((row) => mapRow(row as Record<string, unknown>));
+  return (data ?? []).map((row: any) => mapRow(row as { [key: string]: unknown }));
 }
 
 export async function createRecurringActivity(
@@ -74,10 +75,13 @@ export async function updateRecurringActivity(
 
 export async function deleteRecurringActivity(userId: string, id: string): Promise<void> {
   const supabase = await createClient();
-  const { error } = await supabase
-    .from('recurring_activities')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
-  if (error) throw new Error(`删除常用事项失败: ${error.message}`);
+  await deleteOneOwnedRow(
+    supabase,
+    'recurring_activities',
+    [
+      { column: 'id', value: id },
+      { column: 'user_id', value: userId },
+    ],
+    '删除常用事项失败'
+  );
 }

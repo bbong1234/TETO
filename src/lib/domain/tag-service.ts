@@ -207,6 +207,33 @@ export async function deleteTagSafely(
 ): Promise<DomainResult<null>> {
   const { userId, id, supabase } = params
 
+  const { count, error: countError } = await supabase
+    .from('record_tags')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('tag_id', id)
+
+  if (countError) {
+    return buildDomainResult<null>([{
+      code: 'TAG_DELETE_FAILED',
+      severity: 'blocking',
+      message: `检查标签关联失败: ${countError.message}`,
+      entity: 'tag',
+      entityId: id,
+    }])
+  }
+
+  if ((count ?? 0) > 0) {
+    return buildDomainResult<null>([{
+      code: 'TAG_HAS_LINKED_RECORDS',
+      severity: 'blocking',
+      message: `该动作标签仍关联 ${count} 条记录，无法删除`,
+      entity: 'tag',
+      entityId: id,
+      details: { linked_record_count: count },
+    }])
+  }
+
   // 执行删除
   try {
     await deleteTag(userId, id)

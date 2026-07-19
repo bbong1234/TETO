@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-wx6a2n",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260712-hykg7u",
+  "sourceDecisionId": "DEC-CORR-fee9188f",
+  "description": "用户将 \"duration_minutes\" 从 \"60\" 修正为 \"60\"",
+  "input": {
+    "recordId": "fee9188f-2e18-42ec-8a7c-d8b9e2b6cedc",
+    "userInput": null
+  },
+  "expected": {
+    "duration_minutes": "60"
+  },
+  "actualProduction": {
+    "duration_minutes": "60"
+  },
+  "generatedAt": "2026-07-12T03:02:32.936Z"
+}

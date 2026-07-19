@@ -7,9 +7,7 @@ import { expandFeedWithBlockSegments } from '@/lib/activity/block-timeline-proje
 import {
   overlayCurrentActivityOnRecords,
   isActiveTimingRecord,
-  isOptimisticBlockSegmentId,
-  isOptimisticRecordId,
-  resolveClientRecordId,
+  resolveDeleteRecordId,
 } from '@/lib/activity/records-mutation';
 import {
   loadLockedBlockCategory,
@@ -19,7 +17,8 @@ import {
 import { resolveDayLabels } from '@/lib/activity/day-labels';
 import { useSubItemTitlesFromRecords } from '@/hooks/use-sub-item-titles-from-records';
 import DayTimelinePanel from '@/components/timeline/DayTimelinePanel';
-import { isRecordNotFoundApiError } from '@/lib/api/client-errors';
+import { getApiErrorMessage } from '@/lib/api/client-errors';
+import { notifyRecordsChanged } from '@/hooks/use-records-changed';
 import { useOptionalActivitySession } from '@/contexts/ActivitySessionContext';
 
 interface TodayActivityTimelineProps {
@@ -35,6 +34,10 @@ interface TodayActivityTimelineProps {
   onRecordDeleted?: (id: string) => void;
   onDeleteFailed?: (record: Record) => void;
   onError?: (message: string) => void;
+  showAddRecord?: boolean;
+  onAddRecord?: () => void;
+  focusedRecordId?: string | null;
+  onFocusRecord?: (recordId: string | null) => void;
 }
 
 export default function TodayActivityTimeline({
@@ -49,6 +52,10 @@ export default function TodayActivityTimeline({
   onRecordDeleted,
   onDeleteFailed,
   onError,
+  showAddRecord = false,
+  onAddRecord,
+  focusedRecordId = null,
+  onFocusRecord,
 }: TodayActivityTimelineProps) {
   const session = useOptionalActivitySession();
   const currentActivity = session?.activity ?? currentActivityProp;
@@ -161,9 +168,16 @@ export default function TodayActivityTimeline({
     const ids = [...selectedIds];
     setSelectedIds(new Set());
 
-    const resolveSnapshot = (id: string): Record | undefined =>
-      records.find((r) => r.id === id) ??
-      (currentActivity?.id === id ? currentActivity : undefined);
+    const resolveSnapshot = (id: string): Record | undefined => {
+      const direct = recordsForTimeline.find((r) => r.id === id);
+      if (direct) return direct;
+      if (currentActivity?.id === id) return currentActivity;
+      if (id.startsWith('block-seg-')) {
+        if (currentActivity && isActiveTimingRecord(currentActivity)) return currentActivity;
+        return recordsForTimeline.find((r) => isActiveTimingRecord(r));
+      }
+      return undefined;
+    };
 
     const activeId = currentActivityId;
     const deletesActiveTiming =
@@ -186,39 +200,71 @@ export default function TodayActivityTimeline({
         session?.clearBlockPersistence();
       }
 
-      for (const id of ids) {
-        onRecordDeleted(id);
-      }
-
-      const deleteTargets: { originalId: string; resolvedId: string; snapshot?: Record }[] = [];
+      const deletePlans: Array<{ uiIds: string[]; snapshot: Record; serverId: string | null }> = [];
       for (const id of ids) {
         const snapshot = resolveSnapshot(id);
-        const resolved = snapshot ? await resolveClientRecordId(snapshot) : id;
-        deleteTargets.push({ originalId: id, resolvedId: resolved, snapshot });
-        if (resolved !== id) onRecordDeleted(resolved);
+        if (!snapshot) continue;
+        const serverId = await resolveDeleteRecordId(snapshot, recordsForTimeline);
+        const uiIds = new Set<string>([id, snapshot.id]);
+        if (serverId) uiIds.add(serverId);
+        deletePlans.push({ uiIds: [...uiIds], snapshot, serverId });
       }
 
       const failed: Record[] = [];
-      for (const { originalId, resolvedId, snapshot } of deleteTargets) {
-        if (isOptimisticBlockSegmentId(resolvedId)) continue;
-        if (isOptimisticRecordId(resolvedId) && resolvedId === originalId) continue;
+      const serverIds = [
+        ...new Set(
+          deletePlans.map((plan) => plan.serverId).filter((id): id is string => Boolean(id))
+        ),
+      ];
+
+      for (const plan of deletePlans) {
+        if (!plan.serverId) failed.push(plan.snapshot);
+      }
+
+      if (serverIds.length > 0) {
         try {
-          const res = await fetch(`/api/v2/records/${resolvedId}`, { method: 'DELETE' });
-          if (res.ok) continue;
-          const errBody = await res.json().catch(() => ({}));
-          if (isRecordNotFoundApiError(errBody, res.status)) continue;
-          if (snapshot && !isOptimisticRecordId(snapshot.id) && !isOptimisticBlockSegmentId(snapshot.id)) {
-            failed.push(snapshot);
+          const res = await fetch('/api/v2/records/batch-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: serverIds }),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            onError?.(getApiErrorMessage(body, '批量删除失败'));
+            for (const plan of deletePlans) {
+              if (plan.serverId) failed.push(plan.snapshot);
+            }
+          } else {
+            const deletedCount = (body as { data?: { deleted?: number } }).data?.deleted ?? 0;
+            if (deletedCount === 0) {
+              onError?.('删除失败，记录仍在服务器上');
+              for (const plan of deletePlans) {
+                if (plan.serverId) failed.push(plan.snapshot);
+              }
+            } else if (deletedCount < serverIds.length) {
+              notifyRecordsChanged({ date });
+              onError?.(`仅删除了 ${deletedCount}/${serverIds.length} 条，请刷新确认`);
+            } else {
+              for (const plan of deletePlans) {
+                if (!plan.serverId) continue;
+                for (const uiId of plan.uiIds) onRecordDeleted(uiId);
+              }
+              notifyRecordsChanged({ date });
+            }
           }
         } catch {
-          if (snapshot && !isOptimisticRecordId(snapshot.id) && !isOptimisticBlockSegmentId(snapshot.id)) {
-            failed.push(snapshot);
+          onError?.('批量删除失败，请重试');
+          for (const plan of deletePlans) {
+            if (plan.serverId) failed.push(plan.snapshot);
           }
         }
       }
+
       if (failed.length > 0) {
         for (const record of failed) onDeleteFailed?.(record);
-        onError?.(`有 ${failed.length} 条记录删除失败，已恢复`);
+        if (failed.length === deletePlans.length) {
+          onError?.(`有 ${failed.length} 条记录删除失败`);
+        }
       }
     } finally {
       setDeleting(false);
@@ -229,7 +275,7 @@ export default function TodayActivityTimeline({
     onRecordDeleted,
     onDeleteFailed,
     onError,
-    records,
+    recordsForTimeline,
     currentActivity,
     currentActivityId,
     session,
@@ -246,6 +292,10 @@ export default function TodayActivityTimeline({
         onEntryClick={handleEntryClick}
         onGapClick={handleGapClick}
         onPlanComplete={handlePlanComplete}
+        showAddRecord={showAddRecord}
+        onAddRecord={onAddRecord}
+        focusedRecordId={focusedRecordId}
+        onFocusRecord={onFocusRecord}
         multiSelect={
           onRecordDeleted
             ? {

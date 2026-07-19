@@ -12,6 +12,7 @@ const pageTitles: Record<string, string> = {
   '/review': '复盘',
   '/insights': '洞察',
   '/goals': '目标',
+  '/wallet': '钱包',
   '/debug': '诊断',
 };
 

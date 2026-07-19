@@ -8,6 +8,12 @@ import { COMPUTATION } from '@/lib/computation';
 import { genBehaviorId } from '@/lib/observability/id-registry';
 import { fmtLocalDate, formatTimeHHMM, computePeriodLabel, computeRangeLabel } from '@/lib/computation/runtime/helpers';
 import { expandInsightMetrics } from '@/lib/computation/runtime/metrics';
+import {
+  aggregateFinanceRecords,
+  filterFinanceRecordsByDateRange,
+  toExpenseSummary,
+  type FinanceRecordRow,
+} from '@/lib/stats/finance-summary';
 import type {
   InsightsData,
   InsightsQuery,
@@ -418,7 +424,7 @@ async function computeGoalProgress(
   if (!activeGoals || activeGoals.length === 0) return [];
 
   const results = await Promise.all(
-    activeGoals.map(async (goal) => {
+    activeGoals.map(async (goal: any) => {
       try {
         const engineResult = await computeGoalEngine(userId, (goal as { id: string }).id);
         if (!engineResult) return null;
@@ -763,8 +769,10 @@ async function computeMoodEnergyTrend(
     return { days: [], average_mood: null };
   }
 
-  const dayIdToDate = new Map(days.map((d: { id: string; date: string }) => [d.id, d.date]));
-  const dayIds = days.map((d: { id: string }) => d.id);
+  const dayIdToDate = new Map<string, string>(
+    (days as { id: string; date: string }[]).map((d) => [d.id, d.date])
+  );
+  const dayIds = (days as { id: string }[]).map((d) => d.id);
 
   const { data: records } = await supabase
     .from('records')
@@ -775,14 +783,14 @@ async function computeMoodEnergyTrend(
 
   const moodByDate = new Map<string, number[]>();
   for (const r of records ?? []) {
-    const date = dayIdToDate.get((r as { record_day_id: string }).record_day_id);
+    const dateKey = dayIdToDate.get((r as { record_day_id: string }).record_day_id);
     const moodStr = (r as { mood: string | null }).mood;
-    if (!date || !moodStr) continue;
+    if (!dateKey || !moodStr) continue;
     const n = Number.parseInt(moodStr, 10);
     if (Number.isNaN(n) || n < 1 || n > 5) continue;
-    const arr = moodByDate.get(date) ?? [];
+    const arr = moodByDate.get(dateKey) ?? [];
     arr.push(n);
-    moodByDate.set(date, arr);
+    moodByDate.set(dateKey, arr);
   }
 
   const sortedDates = [...moodByDate.keys()].sort();
@@ -829,77 +837,37 @@ async function computeExpenseSummary(
 
   const { data: records } = await supabase
     .from('records')
-    .select('content, cost, money_direction, item_id, tool_label, items(title)')
+    .select('content, cost, money_direction, item_id, tool_label, finance_account_id, record_days(date), items(title), finance_account:finance_accounts!records_finance_account_id_fkey(name)')
     .eq('user_id', userId)
     .in('record_day_id', dayIds)
     .not('cost', 'is', null)
     .gt('cost', 0);
 
-  let totalExpense = 0;
-  let totalIncome = 0;
-  const byLabel = new Map<string, number>();
-  const byItem = new Map<string, { item_id: string | null; label: string; amount: number }>();
-  const byPayment = new Map<string, number>();
-
-  for (const r of records ?? []) {
+  const financeRows: FinanceRecordRow[] = (records ?? []).map((r: any) => {
     const row = r as {
       cost: number;
       money_direction: string | null;
       content: string;
       item_id: string | null;
       tool_label: string | null;
+      finance_account_id: string | null;
       items?: { title?: string } | null;
+      record_days?: { date?: string } | null;
+      finance_account?: { name?: string } | null;
     };
-    const cost = Number(row.cost) || 0;
-    const direction = row.money_direction;
-    const label = (row.content || '其他').trim() || '其他';
-
-    if (direction === 'income') {
-      totalIncome += cost;
-      continue;
-    }
-    totalExpense += cost;
-    byLabel.set(label, (byLabel.get(label) ?? 0) + cost);
-
-    const itemKey = row.item_id ?? '__none__';
-    const itemLabel =
-      row.items?.title?.trim() || (row.item_id ? '未命名事项' : '未关联事项');
-    const itemEntry = byItem.get(itemKey) ?? {
+    return {
+      date: row.record_days?.date ?? dateFrom,
+      cost: Number(row.cost) || 0,
+      money_direction: row.money_direction as FinanceRecordRow['money_direction'],
+      tool_label: row.tool_label,
+      finance_account_id: row.finance_account_id,
+      account_name: row.finance_account?.name ?? null,
+      content: row.content,
       item_id: row.item_id,
-      label: itemLabel,
-      amount: 0,
+      item_title: row.items?.title ?? null,
     };
-    itemEntry.amount += cost;
-    byItem.set(itemKey, itemEntry);
+  });
 
-    const paymentLabel = row.tool_label?.trim();
-    if (paymentLabel) {
-      byPayment.set(paymentLabel, (byPayment.get(paymentLabel) ?? 0) + cost);
-    }
-  }
-
-  const round = (n: number) => Math.round(n * 100) / 100;
-
-  const by_category = [...byLabel.entries()]
-    .map(([label, amount]) => ({ label, amount: round(amount) }))
-    .sort((a, b) => b.amount - a.amount)
-    .slice(0, 8);
-
-  const by_item = [...byItem.values()]
-    .map((row) => ({ ...row, amount: round(row.amount) }))
-    .sort((a, b) => b.amount - a.amount)
-    .slice(0, 8);
-
-  const by_payment_source = [...byPayment.entries()]
-    .map(([label, amount]) => ({ label, amount: round(amount) }))
-    .sort((a, b) => b.amount - a.amount)
-    .slice(0, 6);
-
-  return {
-    total_expense: round(totalExpense),
-    total_income: round(totalIncome),
-    by_category,
-    by_item,
-    by_payment_source,
-  };
+  const filtered = filterFinanceRecordsByDateRange(financeRows, dateFrom, dateTo);
+  return toExpenseSummary(aggregateFinanceRecords(filtered));
 }

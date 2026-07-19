@@ -696,21 +696,27 @@ export async function batchDeleteRecordsSafely(params: {
 
   if (validIds.length > 0) {
     try {
-      await supabase
-        .from('record_links')
-        .delete()
-        .or(`source_id.in.(${validIds.join(',')}),target_id.in.(${validIds.join(',')})`)
-
-      await supabase
-        .from('record_tags')
-        .delete()
-        .in('record_id', validIds)
-
-      await supabase
+      const { data: deletedRows, error } = await supabase
         .from('records')
         .delete()
         .in('id', validIds)
         .eq('user_id', userId)
+        .select('id')
+
+      if (error) {
+        throw new Error(error.message)
+      }
+
+      const deletedCount = Array.isArray(deletedRows)
+        ? deletedRows.length
+        : deletedRows
+          ? 1
+          : 0
+      if (deletedCount !== validIds.length) {
+        throw new Error(
+          `批量删除失败: 期望删除 ${validIds.length} 条，实际删除 ${deletedCount} 条`
+        )
+      }
     } catch (error) {
       return {
         ok: false, total: ids.length, success: 0, failed: ids.length, results,

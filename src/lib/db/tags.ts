@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import type { Tag, CreateTagPayload, UpdateTagPayload } from '@/types/teto';
 
 /**
@@ -9,6 +10,17 @@ export async function createTag(
   payload: CreateTagPayload
 ): Promise<Tag> {
   const supabase = await createClient();
+  if (payload.scope_item_id) {
+    const { data: scopeItem, error: scopeError } = await supabase
+      .from('items')
+      .select('id, parent_item_id')
+      .eq('id', payload.scope_item_id)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (scopeError || !scopeItem || scopeItem.parent_item_id) {
+      throw new Error('动作标签只能归属到当前用户的一类事项');
+    }
+  }
 
   const { data, error } = await supabase
     .from('tags')
@@ -17,6 +29,7 @@ export async function createTag(
       name: payload.name,
       color: payload.color ?? null,
       type: payload.type ?? null,
+      scope_item_id: payload.type === 'function' ? payload.scope_item_id ?? null : null,
     })
     .select()
     .single();
@@ -42,6 +55,19 @@ export async function updateTag(
   if (payload.name !== undefined) updateData.name = payload.name;
   if (payload.color !== undefined) updateData.color = payload.color;
   if (payload.type !== undefined) updateData.type = payload.type;
+  if (payload.type !== undefined && payload.type !== 'function') updateData.scope_item_id = null;
+  else if (payload.scope_item_id !== undefined) updateData.scope_item_id = payload.scope_item_id;
+  if (payload.scope_item_id) {
+    const { data: scopeItem, error: scopeError } = await supabase
+      .from('items')
+      .select('id, parent_item_id')
+      .eq('id', payload.scope_item_id)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (scopeError || !scopeItem || scopeItem.parent_item_id) {
+      throw new Error('动作标签只能归属到当前用户的一类事项');
+    }
+  }
 
   const { data, error } = await supabase
     .from('tags')
@@ -63,16 +89,15 @@ export async function updateTag(
  */
 export async function deleteTag(userId: string, id: string): Promise<void> {
   const supabase = await createClient();
-
-  const { error } = await supabase
-    .from('tags')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
-
-  if (error) {
-    throw new Error(`删除标签失败: ${error.message}`);
-  }
+  await deleteOneOwnedRow(
+    supabase,
+    'tags',
+    [
+      { column: 'id', value: id },
+      { column: 'user_id', value: userId },
+    ],
+    '删除标签失败'
+  );
 }
 
 /**
@@ -128,7 +153,25 @@ export async function listFunctionTagsForItem(
   itemId: string
 ): Promise<ItemFunctionTagsResult> {
   const supabase = await createClient();
-  const all = await listTags(userId, undefined, 'function');
+  const allTags = await listTags(userId, undefined, 'function');
+  const { data: itemTree, error: itemTreeError } = await supabase
+    .from('items')
+    .select('id, parent_item_id')
+    .eq('user_id', userId);
+  if (itemTreeError) throw new Error(`查询事项层级失败: ${itemTreeError.message}`);
+
+  const parentById = new Map<string, string | null>(
+    (itemTree ?? []).map((row: { id: string; parent_item_id: string | null }) => [row.id, row.parent_item_id])
+  );
+  let scopeItemId = itemId;
+  let parentId: string | null | undefined = parentById.get(scopeItemId);
+  while (parentId) {
+    scopeItemId = parentId;
+    parentId = parentById.get(scopeItemId);
+  }
+  const all = allTags.filter(
+    (tag) => !tag.scope_item_id || tag.scope_item_id === scopeItemId
+  );
 
   const scopedItemIds = new Set<string>([itemId]);
   const { data: children } = await supabase
@@ -186,6 +229,7 @@ export async function listFunctionTagsForItem(
     const raw = row as { tag_id: string; record_id: string; tags: Tag | Tag[] | null };
     const tag = Array.isArray(raw.tags) ? raw.tags[0] : raw.tags;
     if (!tag || tag.type !== 'function') continue;
+    if (tag.scope_item_id && tag.scope_item_id !== scopeItemId) continue;
     const recMeta = recordMetaById.get(raw.record_id);
     const mins = recMeta?.duration_minutes ?? 0;
     const at = recMeta?.occurred_at ?? null;

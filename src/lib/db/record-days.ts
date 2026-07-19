@@ -62,10 +62,13 @@ export async function updateRecordDaySummary(
     .eq('id', id)
     .eq('user_id', userId)
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) {
     throw new Error(`更新记录日失败: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error('更新记录日失败: 未找到匹配记录');
   }
 
   return data;

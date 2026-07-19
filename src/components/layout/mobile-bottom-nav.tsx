@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { BookOpen, ListChecks, BarChart3, Moon, MoreHorizontal, Target } from 'lucide-react';
+import { BookOpen, ListChecks, BarChart3, Moon, MoreHorizontal } from 'lucide-react';
 import { useEffect, useState, useTransition, type MouseEvent } from 'react';
 import Link from 'next/link';
 import {
@@ -17,10 +17,13 @@ const primaryNavItems: { label: string; href: MobileTabRoot; icon: typeof BookOp
   { label: '事项', href: '/items', icon: ListChecks },
   { label: '复盘', href: '/review', icon: Moon },
   { label: '洞察', href: '/insights', icon: BarChart3 },
-  { label: '目标', href: '/goals', icon: Target },
 ];
 
-const moreNavItems = [{ label: '诊断', href: '/debug' }];
+const moreNavItems = [
+  { label: '目标', href: '/goals' },
+  { label: '钱包', href: '/wallet' },
+  { label: '诊断', href: '/debug' },
+];
 
 function isActivePath(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);

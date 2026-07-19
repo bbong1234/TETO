@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth/server/get-current-user-id';
 import { updateRecordDaySummary } from '@/lib/db/record-days';
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import { handleApiError } from '@/lib/api/error-handler';
 import { withTrace, apiSuccess, apiError } from '@/lib/api/handler-wrapper';
 import { ERROR_CODES } from '@/lib/observability/id-registry';
@@ -68,15 +69,15 @@ export async function DELETE(
     const { id } = await params;
 
     const supabase = await createClient();
-    const { error } = await supabase
-      .from('record_days')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', userId);
-
-    if (error) {
-      throw new Error(`删除记录日失败: ${error.message}`);
-    }
+    await deleteOneOwnedRow(
+      supabase,
+      'record_days',
+      [
+        { column: 'id', value: id },
+        { column: 'user_id', value: userId },
+      ],
+      '删除记录日失败'
+    );
 
     return apiSuccess({ id }, ctx.traceId);
   } catch (error) {

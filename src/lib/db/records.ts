@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import type {
   Record,
   CreateRecordPayload,
@@ -130,6 +131,8 @@ export async function updateRecord(
   if (recordData.category !== undefined) updateData.category = recordData.category;
   if (recordData.subcategory !== undefined) updateData.subcategory = recordData.subcategory;
   if (recordData.tool_label !== undefined) updateData.tool_label = recordData.tool_label;
+  if (recordData.finance_account_id !== undefined) updateData.finance_account_id = recordData.finance_account_id;
+  if (recordData.transfer_to_account_id !== undefined) updateData.transfer_to_account_id = recordData.transfer_to_account_id;
   if (recordData.item_id !== undefined) updateData.item_id = recordData.item_id;
   if (recordData.goal_id !== undefined) updateData.goal_id = recordData.goal_id;
   if (recordData.phase_id !== undefined) updateData.phase_id = recordData.phase_id;
@@ -219,16 +222,15 @@ export async function updateRecord(
  */
 export async function deleteRecord(userId: string, id: string): Promise<void> {
   const supabase = await createClient();
-
-  const { error } = await supabase
-    .from('records')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
-
-  if (error) {
-    throw new Error(`删除记录失败: ${error.message}`);
-  }
+  await deleteOneOwnedRow(
+    supabase,
+    'records',
+    [
+      { column: 'id', value: id },
+      { column: 'user_id', value: userId },
+    ],
+    '删除记录失败'
+  );
 }
 
 /**
@@ -398,7 +400,7 @@ export async function listRecords(
 
   if (query.search) {
     const escaped = query.search.replace(/[%_\\]/g, '\\$&');
-    q = q.ilike('content', `%${escaped}%`);
+    q = q.or(`content.ilike.%${escaped}%,raw_input.ilike.%${escaped}%`);
   }
 
   if (query.unassigned) {

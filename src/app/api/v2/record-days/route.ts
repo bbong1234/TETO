@@ -48,7 +48,7 @@ export async function POST(request: NextRequest) {
 
     let recordDay = await getOrCreateRecordDay(userId, body.date);
 
-    if (body.summary) {
+    if ('summary' in body && typeof body.summary === 'string') {
       recordDay = await updateRecordDaySummary(userId, recordDay.id, body.summary);
     }
 

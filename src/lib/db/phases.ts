@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import { tryRpc } from '@/lib/domain/transaction-service';
 import { createComponentLogger } from '@/lib/observability/logger';
 import type { Phase, CreatePhasePayload, UpdatePhasePayload, PhasesQuery } from '@/types/teto';
@@ -217,13 +218,13 @@ export async function deletePhase(userId: string, id: string): Promise<void> {
   }
 
   // 3. 物理删除阶段
-  const { error } = await supabase
-    .from('phases')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
-
-  if (error) {
-    throw new Error(`删除阶段失败: ${error.message}`);
-  }
+  await deleteOneOwnedRow(
+    supabase,
+    'phases',
+    [
+      { column: 'id', value: id },
+      { column: 'user_id', value: userId },
+    ],
+    '删除阶段失败'
+  );
 }

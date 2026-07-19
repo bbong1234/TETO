@@ -105,7 +105,7 @@ export async function GET(request: NextRequest) {
       });
     };
 
-    const filteredRecords = records.filter(r => {
+    const filteredRecords = records.filter((r: { record_day_id: string }) => {
       const date = dayMap.get(r.record_day_id);
       return date && !isInExistingPhase(date);
     });

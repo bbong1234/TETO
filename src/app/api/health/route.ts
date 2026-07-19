@@ -103,7 +103,7 @@ function checkMigrations(): MigrationCheck {
     const content = readFileSync(historyPath, 'utf-8');
     const lines = content.split('\n').filter((l) => l.includes('|'));
 
-    // 找到最后一条待执行 migration
+    // 找到「待执行」migration 段（本地 bootstrap 完成后该段应为空）
     const pendingSection = content.indexOf('## TETO 1.6（待执行）');
     const pendingLines =
       pendingSection >= 0

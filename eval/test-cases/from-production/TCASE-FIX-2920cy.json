@@ -1,0 +1,19 @@
+{
+  "testCaseId": "TCASE-FIX-2920cy",
+  "source": "user_correction",
+  "status": "auto_verified",
+  "sourceTraceId": "T-20260718-dgkfk9",
+  "sourceDecisionId": "DEC-CORR-cf224ede",
+  "description": "用户将 \"cost\" 从 \"30.00\" 修正为 \"30\"",
+  "input": {
+    "recordId": "cf224ede-1608-479d-95a1-9c5f4ea1341c",
+    "userInput": null
+  },
+  "expected": {
+    "cost": "30"
+  },
+  "actualProduction": {
+    "cost": "30.00"
+  },
+  "generatedAt": "2026-07-18T09:51:37.436Z"
+}

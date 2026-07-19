@@ -42,6 +42,8 @@ const emptyForm = (): RecordEditFormState => ({
   resultText: '',
   toolLabel: '',
   financeAccount: '',
+  financeAccountId: '',
+  transferToAccountId: '',
   rawInput: '',
   goalId: '',
 });

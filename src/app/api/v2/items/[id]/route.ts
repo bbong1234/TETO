@@ -256,7 +256,7 @@ async function fetchRecentDailyStats(
 
   if (dayError || !dayRows?.length) return [];
 
-  const dayIds = dayRows.map((d) => d.id as string);
+  const dayIds = dayRows.map((d: { id: string }) => d.id as string);
   const selectFields = includeSubItemBreakdown
     ? 'record_day_id, cost, duration_minutes, metric_value, metric_unit, metric_name, sub_item_id'
     : 'record_day_id, cost, duration_minutes, metric_value, metric_unit, metric_name';

@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import { tryRpc } from '@/lib/domain/transaction-service';
 import { createComponentLogger } from '@/lib/observability/logger';
 import type { SubItem, CreateSubItemPayload, UpdateSubItemPayload } from '@/types/teto';
@@ -203,15 +204,15 @@ export async function deleteSubItem(
   }
 
   // 3. 物理删除子项
-  const { error } = await supabase
-    .from('sub_items')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
-
-  if (error) {
-    throw new Error(`删除子项失败: ${error.message}`);
-  }
+  await deleteOneOwnedRow(
+    supabase,
+    'sub_items',
+    [
+      { column: 'id', value: id },
+      { column: 'user_id', value: userId },
+    ],
+    '删除子项失败'
+  );
 }
 
 /**

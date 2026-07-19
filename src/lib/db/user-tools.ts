@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
+import { deleteOneOwnedRow } from '@/lib/postgres/write-helpers';
 import type { UserTool, CreateUserToolPayload, UpdateUserToolPayload } from '@/types/teto';
 
 export async function listUserTools(userId: string): Promise<UserTool[]> {
@@ -78,10 +79,15 @@ export async function updateUserTool(
 
 export async function deleteUserTool(userId: string, id: string): Promise<void> {
   const supabase = await createClient();
-  const { error } = await supabase.from('user_tools').delete().eq('id', id).eq('user_id', userId);
-  if (error) {
-    throw new Error(`删除工具选项失败: ${error.message}`);
-  }
+  await deleteOneOwnedRow(
+    supabase,
+    'user_tools',
+    [
+      { column: 'id', value: id },
+      { column: 'user_id', value: userId },
+    ],
+    '删除工具选项失败'
+  );
 }
 
 /** 选中工具时若不在列表中则自动补建（兼容历史 tool_label 文本） */
