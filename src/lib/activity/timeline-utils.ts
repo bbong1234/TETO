@@ -1,6 +1,7 @@
 import type { Record, DayTimeline, TimelineEntry, Item, RecordType } from '@/types/teto';
 import { GAP_THRESHOLD_MINUTES } from '@/lib/activity/constants';
 import { buildTimelineEntryParts } from './item-tree';
+import { segmentLabelForRecord, normalizeTimeSegment } from '@/lib/activity/time-segment';
 import { calcNetDurationMinutes, calcNetElapsedSeconds, isSessionPaused } from './session-utils';
 
 /** 记录是否归属某日（与记录页分组、feed 构建共用） */
@@ -63,15 +64,13 @@ function buildEntryFields(
   items?: Item[],
   isCurrent = false,
   subItemTitles?: ReadonlyMap<string, string>
-): Pick<TimelineEntry, 'text' | 'tag_path' | 'tag_path_parts' | 'action_label' | 'detail_text'> {
+): Pick<TimelineEntry, 'text' | 'tag_path' | 'tag_path_parts' | 'detail_text'> {
   const parts = buildTimelineEntryParts(record, items, { isCurrent, subItemTitles });
-  const detail = [parts.timeText, parts.detail].filter(Boolean).join(' ');
   return {
     text: parts.text,
     tag_path: parts.tagPath || undefined,
     tag_path_parts: parts.tagPathParts.length > 0 ? parts.tagPathParts : undefined,
-    action_label: parts.action || undefined,
-    detail_text: detail || undefined,
+    detail_text: parts.detail || undefined,
   };
 }
 
@@ -169,10 +168,35 @@ function occurredOnDate(record: Record, date: string): boolean {
   return local === date;
 }
 
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+function isFuzzyActivityRecord(record: Record): boolean {
+  if (record.time_precision === 'fuzzy') return true;
+  if (record.time_precision != null) return false;
+  return normalizeTimeSegment(record.time_text)?.precision === 'fuzzy';
+}
+
 function sortKeyForEntry(entry: TimelineEntry): string {
   if (entry.is_pinned) return 'z-pinned';
   if (entry.is_gap && entry.start_time) return entry.start_time;
   if (entry.start_time) return entry.start_time;
+  if (entry.time_label && entry.record_type === '发生') {
+    const segment = normalizeTimeSegment(entry.time_label);
+    const base = segment
+      ? `${pad2(segment.sortHour)}:${pad2(segment.sortMinute)}`
+      : 'z-fuzzy';
+    if (entry.occurred_at) {
+      const hhmm = formatTimeHHMM(entry.occurred_at);
+      if (hhmm) return `${base}-${hhmm}`;
+    }
+    return base;
+  }
+  if (entry.occurred_at) {
+    const hhmm = formatTimeHHMM(entry.occurred_at);
+    if (hhmm) return hhmm;
+  }
   return 'z-untimed';
 }
 
@@ -241,15 +265,19 @@ function buildActivityEntries(
       duration = Math.max(0, Math.round(durationSeconds / 60));
     }
 
+    const isFuzzy = isFuzzyActivityRecord(record);
+    const segmentLabel = segmentLabelForRecord(record);
+
     entries.push({
       id: record.id,
       kind: 'activity',
       record_type: '发生',
-      start_time: formatTimeHHMM(startIso),
+      start_time: isFuzzy ? undefined : formatTimeHHMM(startIso),
       end_time: isCurrent ? undefined : formatTimeHHMM(endIso),
+      time_label: segmentLabel,
       ...buildEntryFields(record, items, isCurrent, subItemTitles),
       is_current: isCurrent,
-      occurred_at: isCurrent ? startIso : undefined,
+      occurred_at: isFuzzy || isCurrent ? startIso : undefined,
       duration_minutes: duration,
       duration_seconds: durationSeconds,
       item_title: record.item?.title,
@@ -279,6 +307,8 @@ function buildTimedFeedEntry(
   const kind = feedKindForType(record.type);
   const start = formatTimeHHMM(record.occurred_at);
   const end = formatTimeHHMM(record.occurred_at_end);
+  const segmentLabel =
+    record.type === '发生' ? segmentLabelForRecord(record) : record.time_text ?? undefined;
   return {
     id: record.id,
     kind,
@@ -287,7 +317,7 @@ function buildTimedFeedEntry(
     end_time: end,
     ...buildEntryFields(record, items, false, subItemTitles),
     item_title: record.item?.title,
-    time_label: record.time_text ?? undefined,
+    time_label: segmentLabel,
     is_unassigned: !record.item_id,
   };
 }
@@ -406,7 +436,7 @@ export function buildDayTimelineFromRecords(
   };
 }
 
-export { GAP_THRESHOLD_MINUTES };
+export { GAP_THRESHOLD_MINUTES, sortKeyForEntry };
 
 /** 今日时间线多选：可批量删除的真实记录条目（非空白、非投影段；进行中记录也可选） */
 export function getTimelineEntrySelectRejectReason(entry: TimelineEntry): string | null {

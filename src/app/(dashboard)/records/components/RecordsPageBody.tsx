@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, type RefObject } from 'react';
+import { useCallback, useRef, useState, type RefObject } from 'react';
 import type { Item, Record as TetoRecord, Tag, UserTool } from '@/types/teto';
 import type { UserRule } from '@/lib/db/user-rules';
 import type { PlanPriority } from '@/lib/activity/plan-priority';
@@ -8,6 +8,7 @@ import type {
   ActivitySwitchPayload,
   SessionActionPayload,
 } from '@/lib/activity/records-mutation';
+import { matchLinksInBody } from '@/lib/activity/diary-link-matcher';
 import { useDelayedVisible } from '@/hooks/use-delayed-visible';
 import { useMinLg } from '@/hooks/use-min-lg';
 import { usePersistedRatio } from '@/hooks/use-persisted-ratio';
@@ -15,7 +16,8 @@ import ResizableSplit from '@/components/ui/ResizableSplit';
 import TodayActivityTimeline from './TodayActivityTimeline';
 import CurrentActivityCard from './CurrentActivityCard';
 import DiaryActivityCreatePanel from './DiaryActivityCreatePanel';
-import RecordsDiaryFooter from './RecordsDiaryFooter';
+import RecordsDiaryFooter, { type RecordsDiaryFooterHandle } from './RecordsDiaryFooter';
+import DiaryToTimelinePanel from './DiaryToTimelinePanel';
 import DiaryTimelineConnector from './DiaryTimelineConnector';
 import { RecordsDayContentSkeleton } from '@/components/ui/PageSkeletons';
 
@@ -74,7 +76,7 @@ function TimelineSection({
   children: React.ReactNode;
 }) {
   return (
-    <div ref={timelineScrollRef} className="flex min-h-0 flex-1 flex-col overflow-hidden py-4">
+    <div ref={timelineScrollRef} className="flex min-h-0 flex-1 flex-col overflow-hidden py-2">
       {recordsLoading && recordsCount === 0 ? <RecordsDayContentSkeleton /> : children}
     </div>
   );
@@ -123,7 +125,13 @@ export default function RecordsPageBody({
   onTimingPanelsExpandedChange,
 }: RecordsPageBodyProps) {
   const layoutRootRef = useRef<HTMLDivElement>(null);
+  const diaryFooterRef = useRef<RecordsDiaryFooterHandle>(null);
   const [focusedRecordId, setFocusedRecordId] = useState<string | null>(null);
+  const [diaryImportOpen, setDiaryImportOpen] = useState(false);
+  const [diaryImportContext, setDiaryImportContext] = useState<{
+    plain: string;
+    linkedRecordIds: string[];
+  } | null>(null);
   const isLg = useMinLg();
   const [mainColRatio, setMainColRatio] = usePersistedRatio('records-layout-main-col', 0.58);
   const [leftRowRatio, setLeftRowRatio] = usePersistedRatio('records-layout-left-row', 0.58);
@@ -134,6 +142,34 @@ export default function RecordsPageBody({
   const showTimelineAddRecord = diaryMode;
   const createPanelOpen = diaryMode && diaryCreateOpen;
   const createPanelMounted = useDelayedVisible(createPanelOpen);
+
+  const handleOpenImportFromDiary = useCallback(() => {
+    const doc = diaryFooterRef.current?.getDocument();
+    if (!doc?.body.trim()) {
+      onError('日记为空，无法分析');
+      return;
+    }
+    setDiaryImportContext({
+      plain: doc.body,
+      linkedRecordIds: doc.links.map((link) => link.recordId),
+    });
+    setDiaryImportOpen(true);
+  }, [onError]);
+
+  const handleRecordsCreatedFromDiary = useCallback(
+    (created: TetoRecord[]) => {
+      for (const record of created) {
+        onRecordAdded(record);
+      }
+
+      const doc = diaryFooterRef.current?.getDocument();
+      if (!doc) return;
+
+      const links = matchLinksInBody(doc.body, created, doc.links);
+      diaryFooterRef.current?.applyDocument({ ...doc, links });
+    },
+    [onRecordAdded]
+  );
 
   const timeline = (
     <TodayActivityTimeline
@@ -147,6 +183,25 @@ export default function RecordsPageBody({
       onError={onError}
       showAddRecord={showTimelineAddRecord}
       onAddRecord={onDiaryAddRecord}
+      showImportFromDiary={diaryMode}
+      onImportFromDiary={handleOpenImportFromDiary}
+      importPanel={
+        diaryMode && diaryImportContext ? (
+          <DiaryToTimelinePanel
+            open={diaryImportOpen}
+            onClose={() => setDiaryImportOpen(false)}
+            date={singleDayDate}
+            diaryPlainText={diaryImportContext.plain}
+            linkedRecordIds={diaryImportContext.linkedRecordIds}
+            dayRecords={singleDayRecords}
+            items={items}
+            tags={tags}
+            userRules={userRules}
+            onError={onError}
+            onRecordsCreated={handleRecordsCreatedFromDiary}
+          />
+        ) : null
+      }
       focusedRecordId={focusedRecordId}
       onFocusRecord={setFocusedRecordId}
     />
@@ -250,6 +305,7 @@ export default function RecordsPageBody({
     diaryPanelMounted && diaryMode ? (
       <div className="records-panel-surface flex h-full min-h-0 flex-col overflow-hidden">
         <RecordsDiaryFooter
+          ref={diaryFooterRef}
           date={singleDayDate}
           dayRecords={singleDayRecords}
           onError={onError}
@@ -288,7 +344,7 @@ export default function RecordsPageBody({
           secondClassName="flex min-h-0 min-w-0 flex-col"
         />
       ) : (
-        <div className="flex min-h-0 min-h-[40vh] flex-1 flex-col lg:min-h-0">{leftColumn}</div>
+        <div className="flex min-h-0 flex-1 flex-col lg:min-h-0">{leftColumn}</div>
       )}
     </div>
   );

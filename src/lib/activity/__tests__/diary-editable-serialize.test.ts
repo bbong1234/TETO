@@ -60,6 +60,38 @@ describe('diary-editable-serialize', () => {
     expect(afterLink.linkTexts.get('l1')).toBe('法国企业');
   });
 
+  it('parseEditableRoot preserves line breaks from block elements', () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<div>第一行</div><div>第二行</div>';
+
+    const parsed = parseEditableRoot(root, []);
+    expect(parsed.body).toBe('第一行\n第二行');
+  });
+
+  it('parseEditableRoot preserves soft breaks and blank lines', () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<div>第一行<br></div><div><br></div><div>第三行</div>';
+
+    const parsed = parseEditableRoot(root, []);
+    expect(parsed.body).toBe('第一行\n\n第三行');
+  });
+
+  it('populateEditableRoot round-trips multiline plain text', () => {
+    const body = '第一行\n第二行\n\n第四行';
+    const root = document.createElement('div');
+    populateEditableRoot(root, body, []);
+
+    expect(root.querySelectorAll('br')).toHaveLength(3);
+    expect(parseEditableRoot(root, []).body).toBe(body);
+  });
+
+  it('parseEditableRoot preserves inserted time markers in plain text', () => {
+    const root = document.createElement('div');
+    root.appendChild(document.createTextNode('[09:30] 早上去了西湖'));
+
+    expect(parseEditableRoot(root, []).body).toBe('[09:30] 早上去了西湖');
+  });
+
   it('recomputes offsets after link span edit', () => {
     const links = [makeLink('l1', 'rec-1', 0, 4)];
     const root = document.createElement('div');

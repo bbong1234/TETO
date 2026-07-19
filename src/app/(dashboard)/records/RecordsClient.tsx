@@ -853,7 +853,7 @@ export default function RecordsClient() {
           isOnToday && (isTimingActive || session.isInBlock || blockCategoryLocked);
         const isTimingFullscreen = inBlockSession && timingPanelsExpanded;
         const timelineRecords = session.selectTimelineRecords(recordsWithPending);
-        const contentMaxWidth = diaryMode ? 'max-w-6xl' : 'max-w-2xl';
+        const contentMaxWidth = 'max-w-6xl';
 
         return (
     <div className="h-full flex flex-col bg-slate-100">

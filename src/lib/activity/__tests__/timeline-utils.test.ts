@@ -360,6 +360,45 @@ describe('buildDayFeedFromRecords', () => {
   });
 });
 
+describe('sortKeyForEntry', () => {
+  it('sorts fuzzy morning before exact evening using segment anchor', async () => {
+    const { sortKeyForEntry } = await import('../timeline-utils');
+    const morningKey = sortKeyForEntry({
+      id: 'fuzzy-morning',
+      text: '去了公司',
+      record_type: '发生',
+      time_label: '早上',
+      occurred_at: '2026-07-19T20:31:00+08:00',
+    });
+    const eveningKey = sortKeyForEntry({
+      id: 'exact-evening',
+      text: '接妹妹',
+      record_type: '发生',
+      start_time: '20:30',
+    });
+    expect(morningKey.localeCompare(eveningKey)).toBeLessThan(0);
+  });
+
+  it('keeps fuzzy relative order via occurred_at tie-break', async () => {
+    const { sortKeyForEntry } = await import('../timeline-utils');
+    const first = sortKeyForEntry({
+      id: 'fuzzy-1',
+      text: '刷抖音',
+      record_type: '发生',
+      time_label: '晚上',
+      occurred_at: '2026-07-19T20:31:00+08:00',
+    });
+    const second = sortKeyForEntry({
+      id: 'fuzzy-2',
+      text: '洗澡',
+      record_type: '发生',
+      time_label: '晚上',
+      occurred_at: '2026-07-19T20:35:00+08:00',
+    });
+    expect(first.localeCompare(second)).toBeLessThan(0);
+  });
+});
+
 describe('isTimelineEntrySelectable', () => {
   it('allows completed activity records with time range', async () => {
     const { isTimelineEntrySelectable } = await import('../timeline-utils');

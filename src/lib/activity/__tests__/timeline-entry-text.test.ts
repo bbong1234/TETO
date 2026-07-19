@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildTimelineEntryText } from '../item-tree';
+import { buildTimelineEntryText, buildTimelineEntryParts } from '../item-tree';
+import { buildDayTimelineFromRecords } from '../timeline-utils';
 import type { Item, Record as TetoRecord } from '@/types/teto';
 
 const items: Item[] = [
@@ -167,5 +168,95 @@ describe('buildTimelineEntryText', () => {
       items
     );
     expect(text).toBe('编程-公司系统开发-方案报批');
+  });
+
+  it('detail_text strips redundant time prefix from legacy raw_input', () => {
+    const parts = buildTimelineEntryParts(
+      record({
+        raw_input: '早上去了港源量玻璃',
+        time_text: '早上',
+        time_precision: 'fuzzy',
+        occurred_at: '2026-07-19T09:00:00+08:00',
+        lifecycle_status: 'completed',
+      }),
+      items
+    );
+    expect(parts.detail).toBe('去了港源量玻璃');
+  });
+
+  it('fuzzy records show segment label instead of clock on timeline', () => {
+    const timeline = buildDayTimelineFromRecords(
+      [
+        record({
+          id: 'fuzzy-1',
+          raw_input: '在家刷抖音',
+          time_text: '晚上',
+          time_precision: 'fuzzy',
+          occurred_at: '2026-07-19T20:31:00+08:00',
+          lifecycle_status: 'completed',
+        }),
+      ],
+      '2026-07-19',
+      '今天',
+      items
+    );
+
+    const entry = timeline.records.find((item) => item.id === 'fuzzy-1');
+    expect(entry?.start_time).toBeUndefined();
+    expect(entry?.time_label).toBe('晚上');
+    expect(entry?.detail_text).toBe('在家刷抖音');
+  });
+
+  it('exact records derive segment label from occurred_at', () => {
+    const timeline = buildDayTimelineFromRecords(
+      [
+        record({
+          id: 'exact-1',
+          raw_input: '去了港源量玻璃',
+          time_text: '09:00',
+          time_precision: 'exact',
+          occurred_at: '2026-07-19T09:00:00+08:00',
+          lifecycle_status: 'completed',
+        }),
+      ],
+      '2026-07-19',
+      '今天',
+      items
+    );
+
+    const entry = timeline.records.find((item) => item.id === 'exact-1');
+    expect(entry?.start_time).toBe('09:00');
+    expect(entry?.time_label).toBe('早上');
+  });
+
+  it('fuzzy morning sorts before evening exact entries in feed', () => {
+    const timeline = buildDayTimelineFromRecords(
+      [
+        record({
+          id: 'evening-exact',
+          raw_input: '去接妹妹',
+          time_text: '20:30',
+          time_precision: 'exact',
+          occurred_at: '2026-07-19T20:30:00+08:00',
+          lifecycle_status: 'completed',
+        }),
+        record({
+          id: 'morning-fuzzy',
+          raw_input: '去了公司',
+          time_text: '早上',
+          time_precision: 'fuzzy',
+          occurred_at: '2026-07-19T20:31:00+08:00',
+          lifecycle_status: 'completed',
+        }),
+      ],
+      '2026-07-19',
+      '今天',
+      items
+    );
+
+    const activityIds = timeline.records
+      .filter((item) => item.kind === 'activity')
+      .map((item) => item.id);
+    expect(activityIds.indexOf('morning-fuzzy')).toBeLessThan(activityIds.indexOf('evening-exact'));
   });
 });

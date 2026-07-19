@@ -6,6 +6,7 @@ import {
   type SkillCategoryPreset,
 } from '@/lib/activity/constants';
 import { UNASSIGNED_ACTIVE_PLACEHOLDER } from '@/lib/activity/recent-context';
+import { stripRedundantTimePrefix } from '@/lib/activity/diary-time-normalize';
 
 const ACTIVE_ITEM_STATUSES = new Set(['活跃', '推进中', '放缓', '停滞']);
 const PRESET_SET = new Set<string>(ACTIVITY_CATEGORY_PRESETS);
@@ -777,8 +778,10 @@ export function buildTimelineEntryParts(
     record.raw_input?.trim() ||
     (record.input_source === 'quick' ? record.content?.trim() : '') ||
     '';
-  const summary =
-    originalText || buildTimelineSummary(record, { isCurrent: options?.isCurrent, tagPath });
+  const summary = stripRedundantTimePrefix(
+    originalText || buildTimelineSummary(record, { isCurrent: options?.isCurrent, tagPath }),
+    timeText
+  );
 
   const parts = [tagPath, action, timeText, summary].filter(Boolean);
   let text: string;

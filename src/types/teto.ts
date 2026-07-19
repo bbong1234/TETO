@@ -700,7 +700,7 @@ export interface TimelineEntry {
   category?: string;
   subcategory?: string;
   tag_names?: string[];
-  time_label?: string;   // 模糊时间或计划时段文案
+  time_label?: string;   // 时段列：凌晨/早上/中午/下午/晚上
   /** 未关联事项（item_id 为空） */
   is_unassigned?: boolean;
 }
@@ -891,9 +891,67 @@ export interface WalletTransaction {
   created_at: string | null;
 }
 
+export type WalletSeriesGranularity = 'hour' | 'day' | 'month';
+
+export interface WalletExpenseSeriesPoint {
+  key: string;
+  label: string;
+  expense: number;
+  income: number;
+}
+
+export type WalletBudgetScope = 'total' | 'category';
+
+export interface WalletBudget {
+  id: string;
+  user_id: string;
+  scope: WalletBudgetScope;
+  category_key: string | null;
+  amount: number;
+  currency: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateWalletBudgetPayload {
+  scope: WalletBudgetScope;
+  category_key?: string | null;
+  amount: number;
+  currency?: string;
+  sort_order?: number;
+}
+
+export interface UpdateWalletBudgetPayload {
+  category_key?: string | null;
+  amount?: number;
+  sort_order?: number;
+}
+
+export interface WalletBudgetProgress {
+  budget: WalletBudget;
+  spent: number;
+  remaining: number;
+  percentage: number;
+  exceeded: boolean;
+}
+
+export interface WalletBudgetSummary {
+  month: string;
+  date_from: string;
+  date_to: string;
+  total: WalletBudgetProgress | null;
+  categories: WalletBudgetProgress[];
+  category_spending: ExpenseCategoryRow[];
+}
+
 export interface WalletSummary {
   periods: WalletPeriodSummary[];
   transactions: WalletTransaction[];
+  transaction_count: number;
+  expense_series: WalletExpenseSeriesPoint[];
+  series_granularity: WalletSeriesGranularity;
+  budget: WalletBudgetSummary;
   accounts: FinanceAccount[];
   total_assets: number;
   structure?: WalletStructureSummary;

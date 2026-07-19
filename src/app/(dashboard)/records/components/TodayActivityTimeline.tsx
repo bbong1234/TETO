@@ -1,13 +1,12 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import type { Record, Item, TimelineEntry } from '@/types/teto';
-import { buildDayFeedFromRecords, isTimelineEntrySelectable } from '@/lib/activity/timeline-utils';
+import { buildDayFeedFromRecords } from '@/lib/activity/timeline-utils';
 import { expandFeedWithBlockSegments } from '@/lib/activity/block-timeline-projection';
 import {
   overlayCurrentActivityOnRecords,
   isActiveTimingRecord,
-  resolveDeleteRecordId,
 } from '@/lib/activity/records-mutation';
 import {
   loadLockedBlockCategory,
@@ -17,8 +16,6 @@ import {
 import { resolveDayLabels } from '@/lib/activity/day-labels';
 import { useSubItemTitlesFromRecords } from '@/hooks/use-sub-item-titles-from-records';
 import DayTimelinePanel from '@/components/timeline/DayTimelinePanel';
-import { getApiErrorMessage } from '@/lib/api/client-errors';
-import { notifyRecordsChanged } from '@/hooks/use-records-changed';
 import { useOptionalActivitySession } from '@/contexts/ActivitySessionContext';
 
 interface TodayActivityTimelineProps {
@@ -36,6 +33,9 @@ interface TodayActivityTimelineProps {
   onError?: (message: string) => void;
   showAddRecord?: boolean;
   onAddRecord?: () => void;
+  showImportFromDiary?: boolean;
+  onImportFromDiary?: () => void;
+  importPanel?: ReactNode;
   focusedRecordId?: string | null;
   onFocusRecord?: (recordId: string | null) => void;
 }
@@ -49,11 +49,11 @@ export default function TodayActivityTimeline({
   onGapClick,
   onRecordClick,
   onPlanComplete,
-  onRecordDeleted,
-  onDeleteFailed,
-  onError,
   showAddRecord = false,
   onAddRecord,
+  showImportFromDiary = false,
+  onImportFromDiary,
+  importPanel,
   focusedRecordId = null,
   onFocusRecord,
 }: TodayActivityTimelineProps) {
@@ -61,12 +61,9 @@ export default function TodayActivityTimeline({
   const currentActivity = session?.activity ?? currentActivityProp;
   const currentActivityId = currentActivityIdProp ?? currentActivity?.id ?? null;
 
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const [deleting, setDeleting] = useState(false);
   const labels = useMemo(() => resolveDayLabels(date), [date]);
 
   const recordsForTimeline = useMemo(() => {
-    // records 已由 RecordsClient 经 selectTimelineRecords 投影，勿再 strip optimistic-block-seg
     if (session) return records;
     return overlayCurrentActivityOnRecords(records, currentActivity);
   }, [records, session, currentActivity]);
@@ -139,148 +136,6 @@ export default function TodayActivityTimeline({
       }
     : undefined;
 
-  const handleToggleSelect = useCallback((entry: TimelineEntry) => {
-    if (!isTimelineEntrySelectable(entry)) return;
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(entry.id)) next.delete(entry.id);
-      else next.add(entry.id);
-      return next;
-    });
-  }, []);
-
-  const handleSelectAll = useCallback((entries: TimelineEntry[]) => {
-    const ids = entries.map((e) => e.id);
-    setSelectedIds((prev) => {
-      if (ids.length > 0 && ids.every((id) => prev.has(id))) return new Set();
-      return new Set(ids);
-    });
-  }, []);
-
-  const handleClearSelection = useCallback(() => {
-    setSelectedIds(new Set());
-  }, []);
-
-  const handleBatchDelete = useCallback(async () => {
-    if (selectedIds.size === 0 || deleting || !onRecordDeleted) return;
-    if (!confirm(`确定删除选中的 ${selectedIds.size} 条记录吗？`)) return;
-
-    const ids = [...selectedIds];
-    setSelectedIds(new Set());
-
-    const resolveSnapshot = (id: string): Record | undefined => {
-      const direct = recordsForTimeline.find((r) => r.id === id);
-      if (direct) return direct;
-      if (currentActivity?.id === id) return currentActivity;
-      if (id.startsWith('block-seg-')) {
-        if (currentActivity && isActiveTimingRecord(currentActivity)) return currentActivity;
-        return recordsForTimeline.find((r) => isActiveTimingRecord(r));
-      }
-      return undefined;
-    };
-
-    const activeId = currentActivityId;
-    const deletesActiveTiming =
-      Boolean(activeId) &&
-      ids.some((id) => id === activeId || resolveSnapshot(id)?.id === activeId);
-
-    setDeleting(true);
-    try {
-      if (deletesActiveTiming) {
-        try {
-          await fetch('/api/v2/activities/switch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
-          });
-        } catch {
-          /* 停止失败仍尝试删除记录 */
-        }
-        session?.dispatchStopOptimistic();
-        session?.clearBlockPersistence();
-      }
-
-      const deletePlans: Array<{ uiIds: string[]; snapshot: Record; serverId: string | null }> = [];
-      for (const id of ids) {
-        const snapshot = resolveSnapshot(id);
-        if (!snapshot) continue;
-        const serverId = await resolveDeleteRecordId(snapshot, recordsForTimeline);
-        const uiIds = new Set<string>([id, snapshot.id]);
-        if (serverId) uiIds.add(serverId);
-        deletePlans.push({ uiIds: [...uiIds], snapshot, serverId });
-      }
-
-      const failed: Record[] = [];
-      const serverIds = [
-        ...new Set(
-          deletePlans.map((plan) => plan.serverId).filter((id): id is string => Boolean(id))
-        ),
-      ];
-
-      for (const plan of deletePlans) {
-        if (!plan.serverId) failed.push(plan.snapshot);
-      }
-
-      if (serverIds.length > 0) {
-        try {
-          const res = await fetch('/api/v2/records/batch-delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids: serverIds }),
-          });
-          const body = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            onError?.(getApiErrorMessage(body, '批量删除失败'));
-            for (const plan of deletePlans) {
-              if (plan.serverId) failed.push(plan.snapshot);
-            }
-          } else {
-            const deletedCount = (body as { data?: { deleted?: number } }).data?.deleted ?? 0;
-            if (deletedCount === 0) {
-              onError?.('删除失败，记录仍在服务器上');
-              for (const plan of deletePlans) {
-                if (plan.serverId) failed.push(plan.snapshot);
-              }
-            } else if (deletedCount < serverIds.length) {
-              notifyRecordsChanged({ date });
-              onError?.(`仅删除了 ${deletedCount}/${serverIds.length} 条，请刷新确认`);
-            } else {
-              for (const plan of deletePlans) {
-                if (!plan.serverId) continue;
-                for (const uiId of plan.uiIds) onRecordDeleted(uiId);
-              }
-              notifyRecordsChanged({ date });
-            }
-          }
-        } catch {
-          onError?.('批量删除失败，请重试');
-          for (const plan of deletePlans) {
-            if (plan.serverId) failed.push(plan.snapshot);
-          }
-        }
-      }
-
-      if (failed.length > 0) {
-        for (const record of failed) onDeleteFailed?.(record);
-        if (failed.length === deletePlans.length) {
-          onError?.(`有 ${failed.length} 条记录删除失败`);
-        }
-      }
-    } finally {
-      setDeleting(false);
-    }
-  }, [
-    selectedIds,
-    deleting,
-    onRecordDeleted,
-    onDeleteFailed,
-    onError,
-    recordsForTimeline,
-    currentActivity,
-    currentActivityId,
-    session,
-  ]);
-
   return (
     <div className="h-full min-h-0">
       <DayTimelinePanel
@@ -294,20 +149,20 @@ export default function TodayActivityTimeline({
         onPlanComplete={handlePlanComplete}
         showAddRecord={showAddRecord}
         onAddRecord={onAddRecord}
+        headerActions={
+          showImportFromDiary && onImportFromDiary ? (
+            <button
+              type="button"
+              onClick={onImportFromDiary}
+              className="shrink-0 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100"
+            >
+              从日记写入
+            </button>
+          ) : undefined
+        }
+        importPanel={importPanel}
         focusedRecordId={focusedRecordId}
         onFocusRecord={onFocusRecord}
-        multiSelect={
-          onRecordDeleted
-            ? {
-                selectedIds,
-                onToggle: handleToggleSelect,
-                onSelectAll: handleSelectAll,
-                onClear: handleClearSelection,
-                onBatchDelete: handleBatchDelete,
-                deleting,
-              }
-            : undefined
-        }
       />
     </div>
   );

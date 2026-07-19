@@ -15,6 +15,42 @@ export function buildEditableSegments(body: string, links: DiaryLinkSpan[]): Edi
   return buildBodySegments(body, links);
 }
 
+const BLOCK_TAGS = new Set([
+  'DIV',
+  'P',
+  'LI',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'BLOCKQUOTE',
+  'PRE',
+]);
+
+function isBlockElement(node: Node): boolean {
+  return node.nodeType === Node.ELEMENT_NODE && BLOCK_TAGS.has((node as HTMLElement).tagName);
+}
+
+function appendBlockBoundaryNewline(state: { body: string }): void {
+  if (state.body.length > 0 && !state.body.endsWith('\n')) {
+    state.body += '\n';
+  }
+}
+
+function appendPlainTextWithBreaks(root: HTMLElement, text: string): void {
+  const parts = text.split('\n');
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) {
+      root.appendChild(document.createElement('br'));
+    }
+    if (parts[i]) {
+      root.appendChild(document.createTextNode(parts[i]));
+    }
+  }
+}
+
 function walkEditableNode(
   node: Node,
   knownLinks: Map<string, DiaryLinkSpan>,
@@ -51,7 +87,20 @@ function walkEditableNode(
     return;
   }
 
-  for (const child of element.childNodes) {
+  walkEditableChildren(element, knownLinks, state);
+}
+
+function walkEditableChildren(
+  parent: Node,
+  knownLinks: Map<string, DiaryLinkSpan>,
+  state: { body: string; links: DiaryLinkSpan[]; linkTexts: Map<string, string> }
+): void {
+  const nodes = parent.childNodes;
+  for (let i = 0; i < nodes.length; i++) {
+    const child = nodes[i];
+    if (i > 0 && isBlockElement(child)) {
+      appendBlockBoundaryNewline(state);
+    }
     walkEditableNode(child, knownLinks, state);
   }
 }
@@ -68,9 +117,7 @@ export function parseEditableRoot(
   };
 
   if (root) {
-    for (const child of root.childNodes) {
-      walkEditableNode(child, known, state);
-    }
+    walkEditableChildren(root, known, state);
   }
 
   return {
@@ -128,7 +175,7 @@ export function populateEditableRoot(
 
   for (const segment of segments) {
     if (segment.type === 'plain') {
-      root.appendChild(document.createTextNode(segment.text));
+      appendPlainTextWithBreaks(root, segment.text);
       continue;
     }
     const span = document.createElement('span');

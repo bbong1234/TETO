@@ -71,6 +71,12 @@ describe('diary-record-from-text', () => {
     expect(payload.occurred_at).toBeTruthy();
   });
 
+  it('extracts morning period as 09:00 on anchor date', () => {
+    const occurredAt = resolveDiaryRecordOccurredAt('2026-07-12', '早上去了西湖');
+    expect(new Date(occurredAt).getHours()).toBe(9);
+    expect(new Date(occurredAt).getMinutes()).toBe(0);
+  });
+
   it('builds preview chips for parsed fields', () => {
     const preview = buildDiaryRecordPreview({
       text: '上午10点 编程 公司系统开发 写代码 花了30元',
